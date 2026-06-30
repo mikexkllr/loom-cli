@@ -1,0 +1,59 @@
+# Loom default configuration.
+#
+# Copied to ~/.loom/config.yaml on first run. Override any field there, or live
+# with `loom config set <key> <value>`.
+#
+# Model strings use the LiteLLM-style "provider/model" or LangChain-style
+# "provider:model" form. Both are accepted. Local models use the `ollama/`
+# (or `ollama:`) prefix and are served by your local Ollama daemon, which
+# transparently uses Metal on macOS and CUDA on Linux/Windows.
+
+# The strong cloud model that plans, decomposes, and routes. Never touches raw
+# tool output directly — subagents quarantine that.
+orchestrator: claude-sonnet-4-6
+
+# Per-subagent model assignments. Anything not cloud-prefixed runs locally.
+subagents:
+  explorer: ollama/qwen3:4b
+  editor: ollama/deepseek-coder:14b
+  bash: ollama/qwen3:14b
+  searcher: ollama/qwen3:4b
+  reviewer: claude-haiku-4-5
+  general: ollama/qwen3:14b
+
+# The strongest available model. Called on-demand only, via the `consult` tool.
+advisor: claude-opus-4-8
+
+# Where the local Ollama daemon listens.
+ollama_endpoint: http://localhost:11434
+
+# When a subagent's estimated prompt size approaches its local model's context
+# window, escalate that single call to this cloud model instead of failing.
+escalation_model: claude-sonnet-4-6
+
+# Context-window sizes (in tokens) used by the prompt-size guard to decide when
+# to escalate. Override per-model as needed.
+context_windows:
+  ollama/qwen3:4b: 32768
+  ollama/qwen3:14b: 40960
+  ollama/deepseek-coder:14b: 16384
+  ollama/llama3.2:3b: 131072
+
+# Fraction of a model's context window at which the orchestrator auto-compacts
+# and the prompt-size guard escalates a subagent call.
+compaction_threshold: 0.70
+escalation_threshold: 0.85
+
+# Tool outputs larger than this many tokens are offloaded to .loom/artifacts/
+# and replaced in-context with a path reference.
+artifact_offload_tokens: 2000
+
+# When to consult the advisor automatically: low | medium | high.
+# "high" => only before genuinely high-risk decisions; "low" => consult freely.
+advisor_threshold: medium
+
+# Max subagent nesting depth (a subagent may spawn one level of sub-subagent).
+max_nesting_depth: 2
+
+# Give each parallel write-capable subagent its own git worktree.
+worktree_isolation: true

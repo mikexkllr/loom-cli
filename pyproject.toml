@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "loom-cli"
+version = "0.1.0"
+description = "Loom — a hybrid local/cloud multi-agent CLI coding assistant"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Loom" }]
+keywords = ["agents", "cli", "coding-assistant", "deepagents", "ollama", "langchain"]
+
+dependencies = [
+    # Agent harness + orchestration
+    "deepagents>=0.2.0",
+    "langchain>=1.0.0",
+    "langgraph>=1.0.0",
+    # Model providers
+    "langchain-ollama>=0.3.0",      # local models (Metal on macOS, CUDA on Linux/Windows)
+    "langchain-anthropic>=0.3.0",   # cloud orchestrator / advisor / reviewer
+    "langchain-openai>=0.3.0",      # optional cloud orchestrator
+    "langchain-google-genai>=2.0.0",# optional cloud orchestrator
+    # CLI + UX
+    "typer>=0.12.0",
+    "rich>=13.7.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.6",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+mlx = [
+    # Optional native Apple-Silicon path. Ollama already uses Metal, so this is
+    # only needed if you want to run models directly through MLX instead.
+    "mlx-lm>=0.18.0; platform_system == 'Darwin'",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+loom = "loom.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["loom"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
