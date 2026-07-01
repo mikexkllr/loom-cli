@@ -50,13 +50,42 @@ loom models pull       # pull everything missing in one shot
 
 ## Usage
 
+### Interactive UI (the REPL)
+
+Run `loom` with no task to drop into the in-terminal chat UI — a prompt loop
+with history, a live status toolbar, streaming output, and slash commands:
+
+```
+$ loom
+╭─ welcome ─────────────────────────────────────╮
+│ Loom   v0.1.0 · hybrid local/cloud agents      │
+│ orchestrator   claude-sonnet-4-6               │
+│ advisor        claude-opus-4-8                 │
+│ cwd            /path/to/project                │
+│ tips   /help · /plan · /local · Ctrl-D to exit │
+╰────────────────────────────────────────────────╯
+loom › add a health-check endpoint to the API
+loom › /plan          # toggle read-only planning
+loom › /model gpt-4o  # switch orchestrator live
+loom › /yolo          # auto-approve tools that would ask
+
+  loom ›  model=claude-sonnet-4-6  mode=PLAN YOLO
+```
+
+Slash commands: `/help /model /agents /models /config /settings /permissions
+/plan /local /yolo /clear /cwd /exit`. When a tool needs approval (per your
+permission rules), Loom asks inline — unless `/yolo` is on.
+
+### One-shot
+
 ```bash
 loom "refactor the auth module to use JWT"            # main entry
 loom --plan "add pagination to all list endpoints"    # read-only plan first
 loom --local-only "explain this function"             # no cloud calls at all
+loom --yolo "run the test suite and fix failures"     # don't ask before tools
 loom --advisor-threshold high "redesign the DB schema"# only consult advisor on high risk
-loom config set orchestrator gpt-4o                   # reconfigure on the fly
-loom config show
+loom config set orchestrator gpt-4o                   # reconfigure model routing
+loom settings set ui.theme light                      # reconfigure UI/permissions/…
 loom agents list                                      # subagents + assigned models
 ```
 
@@ -79,6 +108,54 @@ subagents:
 advisor: claude-opus-4-8       # consulted on-demand only
 ollama_endpoint: http://localhost:11434
 ```
+
+## Settings (`settings.json`)
+
+Beyond model routing, Loom is fully configurable through a layered
+`settings.json` — the same idea as Claude Code. Layers are deep-merged, later
+wins:
+
+| Layer | Path | Commit? |
+|---|---|---|
+| packaged defaults | `loom/config/default_settings.json` | — |
+| legacy models | `~/.loom/config.yaml` | — |
+| user | `~/.loom/settings.json` | no |
+| project | `.loom/settings.json` | yes |
+| local | `.loom/settings.local.json` | no (gitignore) |
+
+`loom settings init` drops a starter file in your project. Sections:
+
+```jsonc
+{
+  "permissions": {
+    "default_mode": "ask",                    // allow | ask | deny
+    "allow": ["read_file", "ls", "grep_tool"],
+    "ask":   ["write_file", "edit_file", "execute"],
+    "deny":  ["execute(rm -rf /*)", "execute(sudo *)"]
+  },
+  "hooks": {
+    "pre_tool_use":  [{ "matcher": "write_file|edit_file", "command": "…" }],
+    "post_tool_use": [{ "matcher": "write_file", "command": "black -q ." }]
+  },
+  "env": { "ANTHROPIC_API_KEY": "…" },
+  "ui": { "theme": "dark", "streaming": true, "prompt_symbol": "loom ›" }
+}
+```
+
+- **Permissions** — rule syntax `tool` or `tool(glob)`; e.g. `execute(git *)`,
+  `write_file(src/**)`, `*`. Evaluated **deny > allow > ask > default_mode**.
+  An `ask` decision prompts you inline in the REPL (or auto-denies headless,
+  unless `--yolo`). Enforced by `PolicyMiddleware` around every tool call.
+- **Hooks** — shell commands run around tool events; a `pre_tool_use` hook that
+  exits non-zero **blocks** the tool. Commands get the event as JSON on stdin
+  plus `LOOM_TOOL_NAME` / `LOOM_TOOL_INPUT` in env. Great for auto-format,
+  lint-gates, or audit logging.
+- **env** — injected before any model call (`setdefault`, so your real shell
+  env still wins).
+- **ui** — theme, streaming, tool-call visibility, prompt symbol, banner.
+
+Edit from the CLI (`loom settings set permissions.default_mode allow`), from the
+REPL (`/settings ui.theme light`), or by hand.
 
 ## The fleet
 
@@ -122,13 +199,23 @@ loom/
 │   ├── artifact_store.py   # large-output offload + summarization middleware
 │   ├── worktree.py         # git worktree isolation
 │   ├── ollama.py           # local model status / pull
-│   └── config.py           # config.yaml loader + validation
+│   ├── config.py           # config.yaml (model routing) loader + validation
+│   ├── settings.py         # layered settings.json loader
+│   ├── permissions.py      # allow/ask/deny rule engine
+│   └── hooks.py            # pre/post tool-use hook runner
 ├── subagents/              # explorer, editor, bash, searcher, reviewer, general
 ├── middleware/
-│   └── prompt_size_guard.py
+│   ├── prompt_size_guard.py
+│   └── policy.py           # enforce permissions + run hooks per tool call
 ├── tools/                  # sandboxed fs / shell / search tools
+├── ui/
+│   ├── repl.py             # interactive terminal chat loop
+│   ├── slash.py            # /command registry
+│   └── theme.py            # Rich themes from ui settings
 ├── cli/main.py             # Typer app + Rich streaming
-└── config/default_config.yaml
+└── config/
+    ├── default_config.yaml   # model routing defaults
+    └── default_settings.json # permissions / hooks / env / ui defaults
 ```
 
 Built on [`deepagents`](https://docs.langchain.com/oss/python/deepagents) /

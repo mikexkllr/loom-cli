@@ -23,18 +23,21 @@ from rich.panel import Panel
 from rich.table import Table
 
 from loom.core import config as cfg
+from loom.core import settings as settings_mod
 from loom.tools import sandbox
 
 console = Console()
 app = typer.Typer(
     add_completion=False,
     help="Loom — hybrid local/cloud multi-agent CLI coding assistant.",
-    no_args_is_help=True,
+    no_args_is_help=False,  # no args -> launch the interactive REPL
 )
-config_app = typer.Typer(help="View and edit configuration.")
+config_app = typer.Typer(help="View and edit model-routing configuration.")
+settings_app = typer.Typer(help="View and edit settings.json (permissions/hooks/env/ui).")
 agents_app = typer.Typer(help="Inspect registered subagents.")
 models_app = typer.Typer(help="Manage local Ollama models.")
 app.add_typer(config_app, name="config")
+app.add_typer(settings_app, name="settings")
 app.add_typer(agents_app, name="agents")
 app.add_typer(models_app, name="models")
 
@@ -47,32 +50,56 @@ app.add_typer(models_app, name="models")
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    prompt: Optional[str] = typer.Argument(None, help="The task for Loom to perform."),
+    prompt: Optional[str] = typer.Argument(None, help="The task to run. Omit to open the interactive REPL."),
     plan: bool = typer.Option(False, "--plan", help="Plan-first, read-only exploration before any writes."),
     local_only: bool = typer.Option(False, "--local-only", help="No cloud calls — local models only."),
+    yolo: bool = typer.Option(False, "--yolo", help="Auto-approve tools that would otherwise ask."),
     advisor_threshold: Optional[str] = typer.Option(
         None, "--advisor-threshold", help="When to auto-consult the advisor: low | medium | high."
     ),
     root: str = typer.Option(".", "--root", help="Project root the agents are sandboxed to."),
 ) -> None:
-    """Run a task. If a subcommand (config/agents/models) is given, defer to it."""
+    """Run a task, or (with no task and no subcommand) open the interactive UI."""
     if ctx.invoked_subcommand is not None:
         return
-    if not prompt:
-        console.print(ctx.get_help())
-        raise typer.Exit()
 
     sandbox.set_root(root)
-    config = cfg.load_config()
-    _run_task(config, prompt, plan=plan, local_only=local_only, advisor_threshold=advisor_threshold)
+    settings = settings_mod.load_settings(root)
+
+    if not prompt:
+        from loom.ui import repl
+
+        repl.run(settings, cwd=root, plan=plan, local_only=local_only, yolo=yolo)
+        raise typer.Exit()
+
+    _run_task(settings, prompt, plan=plan, local_only=local_only, yolo=yolo, advisor_threshold=advisor_threshold, root=root)
 
 
-def _run_task(config: cfg.LoomConfig, prompt: str, *, plan: bool, local_only: bool, advisor_threshold) -> None:
+@app.command("chat")
+def chat(
+    plan: bool = typer.Option(False, "--plan"),
+    local_only: bool = typer.Option(False, "--local-only"),
+    yolo: bool = typer.Option(False, "--yolo"),
+    root: str = typer.Option(".", "--root"),
+) -> None:
+    """Open the interactive Loom REPL (same as running `loom` with no task)."""
+    sandbox.set_root(root)
+    from loom.ui import repl
+
+    repl.run(settings_mod.load_settings(root), cwd=root, plan=plan, local_only=local_only, yolo=yolo)
+
+
+def _run_task(settings, prompt: str, *, plan: bool, local_only: bool, yolo: bool, advisor_threshold, root: str) -> None:
     from loom.core.orchestrator import build_orchestrator
+    from loom.middleware import policy
 
+    settings.apply_env()
+    policy.auto_approve.set(yolo)
+
+    config = settings.models
     try:
         bundle = build_orchestrator(
-            config, plan=plan, local_only=local_only, advisor_threshold=advisor_threshold
+            settings, plan=plan, local_only=local_only, advisor_threshold=advisor_threshold, cwd=root
         )
     except ModuleNotFoundError as exc:
         console.print(
@@ -164,6 +191,62 @@ def config_path() -> None:
     """Print the path to the user config file."""
     cfg.ensure_user_config()
     console.print(str(cfg.USER_CONFIG_PATH))
+
+
+# ----------------------------------------------------------------------------
+# settings subcommands (permissions / hooks / env / ui)
+# ----------------------------------------------------------------------------
+
+
+@settings_app.command("show")
+def settings_show(
+    section: Optional[str] = typer.Argument(None, help="Only show one section: permissions|hooks|env|ui"),
+    root: str = typer.Option(".", "--root"),
+) -> None:
+    """Print the merged settings (all layers), or one section."""
+    import json
+
+    settings = settings_mod.load_settings(root)
+    data = settings.model_dump(exclude={"models"})
+    if section:
+        if section not in data:
+            console.print(f"[red]unknown section:[/red] {section} (try permissions|hooks|env|ui)")
+            raise typer.Exit(1)
+        data = {section: data[section]}
+    console.print(Panel(json.dumps(data, indent=2), title="settings.json (merged)"))
+
+
+@settings_app.command("set")
+def settings_set(key: str, value: str, root: str = typer.Option(".", "--root")) -> None:
+    """Set a settings value, e.g. `loom settings set ui.theme light`
+    or `loom settings set permissions.default_mode allow`."""
+    try:
+        settings_mod.set_value(key, value, root)
+    except Exception as exc:
+        console.print(f"[red]invalid:[/red] {exc}")
+        raise typer.Exit(1)
+    console.print(f"[green]set[/green] {key} = {value}")
+
+
+@settings_app.command("path")
+def settings_path() -> None:
+    """Print the path to the user settings.json file."""
+    console.print(str(settings_mod.USER_SETTINGS_PATH))
+
+
+@settings_app.command("init")
+def settings_init(root: str = typer.Option(".", "--root")) -> None:
+    """Write a starter .loom/settings.json into the current project."""
+    import json
+
+    target = settings_mod.project_settings_paths(root)[0]
+    if target.exists():
+        console.print(f"[yellow]exists:[/yellow] {target}")
+        raise typer.Exit()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    starter = settings_mod._read_json(settings_mod.DEFAULT_SETTINGS_PATH)
+    target.write_text(json.dumps(starter, indent=2), encoding="utf-8")
+    console.print(f"[green]created[/green] {target}")
 
 
 # ----------------------------------------------------------------------------

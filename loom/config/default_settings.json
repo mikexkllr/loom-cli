@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "default_mode": "ask",
+    "allow": [
+      "read_file",
+      "ls",
+      "glob_tool",
+      "grep_tool",
+      "web_search"
+    ],
+    "ask": [
+      "write_file",
+      "edit_file",
+      "execute"
+    ],
+    "deny": [
+      "execute(rm -rf /*)",
+      "execute(*git push*--force*)",
+      "execute(sudo *)"
+    ]
+  },
+  "env": {},
+  "hooks": {
+    "pre_tool_use": [],
+    "post_tool_use": [],
+    "user_prompt_submit": [],
+    "stop": []
+  },
+  "ui": {
+    "theme": "auto",
+    "streaming": true,
+    "show_tool_calls": true,
+    "show_thinking": false,
+    "show_fleet_panel": true,
+    "prompt_symbol": "loom ›",
+    "banner": true
+  }
+}

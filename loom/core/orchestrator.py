@@ -77,14 +77,29 @@ class OrchestratorBundle:
 
 
 def build_orchestrator(
-    config: LoomConfig,
+    settings: "Settings | LoomConfig",
     *,
     plan: bool = False,
     local_only: bool = False,
     advisor_threshold: str | None = None,
+    cwd: str = ".",
 ) -> OrchestratorBundle:
-    """Construct the orchestrator agent for the requested run mode."""
+    """Construct the orchestrator agent for the requested run mode.
+
+    Accepts a full :class:`Settings` (preferred — applies env, permissions, and
+    hooks) or a bare :class:`LoomConfig` (model routing only, back-compat).
+    """
     from deepagents import create_deep_agent
+
+    from loom.core.settings import Settings
+
+    if isinstance(settings, Settings):
+        loom_settings = settings
+        config = settings.models
+        settings.apply_env()  # inject configured env vars before any model call
+    else:
+        loom_settings = None
+        config = settings
 
     if advisor_threshold is not None:
         config = config.model_copy(update={"advisor_threshold": advisor_threshold})
@@ -122,6 +137,11 @@ def build_orchestrator(
     summ = summarization_middleware(config)
     if summ is not None:
         middleware.append(summ)
+    if loom_settings is not None:
+        # Permission + hook enforcement around every tool call.
+        from loom.middleware.policy import PolicyMiddleware
+
+        middleware.append(PolicyMiddleware(loom_settings, cwd=cwd))
 
     agent = create_deep_agent(
         model=orch_model,
