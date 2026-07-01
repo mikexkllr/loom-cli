@@ -74,6 +74,7 @@ class OrchestratorBundle:
     model_string: str
     subagent_names: list[str]
     mode: str
+    persistent: bool = False  # True if a checkpointer is active (resume/thread state)
 
 
 def build_orchestrator(
@@ -83,6 +84,7 @@ def build_orchestrator(
     local_only: bool = False,
     advisor_threshold: str | None = None,
     cwd: str = ".",
+    checkpointer: Any | None = None,
 ) -> OrchestratorBundle:
     """Construct the orchestrator agent for the requested run mode.
 
@@ -143,7 +145,7 @@ def build_orchestrator(
 
         middleware.append(PolicyMiddleware(loom_settings, cwd=cwd))
 
-    agent = create_deep_agent(
+    kwargs: dict[str, Any] = dict(
         model=orch_model,
         tools=tools,
         system_prompt=system,
@@ -151,8 +153,21 @@ def build_orchestrator(
         middleware=middleware,
     )
 
+    # Optional LangGraph persistence: pass a checkpointer if create_deep_agent
+    # supports it, so the REPL keeps thread state and can resume across runs.
+    persistent = False
+    if checkpointer is not None:
+        try:
+            agent = create_deep_agent(**kwargs, checkpointer=checkpointer)
+            persistent = True
+        except TypeError:
+            agent = create_deep_agent(**kwargs)  # older signature — no persistence
+    else:
+        agent = create_deep_agent(**kwargs)
+
     return OrchestratorBundle(
         agent=agent,
+        persistent=persistent,
         model_string=orch_model_string,
         subagent_names=[s["name"] for s in subagents],
         mode="plan" if plan else ("local-only" if local_only else "normal"),

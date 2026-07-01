@@ -24,6 +24,25 @@ from loom.ui.theme import make_console
 _HISTORY_FILE = settings_mod.cfg.USER_CONFIG_DIR / "history"
 
 
+def _make_checkpointer():
+    """In-memory LangGraph checkpointer for thread persistence within a session.
+
+    Returns None if langgraph isn't importable, in which case the REPL falls
+    back to resending the full transcript each turn.
+    """
+    try:
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        return InMemorySaver()
+    except Exception:
+        try:
+            from langgraph.checkpoint.memory import MemorySaver
+
+            return MemorySaver()
+        except Exception:
+            return None
+
+
 class Session:
     """Mutable state for one interactive Loom session."""
 
@@ -37,11 +56,16 @@ class Session:
         self.messages: list = []
         self.bundle = None
         self._exit = False
+        self.thread_id = "loom-repl"
+        self.checkpointer = _make_checkpointer()
         sandbox.set_root(self.cwd)
 
     # ----- lifecycle -----
     def reset(self) -> None:
         self.messages = []
+        # New thread_id => the checkpointer's prior state is no longer referenced.
+        self._reset_count = getattr(self, "_reset_count", 0) + 1
+        self.thread_id = f"loom-repl-{self._reset_count}"
 
     def reload_settings(self) -> None:
         self.settings = settings_mod.load_settings(self.cwd)
@@ -60,8 +84,15 @@ class Session:
                 plan=self.plan,
                 local_only=self.local_only,
                 cwd=str(self.cwd),
+                checkpointer=self.checkpointer,
             )
         return self.bundle
+
+    def _run_config(self):
+        """LangGraph config carrying the thread_id (only when persistent)."""
+        if self.bundle is not None and self.bundle.persistent:
+            return {"configurable": {"thread_id": self.thread_id}}
+        return None
 
     # ----- a single turn -----
     def run_turn(self, text: str) -> None:
@@ -77,13 +108,20 @@ class Session:
             self.console.print(f"[loom.err]could not start orchestrator:[/loom.err] {exc}")
             return
 
-        self.messages.append(("user", text))
-        inputs = {"messages": list(self.messages)}
+        # With a checkpointer, the graph persists history under thread_id — send
+        # only the new turn. Without one, resend the full local transcript.
+        if bundle.persistent:
+            inputs = {"messages": [("user", text)]}
+        else:
+            self.messages.append(("user", text))
+            inputs = {"messages": list(self.messages)}
+
+        run_config = self._run_config()
         try:
-            self._stream(bundle.agent, inputs)
+            self._stream(bundle.agent, inputs, run_config)
         except Exception as exc:
             self.console.print(f"[loom.warn]streaming unavailable ({exc}); running synchronously…[/loom.warn]")
-            result = bundle.agent.invoke(inputs)
+            result = bundle.agent.invoke(inputs, config=run_config) if run_config else bundle.agent.invoke(inputs)
             self._absorb_result(result)
 
     def _confirm(self, tool_name: str, tool_input: dict, reason: str) -> bool:
@@ -93,10 +131,15 @@ class Session:
         )
         return Confirm.ask("  run this tool?", default=False)
 
-    def _stream(self, agent, inputs) -> None:
+    def _stream(self, agent, inputs, run_config=None) -> None:
         ui = self.settings.ui
         final_text = None
-        for chunk in agent.stream(inputs, stream_mode="updates"):
+        stream = (
+            agent.stream(inputs, config=run_config, stream_mode="updates")
+            if run_config
+            else agent.stream(inputs, stream_mode="updates")
+        )
+        for chunk in stream:
             for node, update in (chunk or {}).items():
                 msgs = (update or {}).get("messages") if isinstance(update, dict) else None
                 if not msgs:
@@ -111,7 +154,8 @@ class Session:
                     style = "loom.subagent" if node != "agent" else "loom.agent"
                     self.console.print(Panel(str(text), border_style=style, title=f"[{style}]{node}[/{style}]"))
                     final_text = str(text)
-        if final_text is not None:
+        # Only mirror into the local transcript when the graph isn't persisting.
+        if final_text is not None and not (self.bundle and self.bundle.persistent):
             self.messages.append(("assistant", final_text))
 
     def _absorb_result(self, result) -> None:

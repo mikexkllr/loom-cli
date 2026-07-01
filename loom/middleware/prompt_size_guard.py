@@ -46,27 +46,35 @@ class PromptSizeGuard(AgentMiddleware):
         self.config = config
         self._escalations = 0
 
-    # LangChain v1 hook: wrap a single model invocation.
+    # LangChain v1 hook: wrap a single model invocation (sync + async).
     def wrap_model_call(
         self,
         request: "ModelRequest",
         handler: Callable[["ModelRequest"], "ModelResponse"],
     ) -> "ModelResponse":
-        if not self.config.is_local(self.local_model):
-            return handler(request)
+        return handler(self._maybe_escalate(request))
 
+    async def awrap_model_call(
+        self,
+        request: "ModelRequest",
+        handler: Callable[["ModelRequest"], "ModelResponse"],
+    ) -> "ModelResponse":
+        return await handler(self._maybe_escalate(request))
+
+    def _maybe_escalate(self, request: "ModelRequest") -> "ModelRequest":
+        if not self.config.is_local(self.local_model):
+            return request
         prompt_tokens = self._estimate_request_tokens(request)
         if should_escalate(prompt_tokens, self.local_model, self.config):
             self._escalations += 1
-            target = self.config.escalation_model
             try:
-                escalated = build_model(target, self.config)
+                escalated = build_model(self.config.escalation_model, self.config)
                 request = self._with_model(request, escalated)
             except Exception:
-                # If we can't build the cloud model (e.g. missing API key),
-                # fall back to the local model and let it try.
+                # Can't build the cloud model (e.g. missing API key) → let the
+                # local model try rather than failing the whole call.
                 pass
-        return handler(request)
+        return request
 
     # ----- helpers (defensive against API drift) -----
 

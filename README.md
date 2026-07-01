@@ -226,12 +226,40 @@ LangChain. The orchestrator gets `write_todos` + `task` (delegation) +
 ## Tests
 
 ```bash
-pytest
+pytest                    # unit tests
+python scripts/smoke.py   # wiring smoke test — no API calls, no Ollama
 ```
 
 Tests that don't need the heavy LLM stack (config, model routing, worktree) run
 standalone; those that exercise tools/subagents `importorskip` the optional deps
 so the suite degrades gracefully.
+
+`scripts/smoke.py` exercises the runtime-integration surfaces against a **stub
+agent** — permission gating in `PolicyMiddleware.wrap_tool_call`, the
+prompt-size escalation decision, hook blocking, and the REPL turn/stream loop —
+so you can confirm the deepagents wiring is sound right after
+`pip install -e .`, without spending tokens or standing up local models.
+
+## deepagents compatibility
+
+Loom follows current deepagents / LangChain 1.0 best practices:
+
+- **Middleware** subclass `AgentMiddleware` and implement the `wrap_tool_call` /
+  `wrap_model_call` hooks (plus their `awrap_*` async variants), returning a
+  `ToolMessage` to short-circuit a gated tool. Tool identity is read from
+  `request.call` (`{name, args, id}`), matching the real `ToolCallRequest`.
+- **Subagents** are dicts with `name` / `description` / `system_prompt` /
+  `tools` / `model` / `middleware`; the reviewer uses `response_format` for a
+  structured verdict.
+- **Persistence** uses a LangGraph checkpointer + `thread_id`: the REPL attaches
+  an `InMemorySaver` and sends only the new turn each round (the graph keeps the
+  transcript), so conversations survive and can resume. Falls back to resending
+  the full transcript if no checkpointer is available.
+
+## Python
+
+Requires **Python ≥ 3.11**; tested against 3.11–3.14. Local models run through
+Ollama, so there's no per-platform build step.
 
 ## Notes on model names
 

@@ -43,52 +43,66 @@ class PolicyMiddleware(AgentMiddleware):
         self.settings = settings
         self.cwd = cwd
 
-    # --- LangChain v1 hook ---
+    # --- LangChain v1 hooks (sync + async) ---
     def wrap_tool_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:
-        name, args = self._extract(request)
+        gate = self._gate(request)
+        if gate is not None:
+            return gate  # blocked/denied → short-circuit with a ToolMessage
+        result = handler(request)
+        self._post(request)
+        return result
+
+    async def awrap_tool_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:
+        gate = self._gate(request)
+        if gate is not None:
+            return gate
+        result = await handler(request)
+        self._post(request)
+        return result
+
+    # --- shared gate/post logic ---
+    def _gate(self, request: Any) -> Any | None:
+        """Returns a ToolMessage to short-circuit, or None to proceed."""
+        name, args, _ = self._extract(request)
         if name is None:
-            return handler(request)
+            return None
 
         decision = perm_engine.check(name, args, self.settings.permissions)
-
         if decision is Decision.deny:
             return self._blocked(request, f"Permission denied for `{name}` by policy.")
-
         if decision is Decision.ask and not auto_approve.get():
-            approved = confirm_callback.get()(name, args, "requires approval")
-            if not approved:
+            if not confirm_callback.get()(name, args, "requires approval"):
                 return self._blocked(request, f"User declined `{name}`.")
 
         pre = hooks_engine.pre_tool_use(self.settings.hooks, name, args, self.cwd)
         if pre.blocked:
             return self._blocked(request, f"Blocked by pre_tool_use hook: {pre.block_reason}")
+        return None
 
-        result = handler(request)
+    def _post(self, request: Any) -> None:
+        name, args, _ = self._extract(request)
+        if name is not None:
+            hooks_engine.post_tool_use(self.settings.hooks, name, args, self.cwd)
 
-        hooks_engine.post_tool_use(self.settings.hooks, name, args, self.cwd)
-        return result
-
-    # --- helpers ---
+    # --- helpers (aligned to ToolCallRequest.call = {name, args, id}) ---
     @staticmethod
-    def _extract(request: Any) -> tuple[str | None, dict]:
-        # v1 ToolCallRequest shapes vary; try the common ones.
-        call = getattr(request, "tool_call", None) or getattr(request, "call", None)
+    def _extract(request: Any) -> tuple[str | None, dict, str]:
+        call = getattr(request, "call", None) or getattr(request, "tool_call", None)
         if isinstance(call, dict):
-            return call.get("name"), call.get("args", {}) or {}
+            args = call.get("args", {}) or {}
+            return call.get("name"), args if isinstance(args, dict) else {}, call.get("id", "")
+        # Older/alternate shapes.
         name = getattr(request, "tool_name", None) or getattr(request, "name", None)
         args = getattr(request, "args", None) or getattr(request, "tool_input", None) or {}
         if name:
-            return name, args if isinstance(args, dict) else {}
-        return None, {}
+            return name, args if isinstance(args, dict) else {}, ""
+        return None, {}, ""
 
-    @staticmethod
-    def _blocked(request: Any, message: str) -> Any:
-        """Return a tool result carrying the block message without executing."""
+    def _blocked(self, request: Any, message: str) -> Any:
+        _, _, tool_call_id = self._extract(request)
         try:
             from langchain_core.messages import ToolMessage
 
-            call = getattr(request, "tool_call", None) or {}
-            tool_call_id = call.get("id", "") if isinstance(call, dict) else ""
-            return ToolMessage(content=f"[policy] {message}", tool_call_id=tool_call_id)
+            return ToolMessage(content=f"[policy] {message}", tool_call_id=tool_call_id or "policy")
         except Exception:
             return f"[policy] {message}"
