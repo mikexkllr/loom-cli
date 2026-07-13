@@ -142,19 +142,27 @@ def _run_task(settings, prompt: str, *, plan: bool, local_only: bool, airgap: bo
     console.print(_fleet_panel(config, bundle))
     console.print(Panel(prompt, title="Task", border_style="cyan"))
 
+    from loom.core.usage import UsageTracker
+
+    tracker = UsageTracker(config)
+    tracker.start_turn()
+    run_config = {"callbacks": [tracker]}
     inputs = {"messages": [("user", prompt)]}
     try:
-        _stream(bundle.agent, inputs)
+        _stream(bundle.agent, inputs, run_config)
     except Exception as exc:  # streaming API drift — fall back to invoke
         console.print(f"[yellow]streaming unavailable ({exc}); running synchronously…[/yellow]")
-        result = bundle.agent.invoke(inputs)
+        result = bundle.agent.invoke(inputs, config=run_config)
         _print_final(result)
+    receipt = tracker.receipt(turn=False)
+    if receipt:
+        console.print(f"[dim]✻ {receipt}[/dim]")
 
 
-def _stream(agent, inputs) -> None:
+def _stream(agent, inputs, run_config=None) -> None:
     """Stream graph updates and render them as they arrive."""
     last = None
-    for chunk in agent.stream(inputs, stream_mode="updates"):
+    for chunk in agent.stream(inputs, config=run_config, stream_mode="updates"):
         last = chunk
         for node, update in (chunk or {}).items():
             messages = (update or {}).get("messages") if isinstance(update, dict) else None

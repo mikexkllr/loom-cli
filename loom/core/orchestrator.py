@@ -15,7 +15,10 @@ Run modes:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from loom.core.settings import Settings
 
 from loom.core.advisor import make_consult_tool
 from loom.core.artifact_store import summarization_middleware

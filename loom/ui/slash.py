@@ -441,7 +441,7 @@ def _compact(session: "Session", args: str) -> bool:
             "open next steps. Be concise but lose nothing load-bearing.\n\n"
             + "\n".join(lines)
         )
-        summary = str(model.invoke(prompt).content)
+        summary = str(model.invoke(prompt, config={"callbacks": [session.tracker]}).content)
     except Exception as exc:
         session.console.print(f"[loom.err]compact failed:[/loom.err] {exc}")
         return True
