@@ -15,8 +15,10 @@ EXPECTED_COMMANDS = {
     # Claude Code-compatible set
     "help", "exit", "clear", "compact", "cost", "doctor", "init", "mcp",
     "memory", "model", "permissions", "status", "export", "hooks", "vim",
+    "resume", "undo",
     # Loom-specific
     "plan", "local", "yolo", "agents", "models", "settings", "theme", "cwd",
+    "airgap",
 }
 
 
@@ -94,3 +96,85 @@ def test_unknown_command_is_handled(tmp_path, capsys):
 
 def test_default_prompt_symbol_is_claude_code_style():
     assert st.UISettings().prompt_symbol == ">"
+
+
+def test_model_no_args_shows_roles(tmp_path, capsys):
+    s = _session(tmp_path)
+    slash.dispatch(s, "/model")
+    out = capsys.readouterr().out
+    assert "orchestrator" in out and "tester" in out
+
+
+def test_model_role_set_routes_to_settings(tmp_path, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(st, "set_value", lambda key, value, *a, **k: calls.append((key, value)))
+    s = _session(tmp_path)
+    monkeypatch.setattr(s, "reload_settings", lambda: None)
+    slash.dispatch(s, "/model editor ollama/qwen3:14b")
+    slash.dispatch(s, "/model advisor claude-opus-4-8")
+    slash.dispatch(s, "/model claude-sonnet-4-6")  # bare model → orchestrator
+    assert calls == [
+        ("models.subagents.editor", "ollama/qwen3:14b"),
+        ("models.advisor", "claude-opus-4-8"),
+        ("models.orchestrator", "claude-sonnet-4-6"),
+    ]
+
+
+def test_airgap_toggle(tmp_path, capsys):
+    s = _session(tmp_path)
+    slash.dispatch(s, "/airgap")
+    assert s.airgap is True
+    slash.dispatch(s, "/airgap")
+    assert s.airgap is False
+
+
+def test_resume_lists_and_switches_thread(tmp_path, capsys):
+    from loom.core import sessions as sessions_mod
+
+    sessions_mod.record(tmp_path, "loom-20260101-000000", "fix the login bug")
+    s = _session(tmp_path)
+    slash.dispatch(s, "/resume")
+    assert "fix the login bug" in capsys.readouterr().out
+    slash.dispatch(s, "/resume 1")
+    assert s.thread_id == "loom-20260101-000000"
+    slash.dispatch(s, "/resume nope")
+    assert "no such session" in capsys.readouterr().out
+
+
+def test_undo_via_slash(tmp_path, capsys):
+    from loom.core import undo as undo_mod
+
+    target = tmp_path / "x.txt"
+    target.write_text("before")
+    token = undo_mod.current_turn_id.set("t1")
+    try:
+        undo_mod.snapshot(tmp_path, "x.txt")
+        target.write_text("after")
+    finally:
+        undo_mod.current_turn_id.reset(token)
+
+    s = _session(tmp_path)
+    slash.dispatch(s, "/undo")
+    assert target.read_text() == "before"
+    slash.dispatch(s, "/undo")
+    assert "nothing to undo" in capsys.readouterr().out
+
+
+def test_diff_preview_for_write_and_edit(tmp_path):
+    s = _session(tmp_path)
+    (tmp_path / "a.py").write_text("old line\n")
+    diff = s._diff_for("write_file", {"path": "a.py", "content": "new line\n"})
+    text = diff.plain
+    assert "-old line" in text and "+new line" in text
+    diff2 = s._diff_for("edit_file", {"path": "b.py", "old_string": "foo", "new_string": "bar"})
+    assert "-foo" in diff2.plain and "+bar" in diff2.plain
+    assert s._diff_for("execute", {"command": "ls"}) is None
+
+
+def test_first_turn_injects_repo_map_and_mentions(tmp_path):
+    (tmp_path / "main.py").write_text("print('hi')")
+    s = _session(tmp_path)
+    text = s._prepare_text("check @main.py")
+    assert "[Repo map]" in text and "print('hi')" in text
+    # second turn: no repo map again
+    assert "[Repo map]" not in s._prepare_text("next")

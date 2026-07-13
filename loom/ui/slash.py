@@ -99,17 +99,94 @@ def _yolo(session: "Session", args: str) -> bool:
     return True
 
 
-@command("model", "Show or set the orchestrator model: /model gpt-4o")
-def _model(session: "Session", args: str) -> bool:
-    if args.strip():
-        from loom.core import settings as st
+_MODEL_ROLES = ("orchestrator", "advisor", "escalation")
 
-        st.set_value("models.orchestrator", args.strip())
-        session.reload_settings()
-        session.rebuild()
-        session.console.print(f"orchestrator → [loom.accent]{args.strip()}[/loom.accent]")
-    else:
-        session.console.print(f"orchestrator: [loom.accent]{session.settings.models.orchestrator}[/loom.accent]")
+
+def _model_roles(session: "Session") -> list[str]:
+    from loom.subagents import SPECS
+
+    return list(_MODEL_ROLES) + list(SPECS)
+
+
+def _set_role_model(session: "Session", role: str, model: str) -> None:
+    from loom.core import settings as st
+
+    key = {
+        "orchestrator": "models.orchestrator",
+        "advisor": "models.advisor",
+        "escalation": "models.escalation_model",
+    }.get(role, f"models.subagents.{role}")
+    st.set_value(key, model)
+    session.reload_settings()
+    session.rebuild()
+    session.console.print(f"{role} → [loom.accent]{model}[/loom.accent]")
+
+
+def _model_candidates(session: "Session") -> list[str]:
+    """Installed local Ollama models first, then common cloud models."""
+    from loom.core import ollama
+
+    local = [f"ollama/{tag}" for tag in ollama.status(session.settings.models).models]
+    cloud = ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-8"]
+    return local + [c for c in cloud if c not in local]
+
+
+@command("model", "Show models, or set one: /model [role] [model] — /model editor picks interactively")
+def _model(session: "Session", args: str) -> bool:
+    cfg = session.settings.models
+    parts = args.split()
+    roles = _model_roles(session)
+
+    if not parts:
+        table = Table(show_header=True, header_style="loom.accent")
+        for col in ("Role", "Model", "Where"):
+            table.add_column(col)
+        table.add_row("orchestrator", cfg.orchestrator, "local" if cfg.is_local(cfg.orchestrator) else "cloud")
+        table.add_row("advisor", cfg.advisor, "cloud")
+        table.add_row("escalation", cfg.escalation_model, "local" if cfg.is_local(cfg.escalation_model) else "cloud")
+        for name, model in cfg.subagents.items():
+            table.add_row(name, model, "local" if cfg.is_local(model) else "cloud")
+        session.console.print(table)
+        local = [c for c in _model_candidates(session) if c.startswith("ollama/")]
+        if local:
+            session.console.print(f"[loom.dim]installed local models: {', '.join(m[7:] for m in local)}[/loom.dim]")
+        session.console.print("[loom.dim]set: /model <role> <model> · pick interactively: /model <role>[/loom.dim]")
+        return True
+
+    if parts[0] not in roles:
+        # Back-compat: /model <model> sets the orchestrator.
+        _set_role_model(session, "orchestrator", parts[0])
+        return True
+
+    role = parts[0]
+    if len(parts) > 1:
+        _set_role_model(session, role, parts[1])
+        return True
+
+    # Interactive picker: installed ollama models + common cloud models.
+    candidates = _model_candidates(session)
+    if not candidates:
+        session.console.print("[loom.warn]no models found — is the Ollama daemon running?[/loom.warn]")
+        return True
+    current = {
+        "orchestrator": cfg.orchestrator,
+        "advisor": cfg.advisor,
+        "escalation": cfg.escalation_model,
+    }.get(role) or cfg.subagents.get(role, "(inherit)")
+    session.console.print(f"pick a model for [loom.accent]{role}[/loom.accent] (current: {current}):")
+    for i, model in enumerate(candidates, 1):
+        where = "local" if model.startswith("ollama/") else "cloud"
+        session.console.print(f"  [loom.accent]{i}[/loom.accent]  {model}  [loom.dim]({where})[/loom.dim]")
+    from rich.prompt import Prompt
+
+    choice = Prompt.ask("  number (or model name, empty to cancel)", default="")
+    choice = choice.strip()
+    if not choice:
+        session.console.print("[loom.dim]cancelled[/loom.dim]")
+        return True
+    if choice.isdigit() and 1 <= int(choice) <= len(candidates):
+        choice = candidates[int(choice) - 1]
+    _set_role_model(session, role, choice)
     return True
 
 
@@ -191,7 +268,16 @@ def _status(session: "Session", args: str) -> bool:
     from loom.core.mcp import mcp_status
 
     cfg = session.settings.models
-    modes = [m for m, on in (("plan", session.plan), ("local-only", session.local_only), ("yolo", session.yolo)) if on]
+    modes = [
+        m
+        for m, on in (
+            ("plan", session.plan),
+            ("local-only", session.local_only),
+            ("airgap", session.airgap),
+            ("yolo", session.yolo),
+        )
+        if on
+    ]
     mcp_line = ", ".join(
         f"{r['name']} ({r['state']}{', ' + str(len(r['tools'])) + ' tools' if r['tools'] else ''})"
         for r in mcp_status(session.settings)
@@ -206,7 +292,11 @@ def _status(session: "Session", args: str) -> bool:
     table.add_row("[loom.dim]permissions[/loom.dim]", f"default: {session.settings.permissions.default_mode}")
     table.add_row("[loom.dim]mcp[/loom.dim]", mcp_line)
     table.add_row("[loom.dim]memory[/loom.dim]", str(session.memory_path() or "— (create with /init)"))
-    table.add_row("[loom.dim]session[/loom.dim]", f"{u['turns']} turns · {u['input_tokens']} in / {u['output_tokens']} out tokens")
+    table.add_row("[loom.dim]persistence[/loom.dim]", "sqlite (.loom/sessions.db)" if session.durable else "in-memory (no /resume across restarts)")
+    table.add_row(
+        "[loom.dim]session[/loom.dim]",
+        f"{u['turns']} turns · {u['input_tokens']} in / {u['output_tokens']} out tokens · ${u['cloud_cost']:.3f} cloud",
+    )
     session.console.print(Panel(table, title="status", border_style="loom.accent", expand=False))
     return True
 
@@ -230,15 +320,92 @@ def _mcp(session: "Session", args: str) -> bool:
     return True
 
 
-@command("cost", "Show token usage for this session")
+@command("cost", "Show the session cost receipt (cloud vs free local tokens)")
 def _cost(session: "Session", args: str) -> bool:
-    u = session.usage
-    session.console.print(
-        f"session: [loom.accent]{u['turns']}[/loom.accent] turns · "
-        f"[loom.accent]{u['input_tokens']:,}[/loom.accent] input / "
-        f"[loom.accent]{u['output_tokens']:,}[/loom.accent] output tokens"
-    )
-    session.console.print("[loom.dim]local (ollama) tokens are free; cloud tokens are billed by your provider[/loom.dim]")
+    t = session.tracker
+    u = t.session
+    session.console.print(f"session: [loom.accent]{t.turns}[/loom.accent] turns")
+    table = Table(show_header=True, header_style="loom.accent")
+    for col in ("Model", "Where", "In", "Out", "Cost"):
+        table.add_column(col)
+    from loom.core.usage import cost_usd
+
+    for model, mu in u.cloud.items():
+        table.add_row(model, "cloud", f"{mu.input_tokens:,}", f"{mu.output_tokens:,}", f"${cost_usd(model, mu.input_tokens, mu.output_tokens):.3f}")
+    for model, mu in u.local.items():
+        table.add_row(model, "local", f"{mu.input_tokens:,}", f"{mu.output_tokens:,}", "free")
+    if table.row_count:
+        session.console.print(table)
+    receipt = t.receipt(turn=False)
+    if receipt:
+        session.console.print(f"[loom.dim]✻ {receipt}[/loom.dim]")
+    else:
+        session.console.print("[loom.dim]0 tokens spent so far[/loom.dim]")
+    return True
+
+
+@command("resume", "List past sessions, or resume one: /resume [n | thread-id]")
+def _resume(session: "Session", args: str) -> bool:
+    from loom.core import sessions as sessions_mod
+
+    rows = sessions_mod.load_index(session.cwd)
+    if not args.strip():
+        if not rows:
+            session.console.print("[loom.dim]no past sessions in this project[/loom.dim]")
+            return True
+        table = Table(show_header=True, header_style="loom.accent")
+        for col in ("#", "Updated", "Turns", "Title", "Thread"):
+            table.add_column(col)
+        for i, row in enumerate(reversed(rows), 1):
+            table.add_row(str(i), row["updated"], str(row.get("turns", "?")), row["title"], row["thread_id"])
+        session.console.print(table)
+        if not session.durable:
+            session.console.print("[loom.warn]sessions.db unavailable (install langgraph-checkpoint-sqlite) — history won't survive restarts[/loom.warn]")
+        session.console.print("[loom.dim]resume: /resume <#> or /resume <thread-id>[/loom.dim]")
+        return True
+
+    choice = args.strip()
+    target = None
+    if choice.isdigit():
+        ordered = list(reversed(rows))
+        if 1 <= int(choice) <= len(ordered):
+            target = ordered[int(choice) - 1]["thread_id"]
+    else:
+        target = next((r["thread_id"] for r in rows if r["thread_id"] == choice), None)
+    if target is None:
+        session.console.print(f"[loom.err]no such session:[/loom.err] {choice}")
+        return True
+    session.thread_id = target
+    session._memory_sent = True  # resumed thread already has its context
+    session.console.print(f"resumed [loom.accent]{target}[/loom.accent] — continue where you left off")
+    return True
+
+
+@command("undo", "Roll back the file changes of the last turn")
+def _undo(session: "Session", args: str) -> bool:
+    from loom.core import undo as undo_mod
+
+    restored = undo_mod.undo_last(session.cwd)
+    if not restored:
+        session.console.print("[loom.dim]nothing to undo (no snapshotted file writes)[/loom.dim]")
+        return True
+    for rel in restored:
+        session.console.print(f"  ⎿ restored {rel}")
+    session.console.print(f"[loom.accent]↩ rolled back {len(restored)} file(s) from the last turn[/loom.accent]")
+    return True
+
+
+@command("airgap", "Toggle airgap mode — raw code never reaches the cloud")
+def _airgap(session: "Session", args: str) -> bool:
+    session.airgap = not session.airgap
+    session.rebuild()
+    if session.airgap:
+        session.console.print(
+            "airgap: [loom.accent]on[/loom.accent] — cloud orchestrator plans from summaries only; "
+            "local subagents do all file reading; cloud escalation disabled"
+        )
+    else:
+        session.console.print("airgap: [loom.accent]off[/loom.accent]")
     return True
 
 

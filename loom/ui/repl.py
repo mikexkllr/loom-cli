@@ -3,14 +3,15 @@
 Launched by ``loom`` with no task (or ``loom chat``). Uses prompt_toolkit for a
 rich input line (history, key bindings, a live status toolbar) and Rich for
 rendering the orchestrator/subagent stream, styled after Claude Code /
-opencode: a compact welcome box, a bare ``>`` prompt, ``⏺`` bullets for
-assistant text and tool calls, and ``⎿`` continuation lines for results.
-Slash commands (``/help``, ``/model``, ``/mcp`` …) are handled without
-touching the model.
+opencode: a compact welcome box, a bare ``>`` prompt, token-level streaming
+with ``⏺`` bullets for assistant text and tool calls, ``⎿`` continuation
+lines for results, and a cost receipt after every turn. Slash commands
+(``/help``, ``/model``, ``/resume`` …) are handled without touching the model.
 """
 
 from __future__ import annotations
 
+import difflib
 from pathlib import Path
 
 from rich.markdown import Markdown
@@ -18,8 +19,12 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.text import Text
 
+from loom.core import repomap
+from loom.core import sessions as sessions_mod
 from loom.core import settings as settings_mod
+from loom.core import undo
 from loom.core.settings import Settings
+from loom.core.usage import UsageTracker
 from loom.middleware import policy
 from loom.tools import sandbox
 from loom.ui import slash
@@ -32,56 +37,59 @@ _HISTORY_FILE = settings_mod.cfg.USER_CONFIG_DIR / "history"
 MEMORY_FILES = ("LOOM.md", "CLAUDE.md", "AGENTS.md")
 
 
-def _make_checkpointer():
-    """In-memory LangGraph checkpointer for thread persistence within a session.
-
-    Returns None if langgraph isn't importable, in which case the REPL falls
-    back to resending the full transcript each turn.
-    """
-    try:
-        from langgraph.checkpoint.memory import InMemorySaver
-
-        return InMemorySaver()
-    except Exception:
-        try:
-            from langgraph.checkpoint.memory import MemorySaver
-
-            return MemorySaver()
-        except Exception:
-            return None
-
-
 class Session:
     """Mutable state for one interactive Loom session."""
 
-    def __init__(self, settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yolo=False) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        cwd: str = ".",
+        *,
+        plan=False,
+        local_only=False,
+        yolo=False,
+        airgap=False,
+    ) -> None:
         self.settings = settings
         self.cwd = Path(cwd).resolve()
         self.plan = plan
         self.local_only = local_only
         self.yolo = yolo
+        self.airgap = airgap
         self.vim = False
         self.console = make_console(settings.ui)
         self.messages: list = []
         self.bundle = None
-        self.thread_id = "loom-repl"
-        self.checkpointer = _make_checkpointer()
-        self.usage = {"input_tokens": 0, "output_tokens": 0, "turns": 0}
+        self.thread_id = sessions_mod.new_thread_id()
+        self.checkpointer, self.durable = sessions_mod.make_checkpointer(self.cwd)
+        self.tracker = UsageTracker(settings.models)
         self.pending_context: str | None = None  # summary injected after /compact
         self._memory_sent = False
         sandbox.set_root(self.cwd)
+
+    # Back-compat view used by /status and tests.
+    @property
+    def usage(self) -> dict:
+        ci, co = self.tracker.session.tokens(self.tracker.session.cloud)
+        li, lo = self.tracker.session.tokens(self.tracker.session.local)
+        return {
+            "turns": self.tracker.turns,
+            "input_tokens": ci + li,
+            "output_tokens": co + lo,
+            "cloud_cost": self.tracker.session.cloud_cost,
+        }
 
     # ----- lifecycle -----
     def reset(self) -> None:
         self.messages = []
         self._memory_sent = False
         # New thread_id => the checkpointer's prior state is no longer referenced.
-        self._reset_count = getattr(self, "_reset_count", 0) + 1
-        self.thread_id = f"loom-repl-{self._reset_count}"
+        self.thread_id = sessions_mod.new_thread_id()
 
     def reload_settings(self) -> None:
         self.settings = settings_mod.load_settings(self.cwd)
         self.console = make_console(self.settings.ui)
+        self.tracker.config = self.settings.models
 
     def rebuild(self) -> None:
         """Rebuild the orchestrator after a mode/model/settings change."""
@@ -95,16 +103,18 @@ class Session:
                 self.settings,
                 plan=self.plan,
                 local_only=self.local_only,
+                airgap=self.airgap,
                 cwd=str(self.cwd),
                 checkpointer=self.checkpointer,
             )
         return self.bundle
 
     def _run_config(self):
-        """LangGraph config carrying the thread_id (only when persistent)."""
+        """LangGraph config: usage callbacks always, thread_id when persistent."""
+        config: dict = {"callbacks": [self.tracker]}
         if self.bundle is not None and self.bundle.persistent:
-            return {"configurable": {"thread_id": self.thread_id}}
-        return None
+            config["configurable"] = {"thread_id": self.thread_id}
+        return config
 
     # ----- memory / context helpers -----
     def memory_path(self) -> Path | None:
@@ -115,7 +125,8 @@ class Session:
         return None
 
     def _prepare_text(self, text: str) -> str:
-        """Prepend one-time context: the project memory file and any /compact summary."""
+        """Prepend one-time context (project memory, repo map, any /compact
+        summary) and expand @file mentions."""
         parts: list[str] = []
         if not self._memory_sent:
             mem = self.memory_path()
@@ -124,11 +135,17 @@ class Session:
                     parts.append(f"[Project memory — {mem.name}]\n{mem.read_text(encoding='utf-8')}")
                 except OSError:
                     pass
+            try:
+                tree = repomap.repo_map(self.cwd)
+                if tree:
+                    parts.append(f"[Repo map]\n{tree}")
+            except Exception:
+                pass
             self._memory_sent = True
         if self.pending_context:
             parts.append(f"[Summary of the compacted earlier conversation]\n{self.pending_context}")
             self.pending_context = None
-        parts.append(text)
+        parts.append(repomap.expand_mentions(text, self.cwd))
         return "\n\n".join(parts)
 
     def transcript(self) -> list:
@@ -157,6 +174,9 @@ class Session:
             self.console.print(f"[loom.err]could not start orchestrator:[/loom.err] {exc}")
             return
 
+        sessions_mod.record(self.cwd, self.thread_id, text)
+        undo.current_turn_id.set(f"{self.thread_id}-t{self.tracker.turns + 1}")
+        self.tracker.start_turn()
         text = self._prepare_text(text)
 
         # With a checkpointer, the graph persists history under thread_id — send
@@ -167,29 +187,63 @@ class Session:
             self.messages.append(("user", text))
             inputs = {"messages": list(self.messages)}
 
-        self.usage["turns"] += 1
         run_config = self._run_config()
         try:
             self._stream(bundle.agent, inputs, run_config)
+        except KeyboardInterrupt:
+            self.console.print("\n[loom.warn]⏹ interrupted — partial work may have landed; /undo rolls back this turn's file writes[/loom.warn]")
         except Exception as exc:
             self.console.print(f"[loom.warn]streaming unavailable ({exc}); running synchronously…[/loom.warn]")
-            result = bundle.agent.invoke(inputs, config=run_config) if run_config else bundle.agent.invoke(inputs)
+            result = bundle.agent.invoke(inputs, config=run_config)
             self._absorb_result(result)
+        finally:
+            undo.current_turn_id.set("")
+            receipt = self.tracker.receipt(turn=True)
+            if receipt:
+                self.console.print(Text(f"✻ {receipt}", style="loom.dim"))
 
+    # ----- approval prompt with diff preview -----
     def _confirm(self, tool_name: str, tool_input: dict, reason: str) -> bool:
         detail = ", ".join(f"{k}={str(v)[:60]}" for k, v in (tool_input or {}).items())
         self.console.print(
             Panel(f"[loom.tool]{tool_name}[/loom.tool]  {detail}", title=f"approve? ({reason})", border_style="loom.warn")
         )
+        diff = self._diff_for(tool_name, tool_input or {})
+        if diff:
+            self.console.print(diff)
         return Confirm.ask("  run this tool?", default=False)
 
-    # ----- rendering (Claude Code style: ⏺ bullets + ⎿ results) -----
+    def _diff_for(self, tool_name: str, tool_input: dict) -> Text | None:
+        """Unified diff preview for write_file / edit_file approvals."""
+        path = tool_input.get("path")
+        if not path:
+            return None
+        if tool_name == "edit_file":
+            old = str(tool_input.get("old_string", ""))
+            new = str(tool_input.get("new_string", ""))
+        elif tool_name == "write_file":
+            target = self.cwd / path if not Path(path).is_absolute() else Path(path)
+            try:
+                old = target.read_text(encoding="utf-8", errors="replace") if target.exists() else ""
+            except OSError:
+                old = ""
+            new = str(tool_input.get("content", ""))
+        else:
+            return None
+        lines = list(
+            difflib.unified_diff(old.splitlines(), new.splitlines(), fromfile=f"a/{path}", tofile=f"b/{path}", lineterm="")
+        )
+        if not lines:
+            return None
+        out = Text()
+        for line in lines[:80]:
+            style = "loom.subagent" if line.startswith("+") else "loom.err" if line.startswith("-") else "loom.dim"
+            out.append(line + "\n", style=style)
+        if len(lines) > 80:
+            out.append(f"… +{len(lines) - 80} more diff lines\n", style="loom.dim")
+        return out
 
-    def _track_usage(self, msg) -> None:
-        meta = getattr(msg, "usage_metadata", None)
-        if isinstance(meta, dict):
-            self.usage["input_tokens"] += meta.get("input_tokens", 0) or 0
-            self.usage["output_tokens"] += meta.get("output_tokens", 0) or 0
+    # ----- rendering (Claude Code style: ⏺ bullets + ⎿ results) -----
 
     @staticmethod
     def _call_args_brief(call) -> str:
@@ -231,21 +285,92 @@ class Session:
             self.console.print(text)
         self.console.print()
 
-    def _stream(self, agent, inputs, run_config=None) -> None:
+    @staticmethod
+    def _chunk_text(chunk) -> str:
+        content = getattr(chunk, "content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"
+            )
+        return ""
+
+    def _stream(self, agent, inputs, run_config) -> None:
+        """Token-level streaming; falls back to per-update rendering when the
+        installed langgraph doesn't support multi-mode streams."""
+        if not self.settings.ui.streaming:
+            self._stream_updates(agent.stream(inputs, config=run_config, stream_mode="updates"))
+            return
+        try:
+            stream = agent.stream(inputs, config=run_config, stream_mode=["updates", "messages"])
+            self._stream_multi(stream)
+        except (TypeError, ValueError):
+            self._stream_updates(agent.stream(inputs, config=run_config, stream_mode="updates"))
+
+    def _stream_multi(self, stream) -> None:
+        ui = self.settings.ui
+        streamed: set[str] = set()  # finalized token-streamed texts (dedup vs updates)
+        buf: list[str] = []
+        final_text = None
+
+        def finish_block() -> None:
+            nonlocal buf
+            if buf:
+                streamed.add("".join(buf).strip())
+                buf = []
+                self.console.print("\n")
+
+        for item in stream:
+            if not (isinstance(item, tuple) and len(item) == 2):
+                continue
+            mode, payload = item
+            if mode == "messages":
+                chunk, _meta = payload
+                if type(chunk).__name__ != "AIMessageChunk":
+                    continue
+                text = self._chunk_text(chunk)
+                if not text:
+                    continue
+                if not buf:
+                    self.console.print(Text("⏺ ", style="loom.agent"), end="")
+                buf.append(text)
+                self.console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
+                continue
+
+            # updates mode — structure: tool calls, results, non-streamed text
+            finish_block()
+            for node, update in (payload or {}).items():
+                msgs = (update or {}).get("messages") if isinstance(update, dict) else None
+                if not msgs:
+                    continue
+                msg = msgs[-1]
+                if getattr(msg, "type", "") == "tool":
+                    if ui.show_tool_calls:
+                        self._print_tool_result(msg)
+                    continue
+                for call in getattr(msg, "tool_calls", []) or []:
+                    if ui.show_tool_calls:
+                        self._print_tool_call(call, node)
+                text = getattr(msg, "content", "")
+                if text:
+                    text = str(text) if isinstance(text, str) else self._chunk_text(msg)
+                    if text.strip() and text.strip() not in streamed:
+                        self._print_assistant(text, node)
+                    final_text = text
+        finish_block()
+        if final_text is not None and not (self.bundle and self.bundle.persistent):
+            self.messages.append(("assistant", final_text))
+
+    def _stream_updates(self, stream) -> None:
         ui = self.settings.ui
         final_text = None
-        stream = (
-            agent.stream(inputs, config=run_config, stream_mode="updates")
-            if run_config
-            else agent.stream(inputs, stream_mode="updates")
-        )
         for chunk in stream:
             for node, update in (chunk or {}).items():
                 msgs = (update or {}).get("messages") if isinstance(update, dict) else None
                 if not msgs:
                     continue
                 msg = msgs[-1]
-                self._track_usage(msg)
                 if getattr(msg, "type", "") == "tool":
                     if ui.show_tool_calls:
                         self._print_tool_result(msg)
@@ -257,7 +382,6 @@ class Session:
                 if text:
                     self._print_assistant(str(text), node)
                     final_text = str(text)
-        # Only mirror into the local transcript when the graph isn't persisting.
         if final_text is not None and not (self.bundle and self.bundle.persistent):
             self.messages.append(("assistant", final_text))
 
@@ -293,12 +417,15 @@ def _toolbar(session: Session):
         modes.append("PLAN")
     if session.local_only:
         modes.append("LOCAL")
+    if session.airgap:
+        modes.append("AIRGAP")
     if session.yolo:
         modes.append("YOLO")
     if session.vim:
         modes.append("VIM")
     mode_str = " ".join(modes) or "normal"
-    return f" {session.settings.models.orchestrator} · {mode_str} · /help "
+    cost = session.tracker.session.cloud_cost
+    return f" {session.settings.models.orchestrator} · {mode_str} · ${cost:.3f} · /help "
 
 
 # ---------------------------------------------------------------------------
@@ -306,8 +433,8 @@ def _toolbar(session: Session):
 # ---------------------------------------------------------------------------
 
 
-def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yolo=False) -> None:
-    session = Session(settings, cwd, plan=plan, local_only=local_only, yolo=yolo)
+def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yolo=False, airgap=False) -> None:
+    session = Session(settings, cwd, plan=plan, local_only=local_only, yolo=yolo, airgap=airgap)
     if settings.ui.banner:
         session.console.print(_banner(session))
 

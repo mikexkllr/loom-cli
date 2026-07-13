@@ -76,6 +76,14 @@ LOCAL_ONLY_SUFFIX = """
 LOCAL-ONLY MODE: No cloud calls are permitted. The Advisor and cloud reviewer are
 unavailable. Rely on local subagents and your own judgment."""
 
+AIRGAP_SUFFIX = """
+
+AIRGAP MODE: Raw source code must NEVER enter your context or leave this
+machine. You have no read_file tool — delegate ALL file reading to local
+subagents and work from their distilled summaries only. Never ask a subagent
+to return raw file contents; ask for summaries, signatures, and line
+references. Cloud escalation is disabled."""
+
 NO_TESTER_SUFFIX = """
 
 NOTE: The tester subagent is unavailable in this run (no browser/MCP tools
@@ -102,6 +110,7 @@ def build_orchestrator(
     *,
     plan: bool = False,
     local_only: bool = False,
+    airgap: bool = False,
     advisor_threshold: str | None = None,
     cwd: str = ".",
     checkpointer: Any | None = None,
@@ -125,6 +134,10 @@ def build_orchestrator(
 
     if advisor_threshold is not None:
         config = config.model_copy(update={"advisor_threshold": advisor_threshold})
+    if airgap:
+        # Cloud escalation would ship raw prompts (file contents) to the cloud;
+        # an unbuildable escalation model makes the guard fall through to local.
+        config = config.model_copy(update={"escalation_model": ""})
 
     # ----- pick the orchestrator model -----
     if local_only:
@@ -146,8 +159,9 @@ def build_orchestrator(
     subagents = build_all_subagents(config)
     if plan:
         subagents = [s for s in subagents if s["name"] in _PLAN_SUBAGENTS]
-    if local_only:
-        # Drop any cloud-backed subagent (e.g. reviewer on Haiku).
+    if local_only or airgap:
+        # Drop any cloud-backed subagent (e.g. reviewer on Haiku). In airgap
+        # mode only local subagents may touch raw code.
         subagents = [s for s in subagents if config.is_local(config.subagents.get(s["name"], ""))]
 
     # The tester only exists when browser MCP tools actually connected.
@@ -170,7 +184,9 @@ def build_orchestrator(
                 sub["tools"] = list(sub["tools"]) + other_mcp
 
     # ----- orchestrator tools -----
-    tools: list[Any] = [read_file]
+    # Airgap: the (cloud) orchestrator loses read_file so raw file contents
+    # can never enter its context — only subagent summaries.
+    tools: list[Any] = [] if airgap else [read_file]
     if not local_only:
         tools.append(make_consult_tool(config))
 
@@ -180,6 +196,8 @@ def build_orchestrator(
         system += PLAN_SUFFIX
     if local_only:
         system += LOCAL_ONLY_SUFFIX
+    if airgap:
+        system += AIRGAP_SUFFIX
     if not has_tester and not plan:
         system += NO_TESTER_SUFFIX
 
@@ -219,5 +237,5 @@ def build_orchestrator(
         persistent=persistent,
         model_string=orch_model_string,
         subagent_names=[s["name"] for s in subagents],
-        mode="plan" if plan else ("local-only" if local_only else "normal"),
+        mode="plan" if plan else ("local-only" if local_only else ("airgap" if airgap else "normal")),
     )

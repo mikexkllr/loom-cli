@@ -7,6 +7,7 @@ is dropped from the fleet for that run.
 """
 
 from loom.subagents.base import ISOLATION_PREAMBLE, SubagentSpec
+from loom.tools import write_file
 
 SPEC = SubagentSpec(
     name="tester",
@@ -27,10 +28,13 @@ SPEC = SubagentSpec(
         "After acting, re-snapshot to confirm the expected outcome actually "
         "appeared. On failure, capture the failing step, what you expected vs. "
         "what the page showed, and any console/network errors the browser "
-        "tools expose. Snapshots are large — keep them to yourself and return "
-        "only a terse verdict: PASS or FAIL per step, plus the key evidence "
-        "and (on failure) the most likely cause."
+        "tools expose. Snapshots are large — keep them to yourself.\n\n"
+        "Before returning, write your FULL evidence report to "
+        ".loom/verifications/<timestamp>-<short-slug>.md via write_file: the "
+        "journey, each step's expected vs observed outcome, and any errors. "
+        "Then return only a terse verdict — PASS or FAIL per step, the report "
+        "path, and (on failure) the most likely cause."
     ),
-    tools=[],  # Playwright MCP tools injected at build time
+    tools=[write_file],  # + Playwright MCP tools injected at build time
     mode="write",
 )

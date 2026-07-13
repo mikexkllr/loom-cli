@@ -80,8 +80,10 @@ Slash commands (Claude Code-compatible where it makes sense):
 | Command | What it does |
 |---|---|
 | `/help` | list all commands |
-| `/status` | version, models, modes, MCP, session usage |
-| `/model [name]` | show or switch the orchestrator model |
+| `/status` | version, models, modes, MCP, persistence, session cost |
+| `/model` | show every role's model + installed Ollama models |
+| `/model <role>` | interactive picker (installed local models + cloud) |
+| `/model <role> <model>` | assign any model to any role |
 | `/agents` | subagents and their models |
 | `/models` | local Ollama daemon + model status |
 | `/mcp` | MCP servers, connection state, tools |
@@ -89,7 +91,10 @@ Slash commands (Claude Code-compatible where it makes sense):
 | `/config`, `/settings` | show or set settings (`/settings ui.theme light`) |
 | `/hooks` | configured tool hooks |
 | `/compact` | summarize the conversation, free up context |
-| `/cost` | token usage this session |
+| `/cost` | per-model cost receipt: cloud spend vs free local tokens |
+| `/resume` | list past sessions and continue one (SQLite-backed) |
+| `/undo` | roll back the last turn's file writes |
+| `/airgap` | toggle airgap mode — raw code never reaches the cloud |
 | `/clear` | reset the conversation |
 | `/init` | analyze the codebase, write a `LOOM.md` memory file |
 | `/memory` | show the project memory file |
@@ -99,9 +104,42 @@ Slash commands (Claude Code-compatible where it makes sense):
 | `/plan`, `/local`, `/yolo` | toggle plan / local-only / auto-approve |
 | `/cwd`, `/exit` | sandbox root · quit |
 
-The project memory file (`LOOM.md`, or `CLAUDE.md`/`AGENTS.md` if present) is
-sent with your first message each session. When a tool needs approval (per
-your permission rules), Loom asks inline — unless `/yolo` is on.
+The project memory file (`LOOM.md`, or `CLAUDE.md`/`AGENTS.md` if present) and
+a compact repo map are sent with your first message each session, and `@path`
+mentions in your prompt inline that file's contents. Assistant text streams
+token-by-token. When a tool needs approval (per your permission rules), Loom
+asks inline with a unified diff preview for file writes — unless `/yolo` is
+on — and every write is snapshotted so `/undo` can roll a turn back.
+
+### Cost receipts
+
+After every turn Loom prints a receipt — the measurable version of the hybrid
+pitch:
+
+```
+✻ $0.052 cloud (10.0k in / 1.5k out) + 98.0k local tokens (free) · all-cloud est. $0.443 · session $0.052
+```
+
+The `all-cloud est.` prices the free local tokens at the cloud orchestrator's
+rates: what this task would have cost on an all-cloud agent. `/cost` breaks
+the session down per model.
+
+### Airgap mode (`--airgap` / `/airgap`)
+
+For code that must not leave the machine: local subagents do ALL file
+reading, the cloud orchestrator loses its `read_file` tool and plans from
+distilled summaries only, cloud-backed subagents are dropped, and the
+prompt-size escalation to cloud is disabled. You keep the strong cloud
+planner without ever uploading source code. (`--local-only` is the stricter
+variant: no cloud calls at all.)
+
+### Evals
+
+`python scripts/eval.py` runs the task suite in [evals/tasks.yaml](evals/tasks.yaml)
+against fixture projects — each task runs headless, its `check` command
+decides pass/fail, and the report records wall time, local/cloud token split,
+actual cloud spend, and the all-cloud estimate. Use it to validate model
+routing choices (`/model editor …`) with numbers instead of vibes.
 
 ### One-shot
 

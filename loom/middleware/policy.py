@@ -48,6 +48,7 @@ class PolicyMiddleware(AgentMiddleware):
         gate = self._gate(request)
         if gate is not None:
             return gate  # blocked/denied → short-circuit with a ToolMessage
+        self._snapshot(request)
         result = handler(request)
         self._post(request)
         return result
@@ -56,9 +57,21 @@ class PolicyMiddleware(AgentMiddleware):
         gate = self._gate(request)
         if gate is not None:
             return gate
+        self._snapshot(request)
         result = await handler(request)
         self._post(request)
         return result
+
+    def _snapshot(self, request: Any) -> None:
+        """Record the pre-write file state so /undo can roll the turn back."""
+        name, args, _ = self._extract(request)
+        if name in ("write_file", "edit_file") and args.get("path"):
+            try:
+                from loom.core import undo
+
+                undo.snapshot(self.cwd, args["path"])
+            except Exception:
+                pass  # snapshots are best-effort; never block the write
 
     # --- shared gate/post logic ---
     def _gate(self, request: Any) -> Any | None:

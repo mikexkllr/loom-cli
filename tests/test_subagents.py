@@ -43,8 +43,9 @@ def test_tool_sets_match_spec():
     general_tools = {t.name for t in SPECS["general"].tools}
     assert "execute" in general_tools and "write_file" in general_tools
 
-    # tester's browser_* tools come from the Playwright MCP server at build time.
-    assert SPECS["tester"].tools == []
+    # tester: write_file for evidence reports; browser_* tools come from the
+    # Playwright MCP server at build time.
+    assert {t.name for t in SPECS["tester"].tools} == {"write_file"}
 
 
 def test_describe_subagents_marks_local_vs_cloud():

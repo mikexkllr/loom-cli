@@ -1,0 +1,30 @@
+# Loom eval tasks — run with `python scripts/eval.py`.
+#
+# Each task gets a fresh temp copy of its fixture directory. Loom runs the
+# prompt against it (yolo, headless), then `check` runs in that directory —
+# exit 0 = pass. Keep tasks small and deterministic; the goal is a repeatable
+# local-vs-cloud routing benchmark, not SWE-bench.
+
+- name: fix-off-by-one
+  fixture: fixtures/off_by_one
+  prompt: >
+    The function last_n in utils.py has a bug: last_n([1,2,3], 2) should
+    return [2, 3] but doesn't. Fix it. Do not change test_utils.py.
+  check: python -m pytest test_utils.py -q
+
+- name: add-function
+  fixture: fixtures/add_function
+  prompt: >
+    Add a function `slugify(text: str) -> str` to text_tools.py that
+    lowercases, replaces runs of non-alphanumeric characters with single
+    hyphens, and strips leading/trailing hyphens. Do not change
+    test_text_tools.py.
+  check: python -m pytest test_text_tools.py -q
+
+- name: write-tests
+  fixture: fixtures/write_tests
+  prompt: >
+    Write pytest tests for the `parse_version` function in versions.py in a
+    new file test_versions.py. Cover normal versions, missing patch, and
+    invalid input. The tests must pass.
+  check: python -m pytest test_versions.py -q

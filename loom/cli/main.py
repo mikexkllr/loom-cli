@@ -53,6 +53,7 @@ def main(
     prompt: Optional[str] = typer.Argument(None, help="The task to run. Omit to open the interactive REPL."),
     plan: bool = typer.Option(False, "--plan", help="Plan-first, read-only exploration before any writes."),
     local_only: bool = typer.Option(False, "--local-only", help="No cloud calls — local models only."),
+    airgap: bool = typer.Option(False, "--airgap", help="Raw code never reaches the cloud: local subagents read files, the cloud orchestrator sees only summaries."),
     yolo: bool = typer.Option(False, "--yolo", help="Auto-approve tools that would otherwise ask."),
     advisor_threshold: Optional[str] = typer.Option(
         None, "--advisor-threshold", help="When to auto-consult the advisor: low | medium | high."
@@ -69,16 +70,20 @@ def main(
     if not prompt:
         from loom.ui import repl
 
-        repl.run(settings, cwd=root, plan=plan, local_only=local_only, yolo=yolo)
+        repl.run(settings, cwd=root, plan=plan, local_only=local_only, yolo=yolo, airgap=airgap)
         raise typer.Exit()
 
-    _run_task(settings, prompt, plan=plan, local_only=local_only, yolo=yolo, advisor_threshold=advisor_threshold, root=root)
+    _run_task(
+        settings, prompt, plan=plan, local_only=local_only, airgap=airgap, yolo=yolo,
+        advisor_threshold=advisor_threshold, root=root,
+    )
 
 
 @app.command("chat")
 def chat(
     plan: bool = typer.Option(False, "--plan"),
     local_only: bool = typer.Option(False, "--local-only"),
+    airgap: bool = typer.Option(False, "--airgap"),
     yolo: bool = typer.Option(False, "--yolo"),
     root: str = typer.Option(".", "--root"),
 ) -> None:
@@ -86,10 +91,10 @@ def chat(
     sandbox.set_root(root)
     from loom.ui import repl
 
-    repl.run(settings_mod.load_settings(root), cwd=root, plan=plan, local_only=local_only, yolo=yolo)
+    repl.run(settings_mod.load_settings(root), cwd=root, plan=plan, local_only=local_only, yolo=yolo, airgap=airgap)
 
 
-def _run_task(settings, prompt: str, *, plan: bool, local_only: bool, yolo: bool, advisor_threshold, root: str) -> None:
+def _run_task(settings, prompt: str, *, plan: bool, local_only: bool, airgap: bool = False, yolo: bool, advisor_threshold, root: str) -> None:
     from loom.core.orchestrator import build_orchestrator
     from loom.middleware import policy
 
@@ -99,7 +104,8 @@ def _run_task(settings, prompt: str, *, plan: bool, local_only: bool, yolo: bool
     config = settings.models
     try:
         bundle = build_orchestrator(
-            settings, plan=plan, local_only=local_only, advisor_threshold=advisor_threshold, cwd=root
+            settings, plan=plan, local_only=local_only, airgap=airgap,
+            advisor_threshold=advisor_threshold, cwd=root,
         )
     except ModuleNotFoundError as exc:
         console.print(
