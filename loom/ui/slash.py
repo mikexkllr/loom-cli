@@ -293,6 +293,10 @@ def _status(session: "Session", args: str) -> bool:
     table.add_row("[loom.dim]mcp[/loom.dim]", mcp_line)
     table.add_row("[loom.dim]memory[/loom.dim]", str(session.memory_path() or "— (create with /init)"))
     table.add_row("[loom.dim]persistence[/loom.dim]", "sqlite (.loom/sessions.db)" if session.durable else "in-memory (no /resume across restarts)")
+    escalations = sum(
+        getattr(g, "escalation_count", 0) for g in getattr(session.bundle, "guards", []) or []
+    ) if session.bundle is not None else 0
+    table.add_row("[loom.dim]escalations[/loom.dim]", f"{escalations} local→cloud (prompt-size guard)")
     table.add_row(
         "[loom.dim]session[/loom.dim]",
         f"{u['turns']} turns · {u['input_tokens']} in / {u['output_tokens']} out tokens · ${u['cloud_cost']:.3f} cloud",

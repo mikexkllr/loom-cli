@@ -162,6 +162,8 @@ class OrchestratorBundle:
     # role -> original local model, for every role rerouted to the cloud
     # because Ollama couldn't serve it this session.
     fallbacks: dict[str, str] = field(default_factory=dict)
+    # PromptSizeGuard instances, so the UI can report escalation counts.
+    guards: list[Any] = field(default_factory=list)
 
 
 def build_orchestrator(
@@ -300,10 +302,15 @@ def build_orchestrator(
     else:
         agent = create_deep_agent(**kwargs)
 
+    from loom.middleware.prompt_size_guard import PromptSizeGuard
+
+    guards = [m for s in subagents for m in s.get("middleware", []) if isinstance(m, PromptSizeGuard)]
+
     return OrchestratorBundle(
         agent=agent,
         persistent=persistent,
         fallbacks=fallbacks,
+        guards=guards,
         model_string=orch_model_string,
         subagent_names=[s["name"] for s in subagents],
         mode="plan" if plan else ("local-only" if local_only else ("airgap" if airgap else "normal")),

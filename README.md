@@ -1,5 +1,7 @@
 # Loom
 
+[![CI](https://github.com/mikexkllr/loom-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/mikexkllr/loom-cli/actions/workflows/ci.yml)
+
 A hybrid local/cloud multi-agent CLI coding assistant. A strong **cloud
 orchestrator** plans and routes; specialized **subagents** — mostly local
 [Ollama](https://ollama.com) models — handle isolated, bounded subtasks in their
@@ -298,7 +300,12 @@ loom/
 │   ├── config.py           # config.yaml (model routing) loader + validation
 │   ├── settings.py         # layered settings.json loader
 │   ├── permissions.py      # allow/ask/deny rule engine
-│   └── hooks.py            # pre/post tool-use hook runner
+│   ├── hooks.py            # pre/post tool-use hook runner
+│   ├── mcp.py              # persistent MCP sessions (Playwright browser)
+│   ├── usage.py            # token tracking + cost receipts
+│   ├── sessions.py         # SQLite persistence + /resume index
+│   ├── undo.py             # per-turn file snapshots for /undo
+│   └── repomap.py          # repo map + @file mention expansion
 ├── subagents/              # explorer, editor, bash, searcher, reviewer, general, tester
 ├── middleware/
 │   ├── prompt_size_guard.py
@@ -308,10 +315,11 @@ loom/
 │   ├── repl.py             # interactive terminal chat loop
 │   ├── slash.py            # /command registry
 │   └── theme.py            # Rich themes from ui settings
-├── cli/main.py             # Typer app + Rich streaming
-└── config/
-    ├── default_config.yaml   # model routing defaults
-    └── default_settings.json # permissions / hooks / env / ui defaults
+├── cli/main.py             # Typer app + Rich streaming + loom doctor
+├── config/
+│   ├── default_config.yaml   # model routing defaults
+│   └── default_settings.json # permissions / hooks / env / ui / mcp defaults
+evals/                      # eval tasks + fixtures (scripts/eval.py)
 ```
 
 Built on [`deepagents`](https://docs.langchain.com/oss/python/deepagents) /
