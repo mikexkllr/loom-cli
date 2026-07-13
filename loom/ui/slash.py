@@ -90,12 +90,78 @@ def _local(session: "Session", args: str) -> bool:
     return True
 
 
-@command("yolo", "Toggle auto-approve for tools that would ask")
+@command("yolo", "Toggle full auto-approve (shorthand for /mode yolo)")
 def _yolo(session: "Session", args: str) -> bool:
-    session.yolo = not session.yolo
-    session.console.print(
-        f"auto-approve: [loom.warn]{'ON — tools run without asking' if session.yolo else 'off'}[/loom.warn]"
-    )
+    if session.yolo:
+        session.yolo = False
+        session.accept_edits = False
+        session.console.print("auto-approve: [loom.warn]off[/loom.warn] (mode: default)")
+    else:
+        session.yolo = True
+        session.accept_edits = False
+        session.console.print("auto-approve: [loom.warn]ON — every tool runs without asking[/loom.warn]")
+    return True
+
+
+@command("mode", "Show or set the approval mode: /mode [default|accept-edits|yolo] (Shift+Tab cycles)")
+def _mode(session: "Session", args: str) -> bool:
+    choice = args.strip().lower()
+    if not choice:
+        choice = session.cycle_approval_mode()
+    elif choice in ("default", "normal"):
+        session.yolo = False
+        session.accept_edits = False
+        choice = "default"
+    elif choice in ("accept-edits", "edits", "accept_edits"):
+        session.yolo = False
+        session.accept_edits = True
+        choice = "accept-edits"
+    elif choice == "yolo":
+        session.yolo = True
+        session.accept_edits = False
+    else:
+        session.console.print(f"[loom.err]unknown mode:[/loom.err] {choice} (default | accept-edits | yolo)")
+        return True
+    desc = {
+        "default": "every ask-tool prompts you",
+        "accept-edits": "file edits auto-approve; shell and the rest still ask",
+        "yolo": "everything auto-approves",
+    }[choice]
+    session.console.print(f"mode: [loom.accent]{choice}[/loom.accent] — {desc}")
+    return True
+
+
+def parse_loop_args(args: str) -> tuple[int, str, str | None]:
+    """``/loop [N] <prompt> [--until "cmd"]`` → (max_iters, prompt, until)."""
+    until = None
+    if args.strip().startswith("--until "):
+        until = args.strip()[len("--until ") :].strip().strip("\"'") or None
+        args = ""
+    elif " --until " in args:
+        args, _, until = args.partition(" --until ")
+        until = until.strip().strip("\"'") or None
+    parts = args.split(maxsplit=1)
+    max_iters = 10
+    if parts and parts[0].isdigit():
+        max_iters = max(1, min(int(parts[0]), 100))
+        args = parts[1] if len(parts) > 1 else ""
+    return max_iters, args.strip(), until
+
+
+@command("loop", "Iterate on a task until done: /loop [N] <task> [--until \"pytest -q\"]")
+def _loop(session: "Session", args: str) -> bool:
+    max_iters, prompt, until = parse_loop_args(args)
+    if not prompt and not until:
+        session.console.print(
+            "usage: [loom.accent]/loop [N] <task> [--until \"check command\"][/loom.accent]\n"
+            "[loom.dim]runs up to N iterations (default 10); stops when the agent reports\n"
+            "LOOP_COMPLETE, or — with --until — when the check command exits 0.\n"
+            "check failures are fed back into the next iteration.[/loom.dim]"
+        )
+        return True
+    if not prompt:
+        prompt = f"Make the check command `{until}` pass."
+    session.run_loop(prompt, max_iters=max_iters, until=until)
     return True
 
 
@@ -274,10 +340,11 @@ def _status(session: "Session", args: str) -> bool:
             ("plan", session.plan),
             ("local-only", session.local_only),
             ("airgap", session.airgap),
-            ("yolo", session.yolo),
         )
         if on
     ]
+    if session.approval_mode != "default":
+        modes.append(session.approval_mode)
     mcp_line = ", ".join(
         f"{r['name']} ({r['state']}{', ' + str(len(r['tools'])) + ' tools' if r['tools'] else ''})"
         for r in mcp_status(session.settings)

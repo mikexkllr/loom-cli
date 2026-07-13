@@ -103,7 +103,9 @@ Slash commands (Claude Code-compatible where it makes sense):
 | `/export [path]` | save the transcript to markdown |
 | `/doctor` | health-check your setup (ollama, keys, npx, MCP) |
 | `/theme`, `/vim` | UI theme · vim editing mode |
-| `/plan`, `/local`, `/yolo` | toggle plan / local-only / auto-approve |
+| `/mode [m]` | approval mode: default / accept-edits / yolo (Shift+Tab cycles) |
+| `/loop [N] <task>` | iterate until done — optional `--until "pytest -q"` gate |
+| `/plan`, `/local`, `/yolo` | toggle plan / local-only / full auto-approve |
 | `/cwd`, `/exit` | sandbox root · quit |
 
 The project memory file (`LOOM.md`, or `CLAUDE.md`/`AGENTS.md` if present) and
@@ -112,6 +114,33 @@ mentions in your prompt inline that file's contents. Assistant text streams
 token-by-token. When a tool needs approval (per your permission rules), Loom
 asks inline with a unified diff preview for file writes — unless `/yolo` is
 on — and every write is snapshotted so `/undo` can roll a turn back.
+
+### Approval modes
+
+Like Claude Code, **Shift+Tab** cycles the permission mode (also `/mode`):
+
+| Mode | Behavior |
+|---|---|
+| `default` | every ask-rule tool prompts you (with a diff preview for writes) |
+| `accept-edits` | file writes auto-approve; shell and everything else still ask |
+| `yolo` | everything auto-approves (`/yolo`, `--yolo`) |
+
+`deny` rules always win — even in yolo, `execute(sudo *)` stays blocked.
+
+### Loop mode
+
+Iterate on a task autonomously until it's actually done:
+
+```
+/loop 8 fix the failing test suite --until "pytest -q"
+loom --loop 8 --until "pytest -q" "fix the failing test suite"
+```
+
+Each iteration runs a full agent turn. With `--until`, the check command
+decides completion and its failure output is fed into the next iteration;
+without it, the loop stops when the agent reports the task complete
+(`LOOP_COMPLETE`). Ctrl-C stops the loop; `/undo` rolls back the last turn.
+Pair with `accept-edits` or `yolo` so approvals don't pause the loop.
 
 ### Cost receipts
 

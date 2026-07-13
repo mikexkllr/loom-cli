@@ -75,6 +75,9 @@ def main(
     local_only: bool = typer.Option(False, "--local-only", help="No cloud calls — local models only."),
     airgap: bool = typer.Option(False, "--airgap", help="Raw code never reaches the cloud: local subagents read files, the cloud orchestrator sees only summaries."),
     yolo: bool = typer.Option(False, "--yolo", help="Auto-approve tools that would otherwise ask."),
+    accept_edits: bool = typer.Option(False, "--accept-edits", help="Auto-approve file edits only; shell still asks."),
+    loop: int = typer.Option(0, "--loop", help="Loop mode: iterate on the task up to N times until done."),
+    until: Optional[str] = typer.Option(None, "--until", help="Loop stop condition: shell command that must exit 0."),
     advisor_threshold: Optional[str] = typer.Option(
         None, "--advisor-threshold", help="When to auto-consult the advisor: low | medium | high."
     ),
@@ -95,6 +98,7 @@ def main(
 
     _run_task(
         settings, prompt, plan=plan, local_only=local_only, airgap=airgap, yolo=yolo,
+        accept_edits=accept_edits, loop=loop, until=until,
         advisor_threshold=advisor_threshold, root=root,
     )
 
@@ -114,76 +118,47 @@ def chat(
     repl.run(settings_mod.load_settings(root), cwd=root, plan=plan, local_only=local_only, yolo=yolo, airgap=airgap)
 
 
-def _run_task(settings, prompt: str, *, plan: bool, local_only: bool, airgap: bool = False, yolo: bool, advisor_threshold, root: str) -> None:
-    from loom.core.orchestrator import build_orchestrator
-    from loom.middleware import policy
+def _run_task(
+    settings,
+    prompt: str,
+    *,
+    plan: bool,
+    local_only: bool,
+    airgap: bool = False,
+    yolo: bool,
+    accept_edits: bool = False,
+    loop: int = 0,
+    until: Optional[str] = None,
+    advisor_threshold,
+    root: str,
+) -> None:
+    """Headless task run — same Session engine (rendering, receipts, loop) as
+    the REPL, minus the input loop."""
+    from loom.ui.repl import Session
 
     settings.apply_env()
-    policy.auto_approve.set(yolo)
+    if advisor_threshold is not None:
+        settings.models = settings.models.model_copy(update={"advisor_threshold": advisor_threshold})
 
-    config = settings.models
+    session = Session(settings, cwd=root, plan=plan, local_only=local_only, yolo=yolo, airgap=airgap)
+    session.accept_edits = accept_edits
+
     try:
-        bundle = build_orchestrator(
-            settings, plan=plan, local_only=local_only, airgap=airgap,
-            advisor_threshold=advisor_threshold, cwd=root,
-        )
+        bundle = session.ensure_bundle()
     except ModuleNotFoundError as exc:
-        console.print(
-            f"[red]Missing dependency:[/red] {exc}. Install with [bold]pip install -e .[/bold]"
-        )
+        console.print(f"[red]Missing dependency:[/red] {exc}. Install with [bold]pip install -e .[/bold]")
+        raise typer.Exit(1)
+    except RuntimeError as exc:  # e.g. local-only without Ollama
+        console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1)
 
-    if bundle.fallbacks:
-        roles = ", ".join(sorted(bundle.fallbacks))
-        console.print(
-            f"[yellow]⚠ Ollama unavailable — {roles} running on {config.cloud_fallback} "
-            f"this session (billed). Start Ollama and `loom models pull` to go hybrid.[/yellow]"
-        )
-    console.print(_fleet_panel(config, bundle))
-    console.print(Panel(prompt, title="Task", border_style="cyan"))
+    session.console.print(_fleet_panel(settings.models, bundle))
+    session.console.print(Panel(prompt, title="Task", border_style="cyan"))
 
-    from loom.core.usage import UsageTracker
-
-    tracker = UsageTracker(config)
-    tracker.start_turn()
-    run_config = {"callbacks": [tracker]}
-    inputs = {"messages": [("user", prompt)]}
-    try:
-        _stream(bundle.agent, inputs, run_config)
-    except Exception as exc:  # streaming API drift — fall back to invoke
-        console.print(f"[yellow]streaming unavailable ({exc}); running synchronously…[/yellow]")
-        result = bundle.agent.invoke(inputs, config=run_config)
-        _print_final(result)
-    receipt = tracker.receipt(turn=False)
-    if receipt:
-        console.print(f"[dim]✻ {receipt}[/dim]")
-
-
-def _stream(agent, inputs, run_config=None) -> None:
-    """Stream graph updates and render them as they arrive."""
-    last = None
-    for chunk in agent.stream(inputs, config=run_config, stream_mode="updates"):
-        last = chunk
-        for node, update in (chunk or {}).items():
-            messages = (update or {}).get("messages") if isinstance(update, dict) else None
-            if not messages:
-                console.print(f"[dim]· {node}[/dim]")
-                continue
-            msg = messages[-1]
-            text = getattr(msg, "content", "")
-            if text:
-                console.print(Panel(str(text), title=f"[bold]{node}[/bold]", border_style="green"))
-            for call in getattr(msg, "tool_calls", []) or []:
-                name = call.get("name", "?") if isinstance(call, dict) else getattr(call, "name", "?")
-                console.print(f"  [magenta]→ {name}[/magenta]")
-    if last is not None:
-        console.rule("[dim]done[/dim]")
-
-
-def _print_final(result) -> None:
-    messages = result.get("messages", []) if isinstance(result, dict) else []
-    if messages:
-        console.print(Panel(str(getattr(messages[-1], "content", messages[-1])), title="Result"))
+    if loop > 0:
+        session.run_loop(prompt, max_iters=loop, until=until)
+    else:
+        session.run_turn(prompt)
 
 
 def _fleet_panel(config: cfg.LoomConfig, bundle) -> Panel:

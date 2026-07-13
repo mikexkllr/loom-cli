@@ -55,8 +55,10 @@ class Session:
         self.plan = plan
         self.local_only = local_only
         self.yolo = yolo
+        self.accept_edits = False
         self.airgap = airgap
         self.vim = False
+        self._interrupted = False
         self.console = make_console(settings.ui)
         self.messages: list = []
         self.bundle = None
@@ -66,6 +68,22 @@ class Session:
         self.pending_context: str | None = None  # summary injected after /compact
         self._memory_sent = False
         sandbox.set_root(self.cwd)
+
+    # ----- permission modes (Claude Code-style: default → accept-edits → yolo)
+    @property
+    def approval_mode(self) -> str:
+        if self.yolo:
+            return "yolo"
+        if self.accept_edits:
+            return "accept-edits"
+        return "default"
+
+    def cycle_approval_mode(self) -> str:
+        order = ("default", "accept-edits", "yolo")
+        nxt = order[(order.index(self.approval_mode) + 1) % len(order)]
+        self.accept_edits = nxt == "accept-edits"
+        self.yolo = nxt == "yolo"
+        return nxt
 
     # Back-compat view used by /status and tests.
     @property
@@ -168,18 +186,21 @@ class Session:
         return list(self.messages)
 
     # ----- a single turn -----
-    def run_turn(self, text: str) -> None:
+    def run_turn(self, text: str) -> str | None:
+        """Run one turn; returns the final assistant text (None on failure)."""
         policy.auto_approve.set(self.yolo)
+        policy.auto_approve_edits.set(self.accept_edits)
         policy.confirm_callback.set(self._confirm)
+        self._interrupted = False
 
         try:
             bundle = self.ensure_bundle()
         except ModuleNotFoundError as exc:
             self.console.print(f"[loom.err]missing dependency:[/loom.err] {exc} — run `pip install -e .`")
-            return
+            return None
         except Exception as exc:
             self.console.print(f"[loom.err]could not start orchestrator:[/loom.err] {exc}")
-            return
+            return None
 
         sessions_mod.record(self.cwd, self.thread_id, text)
         undo.current_turn_id.set(f"{self.thread_id}-t{self.tracker.turns + 1}")
@@ -195,19 +216,63 @@ class Session:
             inputs = {"messages": list(self.messages)}
 
         run_config = self._run_config()
+        final_text: str | None = None
         try:
-            self._stream(bundle.agent, inputs, run_config)
+            final_text = self._stream(bundle.agent, inputs, run_config)
         except KeyboardInterrupt:
+            self._interrupted = True
             self.console.print("\n[loom.warn]⏹ interrupted — partial work may have landed; /undo rolls back this turn's file writes[/loom.warn]")
         except Exception as exc:
             self.console.print(f"[loom.warn]streaming unavailable ({exc}); running synchronously…[/loom.warn]")
             result = bundle.agent.invoke(inputs, config=run_config)
-            self._absorb_result(result)
+            final_text = self._absorb_result(result)
         finally:
             undo.current_turn_id.set("")
             receipt = self.tracker.receipt(turn=True)
             if receipt:
                 self.console.print(Text(f"✻ {receipt}", style="loom.dim"))
+        return final_text
+
+    # ----- loop mode -----
+    LOOP_NOTE = (
+        "\n\n[Loop mode] Work autonomously toward the goal. When the ENTIRE task is "
+        "complete and verified, include the exact token LOOP_COMPLETE in your final "
+        "message. Otherwise end with a one-line status of what remains."
+    )
+
+    def run_loop(self, prompt: str, max_iters: int = 10, until: str | None = None) -> None:
+        """Iterate on a task until done: agent signals LOOP_COMPLETE, an
+        optional ``until`` shell command exits 0, or max_iters is reached.
+        Check failures are fed back into the next iteration."""
+        import subprocess
+
+        if self.approval_mode == "default":
+            self.console.print(
+                "[loom.dim]tip: loop mode pauses on every approval — /mode accept-edits or /yolo makes it autonomous[/loom.dim]"
+            )
+        next_prompt = prompt + self.LOOP_NOTE
+        for i in range(1, max_iters + 1):
+            self.console.print(f"[loom.accent]↻ loop {i}/{max_iters}[/loom.accent]")
+            text = self.run_turn(next_prompt) or ""
+            if self._interrupted:
+                self.console.print("[loom.warn]loop stopped (interrupted)[/loom.warn]")
+                return
+            if until:
+                check = subprocess.run(until, shell=True, cwd=self.cwd, capture_output=True, text=True)
+                if check.returncode == 0:
+                    self.console.print(f"[loom.subagent]✓ loop done — `{until}` passed after {i} iteration(s)[/loom.subagent]")
+                    return
+                tail = (check.stdout + check.stderr)[-2000:]
+                next_prompt = (
+                    f"The check command `{until}` still fails (exit {check.returncode}):\n"
+                    f"```\n{tail}\n```\nKeep fixing until it passes." + self.LOOP_NOTE
+                )
+                continue
+            if "LOOP_COMPLETE" in text:
+                self.console.print(f"[loom.subagent]✓ loop done — agent reported complete after {i} iteration(s)[/loom.subagent]")
+                return
+            next_prompt = "Continue the loop task from where you left off." + self.LOOP_NOTE
+        self.console.print(f"[loom.warn]loop ended after {max_iters} iterations without completing[/loom.warn]")
 
     # ----- approval prompt with diff preview -----
     def _confirm(self, tool_name: str, tool_input: dict, reason: str) -> bool:
@@ -303,19 +368,19 @@ class Session:
             )
         return ""
 
-    def _stream(self, agent, inputs, run_config) -> None:
+    def _stream(self, agent, inputs, run_config) -> str | None:
         """Token-level streaming; falls back to per-update rendering when the
-        installed langgraph doesn't support multi-mode streams."""
+        installed langgraph doesn't support multi-mode streams. Returns the
+        final assistant text."""
         if not self.settings.ui.streaming:
-            self._stream_updates(agent.stream(inputs, config=run_config, stream_mode="updates"))
-            return
+            return self._stream_updates(agent.stream(inputs, config=run_config, stream_mode="updates"))
         try:
             stream = agent.stream(inputs, config=run_config, stream_mode=["updates", "messages"])
-            self._stream_multi(stream)
+            return self._stream_multi(stream)
         except (TypeError, ValueError):
-            self._stream_updates(agent.stream(inputs, config=run_config, stream_mode="updates"))
+            return self._stream_updates(agent.stream(inputs, config=run_config, stream_mode="updates"))
 
-    def _stream_multi(self, stream) -> None:
+    def _stream_multi(self, stream) -> str | None:
         ui = self.settings.ui
         streamed: set[str] = set()  # finalized token-streamed texts (dedup vs updates)
         buf: list[str] = []
@@ -368,8 +433,9 @@ class Session:
         finish_block()
         if final_text is not None and not (self.bundle and self.bundle.persistent):
             self.messages.append(("assistant", final_text))
+        return final_text
 
-    def _stream_updates(self, stream) -> None:
+    def _stream_updates(self, stream) -> str | None:
         ui = self.settings.ui
         final_text = None
         for chunk in stream:
@@ -391,13 +457,16 @@ class Session:
                     final_text = str(text)
         if final_text is not None and not (self.bundle and self.bundle.persistent):
             self.messages.append(("assistant", final_text))
+        return final_text
 
-    def _absorb_result(self, result) -> None:
+    def _absorb_result(self, result) -> str | None:
         msgs = result.get("messages", []) if isinstance(result, dict) else []
         if msgs:
             text = str(getattr(msgs[-1], "content", msgs[-1]))
             self._print_assistant(text, "agent")
             self.messages.append(("assistant", text))
+            return text
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -419,20 +488,18 @@ def _banner(session: Session) -> Panel:
 
 
 def _toolbar(session: Session):
-    modes = []
+    modes = [session.approval_mode.upper()] if session.approval_mode != "default" else []
     if session.plan:
         modes.append("PLAN")
     if session.local_only:
         modes.append("LOCAL")
     if session.airgap:
         modes.append("AIRGAP")
-    if session.yolo:
-        modes.append("YOLO")
     if session.vim:
         modes.append("VIM")
     mode_str = " ".join(modes) or "normal"
     cost = session.tracker.session.cloud_cost
-    return f" {session.settings.models.orchestrator} · {mode_str} · ${cost:.3f} · /help "
+    return f" {session.settings.models.orchestrator} · {mode_str} · ${cost:.3f} · shift+tab: mode · /help "
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +535,7 @@ def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yol
         session.console.print(_banner(session))
     _setup_hint(session)
 
-    prompt_session = _make_prompt_session()
+    prompt_session = _make_prompt_session(session)
     session._prompt_session = prompt_session
 
     while True:
@@ -492,15 +559,24 @@ def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yol
             session.console.print("[loom.warn]⏹ interrupted[/loom.warn]")
 
 
-def _make_prompt_session():
+def _make_prompt_session(session: Session | None = None):
     try:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.completion import WordCompleter
         from prompt_toolkit.history import FileHistory
+        from prompt_toolkit.key_binding import KeyBindings
 
         _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
         completer = WordCompleter([f"/{n}" for n in slash._REGISTRY], sentence=True)
-        return PromptSession(history=FileHistory(str(_HISTORY_FILE)), completer=completer)
+        kb = KeyBindings()
+        if session is not None:
+            # Claude Code-style: Shift+Tab cycles default → accept-edits → yolo.
+            @kb.add("s-tab")
+            def _cycle(event) -> None:
+                session.cycle_approval_mode()
+                event.app.invalidate()  # refresh the toolbar
+
+        return PromptSession(history=FileHistory(str(_HISTORY_FILE)), completer=completer, key_bindings=kb)
     except Exception:
         return None  # fall back to builtin input()
 

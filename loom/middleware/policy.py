@@ -36,6 +36,14 @@ confirm_callback: contextvars.ContextVar[Callable[[str, dict, str], bool]] = con
 # When true, "ask" auto-approves (the REPL's /yolo mode, or --yes flag).
 auto_approve: contextvars.ContextVar[bool] = contextvars.ContextVar("loom_auto_approve", default=False)
 
+# Claude Code-style "accept edits" mode: file writes auto-approve, everything
+# else (shell, etc.) still asks.
+auto_approve_edits: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "loom_auto_approve_edits", default=False
+)
+
+_EDIT_TOOLS = {"write_file", "edit_file"}
+
 
 class PolicyMiddleware(AgentMiddleware):
     def __init__(self, settings: Settings, cwd: str = ".") -> None:
@@ -84,8 +92,9 @@ class PolicyMiddleware(AgentMiddleware):
         if decision is Decision.deny:
             return self._blocked(request, f"Permission denied for `{name}` by policy.")
         if decision is Decision.ask and not auto_approve.get():
-            if not confirm_callback.get()(name, args, "requires approval"):
-                return self._blocked(request, f"User declined `{name}`.")
+            if not (name in _EDIT_TOOLS and auto_approve_edits.get()):
+                if not confirm_callback.get()(name, args, "requires approval"):
+                    return self._blocked(request, f"User declined `{name}`.")
 
         pre = hooks_engine.pre_tool_use(self.settings.hooks, name, args, self.cwd)
         if pre.blocked:
