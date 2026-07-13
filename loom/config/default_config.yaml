@@ -20,6 +20,7 @@ subagents:
   searcher: ollama/qwen3:4b
   reviewer: claude-haiku-4-5
   general: ollama/qwen3:14b
+  tester: ollama/qwen3:14b
 
 # The strongest available model. Called on-demand only, via the `consult` tool.
 advisor: claude-opus-4-8

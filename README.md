@@ -52,29 +52,56 @@ loom models pull       # pull everything missing in one shot
 
 ### Interactive UI (the REPL)
 
-Run `loom` with no task to drop into the in-terminal chat UI — a prompt loop
-with history, a live status toolbar, streaming output, and slash commands:
+Run `loom` with no task to drop into the in-terminal chat UI, styled after
+Claude Code / opencode: a compact welcome box, a bare `>` prompt, `⏺` bullets
+for assistant text and tool calls, `⎿` lines for tool results, and a live
+status toolbar:
 
 ```
 $ loom
-╭─ welcome ─────────────────────────────────────╮
-│ Loom   v0.1.0 · hybrid local/cloud agents      │
-│ orchestrator   claude-sonnet-4-6               │
-│ advisor        claude-opus-4-8                 │
-│ cwd            /path/to/project                │
-│ tips   /help · /plan · /local · Ctrl-D to exit │
-╰────────────────────────────────────────────────╯
-loom › add a health-check endpoint to the API
-loom › /plan          # toggle read-only planning
-loom › /model gpt-4o  # switch orchestrator live
-loom › /yolo          # auto-approve tools that would ask
-
-  loom ›  model=claude-sonnet-4-6  mode=PLAN YOLO
+╭──────────────────────────────────────────────────╮
+│ ✻ Welcome to Loom!  v0.1.0                       │
+│                                                  │
+│   /help for help, /status for your current setup │
+│                                                  │
+│   model: claude-sonnet-4-6 · advisor: opus-4-8   │
+│   cwd: /path/to/project                          │
+╰──────────────────────────────────────────────────╯
+> add a health-check endpoint to the API
+⏺ I'll add the endpoint and verify it end-to-end.
+⏺ task(subagent: editor, add /health route)
+  ⎿ added GET /health to src/api/routes.py … +2 lines
+⏺ task(subagent: tester, verify http://localhost:3000/health)
+  ⎿ PASS — page shows {"status":"ok"}
 ```
 
-Slash commands: `/help /model /agents /models /config /settings /permissions
-/plan /local /yolo /clear /cwd /exit`. When a tool needs approval (per your
-permission rules), Loom asks inline — unless `/yolo` is on.
+Slash commands (Claude Code-compatible where it makes sense):
+
+| Command | What it does |
+|---|---|
+| `/help` | list all commands |
+| `/status` | version, models, modes, MCP, session usage |
+| `/model [name]` | show or switch the orchestrator model |
+| `/agents` | subagents and their models |
+| `/models` | local Ollama daemon + model status |
+| `/mcp` | MCP servers, connection state, tools |
+| `/permissions` | active allow/ask/deny rules |
+| `/config`, `/settings` | show or set settings (`/settings ui.theme light`) |
+| `/hooks` | configured tool hooks |
+| `/compact` | summarize the conversation, free up context |
+| `/cost` | token usage this session |
+| `/clear` | reset the conversation |
+| `/init` | analyze the codebase, write a `LOOM.md` memory file |
+| `/memory` | show the project memory file |
+| `/export [path]` | save the transcript to markdown |
+| `/doctor` | health-check your setup (ollama, keys, npx, MCP) |
+| `/theme`, `/vim` | UI theme · vim editing mode |
+| `/plan`, `/local`, `/yolo` | toggle plan / local-only / auto-approve |
+| `/cwd`, `/exit` | sandbox root · quit |
+
+The project memory file (`LOOM.md`, or `CLAUDE.md`/`AGENTS.md` if present) is
+sent with your first message each session. When a tool needs approval (per
+your permission rules), Loom asks inline — unless `/yolo` is on.
 
 ### One-shot
 
@@ -105,6 +132,7 @@ subagents:
   searcher: ollama/qwen3:4b
   reviewer: claude-haiku-4-5
   general:  ollama/qwen3:14b
+  tester:   ollama/qwen3:14b
 advisor: claude-opus-4-8       # consulted on-demand only
 ollama_endpoint: http://localhost:11434
 ```
@@ -138,7 +166,10 @@ wins:
     "post_tool_use": [{ "matcher": "write_file", "command": "black -q ." }]
   },
   "env": { "ANTHROPIC_API_KEY": "…" },
-  "ui": { "theme": "dark", "streaming": true, "prompt_symbol": "loom ›" }
+  "ui": { "theme": "dark", "streaming": true, "prompt_symbol": ">" },
+  "mcp_servers": {
+    "playwright": { "command": "npx", "args": ["@playwright/mcp@latest"] }
+  }
 }
 ```
 
@@ -153,6 +184,15 @@ wins:
 - **env** — injected before any model call (`setdefault`, so your real shell
   env still wins).
 - **ui** — theme, streaming, tool-call visibility, prompt symbol, banner.
+- **mcp_servers** — MCP servers to connect (stdio subprocess or
+  `streamable_http`/`sse` via `url`). Sessions are held open for the whole
+  process on a background event loop, so stateful servers — the bundled
+  [Playwright MCP](https://github.com/microsoft/playwright-mcp) browser above
+  all — keep their state across tool calls. Playwright ships enabled by
+  default (needs `npx`); disable with
+  `{"mcp_servers": {"playwright": {"enabled": false}}}`. Its `browser_*`
+  tools power the `tester` subagent and are allowed by default; other
+  servers' tools go to `general` and follow normal permission rules.
 
 Edit from the CLI (`loom settings set permissions.default_mode allow`), from the
 REPL (`/settings ui.theme light`), or by hand.
@@ -167,6 +207,7 @@ REPL (`/settings ui.theme light`), or by hand.
 | `searcher` | local small | `grep`, `glob`, `web_search` (optional) | read-only |
 | `reviewer` | cloud cheap | `read_file`, `grep` | read-only |
 | `general`  | local mid   | all tools | fallback |
+| `tester`   | local mid   | `browser_*` (Playwright MCP) | write |
 
 **Advisor** (`consult` tool): the strongest cloud model, called on-demand at
 decision gates. It only advises — it never acts. Auto-consultation is gated by
@@ -175,6 +216,16 @@ decision gates. It only advises — it never acts. Auto-consultation is gated by
 **Reviewer**: dispatched after significant writes; returns a structured
 `ReviewVerdict` (risk low/medium/high, approve/flag, issue list). High risk or no
 approval → Loom stops and surfaces it for human sign-off.
+
+**Tester**: whenever a change touches anything a user can see or interact with
+from the frontend, the orchestrator is required to verify it end-to-end from
+the user's perspective before declaring done — bash starts the dev server,
+then the tester drives a real browser through the exact user journey
+(navigate, click, type) and judges each step only by what the page visibly
+shows, returning PASS/FAIL with evidence. A FAIL means the task is not done.
+The tester only appears in the fleet when the Playwright MCP server connects;
+without it the orchestrator must say E2E testing was skipped and how to verify
+manually.
 
 ## How it stays clean
 
@@ -203,7 +254,7 @@ loom/
 │   ├── settings.py         # layered settings.json loader
 │   ├── permissions.py      # allow/ask/deny rule engine
 │   └── hooks.py            # pre/post tool-use hook runner
-├── subagents/              # explorer, editor, bash, searcher, reviewer, general
+├── subagents/              # explorer, editor, bash, searcher, reviewer, general, tester
 ├── middleware/
 │   ├── prompt_size_guard.py
 │   └── policy.py           # enforce permissions + run hooks per tool call

@@ -3,6 +3,7 @@
 Rule syntax (Claude Code-flavored):
 
     "read_file"            -> matches any call to read_file
+    "browser_*"            -> bare names are globs: any tool starting browser_
     "execute(git *)"       -> execute whose command matches the glob "git *"
     "write_file(src/**)"   -> write_file whose path matches "src/**"
     "*"                    -> matches every tool call
@@ -41,6 +42,10 @@ def _rule_matches(rule: str, tool_name: str, tool_input: dict) -> bool:
     rule = rule.strip()
     if rule in ("*", tool_name):
         return True
+    if "(" not in rule:
+        # Bare rule: glob over the tool name (covers MCP tool families like
+        # "browser_*" without enumerating every tool).
+        return fnmatch.fnmatch(tool_name, rule)
     if "(" in rule and rule.endswith(")"):
         name, spec = rule[:-1].split("(", 1)
         name = name.strip()

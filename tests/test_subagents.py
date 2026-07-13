@@ -13,8 +13,8 @@ def _config():
     return cfg.load_config(path=cfg.DEFAULT_CONFIG_PATH)
 
 
-def test_all_six_subagents_registered():
-    assert set(SPECS) == {"explorer", "editor", "bash", "searcher", "reviewer", "general"}
+def test_all_seven_subagents_registered():
+    assert set(SPECS) == {"explorer", "editor", "bash", "searcher", "reviewer", "general", "tester"}
 
 
 def test_modes_match_spec():
@@ -24,6 +24,7 @@ def test_modes_match_spec():
     assert SPECS["editor"].mode == "write"
     assert SPECS["bash"].mode == "write"
     assert SPECS["general"].mode == "write"
+    assert SPECS["tester"].mode == "write"
 
 
 def test_tool_sets_match_spec():
@@ -41,6 +42,9 @@ def test_tool_sets_match_spec():
 
     general_tools = {t.name for t in SPECS["general"].tools}
     assert "execute" in general_tools and "write_file" in general_tools
+
+    # tester's browser_* tools come from the Playwright MCP server at build time.
+    assert SPECS["tester"].tools == []
 
 
 def test_describe_subagents_marks_local_vs_cloud():

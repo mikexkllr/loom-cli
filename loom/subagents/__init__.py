@@ -1,6 +1,6 @@
 """Subagent registry.
 
-Exposes the six specialized subagents and a builder that resolves them against
+Exposes the seven specialized subagents and a builder that resolves them against
 config into deepagents subagent dicts.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from loom.core.config import LoomConfig
-from loom.subagents import bash, editor, explorer, general, reviewer, searcher
+from loom.subagents import bash, editor, explorer, general, reviewer, searcher, tester
 
 # Ordered registry of specs. Names match config keys and the spec table.
 SPECS = {
@@ -19,6 +19,7 @@ SPECS = {
     "searcher": searcher.SPEC,
     "reviewer": reviewer.SPEC,
     "general": general.SPEC,
+    "tester": tester.SPEC,
 }
 
 

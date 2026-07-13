@@ -6,7 +6,8 @@
       "ls",
       "glob_tool",
       "grep_tool",
-      "web_search"
+      "web_search",
+      "browser_*"
     ],
     "ask": [
       "write_file",
@@ -20,6 +21,14 @@
     ]
   },
   "env": {},
+  "mcp_servers": {
+    "playwright": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"],
+      "enabled": true
+    }
+  },
   "hooks": {
     "pre_tool_use": [],
     "post_tool_use": [],
@@ -32,7 +41,7 @@
     "show_tool_calls": true,
     "show_thinking": false,
     "show_fleet_panel": true,
-    "prompt_symbol": "loom ›",
+    "prompt_symbol": ">",
     "banner": true
   }
 }

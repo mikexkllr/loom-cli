@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from loom.core import config as cfg
 
@@ -71,13 +71,36 @@ class Hooks(BaseModel):
     stop: list[Hook] = Field(default_factory=list)
 
 
+class MCPServer(BaseModel):
+    """One MCP server the agent may connect to.
+
+    stdio servers are launched as a subprocess (``command`` + ``args``); http
+    servers (``transport: "streamable_http"`` or ``"sse"``) need a ``url``.
+    Sessions are persistent for the process lifetime so stateful servers
+    (e.g. Playwright's browser) keep their state across tool calls.
+    """
+
+    transport: Literal["stdio", "streamable_http", "sse"] = "stdio"
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str = ""
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def _url_or_command(self) -> "MCPServer":
+        if self.transport != "stdio" and not self.url:
+            raise ValueError(f"mcp server with transport {self.transport!r} requires a url")
+        return self
+
+
 class UISettings(BaseModel):
     theme: str = "auto"  # auto | dark | light | mono
     streaming: bool = True
     show_tool_calls: bool = True
     show_thinking: bool = False
     show_fleet_panel: bool = True
-    prompt_symbol: str = "loom ›"
+    prompt_symbol: str = ">"
     banner: bool = True
 
     @field_validator("theme")
@@ -97,6 +120,7 @@ class Settings(BaseModel):
     hooks: Hooks = Field(default_factory=Hooks)
     env: dict[str, str] = Field(default_factory=dict)
     ui: UISettings = Field(default_factory=UISettings)
+    mcp_servers: dict[str, MCPServer] = Field(default_factory=dict)
 
     # Convenience passthroughs so callers can keep using `.models`-style access.
     @property

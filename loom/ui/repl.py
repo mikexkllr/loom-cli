@@ -2,17 +2,21 @@
 
 Launched by ``loom`` with no task (or ``loom chat``). Uses prompt_toolkit for a
 rich input line (history, key bindings, a live status toolbar) and Rich for
-rendering the orchestrator/subagent stream. Slash commands (``/help``, ``/plan``,
-``/model`` …) are handled without touching the model.
+rendering the orchestrator/subagent stream, styled after Claude Code /
+opencode: a compact welcome box, a bare ``>`` prompt, ``⏺`` bullets for
+assistant text and tool calls, and ``⎿`` continuation lines for results.
+Slash commands (``/help``, ``/model``, ``/mcp`` …) are handled without
+touching the model.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Confirm
-from rich.table import Table
+from rich.text import Text
 
 from loom.core import settings as settings_mod
 from loom.core.settings import Settings
@@ -22,6 +26,10 @@ from loom.ui import slash
 from loom.ui.theme import make_console
 
 _HISTORY_FILE = settings_mod.cfg.USER_CONFIG_DIR / "history"
+
+# Project memory files, first match wins (Claude Code reads CLAUDE.md; Loom's
+# own is LOOM.md but we honor the ecosystem names too).
+MEMORY_FILES = ("LOOM.md", "CLAUDE.md", "AGENTS.md")
 
 
 def _make_checkpointer():
@@ -52,17 +60,21 @@ class Session:
         self.plan = plan
         self.local_only = local_only
         self.yolo = yolo
+        self.vim = False
         self.console = make_console(settings.ui)
         self.messages: list = []
         self.bundle = None
-        self._exit = False
         self.thread_id = "loom-repl"
         self.checkpointer = _make_checkpointer()
+        self.usage = {"input_tokens": 0, "output_tokens": 0, "turns": 0}
+        self.pending_context: str | None = None  # summary injected after /compact
+        self._memory_sent = False
         sandbox.set_root(self.cwd)
 
     # ----- lifecycle -----
     def reset(self) -> None:
         self.messages = []
+        self._memory_sent = False
         # New thread_id => the checkpointer's prior state is no longer referenced.
         self._reset_count = getattr(self, "_reset_count", 0) + 1
         self.thread_id = f"loom-repl-{self._reset_count}"
@@ -94,6 +106,43 @@ class Session:
             return {"configurable": {"thread_id": self.thread_id}}
         return None
 
+    # ----- memory / context helpers -----
+    def memory_path(self) -> Path | None:
+        for name in MEMORY_FILES:
+            p = self.cwd / name
+            if p.exists():
+                return p
+        return None
+
+    def _prepare_text(self, text: str) -> str:
+        """Prepend one-time context: the project memory file and any /compact summary."""
+        parts: list[str] = []
+        if not self._memory_sent:
+            mem = self.memory_path()
+            if mem is not None:
+                try:
+                    parts.append(f"[Project memory — {mem.name}]\n{mem.read_text(encoding='utf-8')}")
+                except OSError:
+                    pass
+            self._memory_sent = True
+        if self.pending_context:
+            parts.append(f"[Summary of the compacted earlier conversation]\n{self.pending_context}")
+            self.pending_context = None
+        parts.append(text)
+        return "\n\n".join(parts)
+
+    def transcript(self) -> list:
+        """Best-effort transcript: from the graph state if persistent, else local."""
+        if self.bundle is not None and self.bundle.persistent:
+            try:
+                state = self.bundle.agent.get_state({"configurable": {"thread_id": self.thread_id}})
+                msgs = (state.values or {}).get("messages") or []
+                if msgs:
+                    return list(msgs)
+            except Exception:
+                pass
+        return list(self.messages)
+
     # ----- a single turn -----
     def run_turn(self, text: str) -> None:
         policy.auto_approve.set(self.yolo)
@@ -108,6 +157,8 @@ class Session:
             self.console.print(f"[loom.err]could not start orchestrator:[/loom.err] {exc}")
             return
 
+        text = self._prepare_text(text)
+
         # With a checkpointer, the graph persists history under thread_id — send
         # only the new turn. Without one, resend the full local transcript.
         if bundle.persistent:
@@ -116,6 +167,7 @@ class Session:
             self.messages.append(("user", text))
             inputs = {"messages": list(self.messages)}
 
+        self.usage["turns"] += 1
         run_config = self._run_config()
         try:
             self._stream(bundle.agent, inputs, run_config)
@@ -131,6 +183,54 @@ class Session:
         )
         return Confirm.ask("  run this tool?", default=False)
 
+    # ----- rendering (Claude Code style: ⏺ bullets + ⎿ results) -----
+
+    def _track_usage(self, msg) -> None:
+        meta = getattr(msg, "usage_metadata", None)
+        if isinstance(meta, dict):
+            self.usage["input_tokens"] += meta.get("input_tokens", 0) or 0
+            self.usage["output_tokens"] += meta.get("output_tokens", 0) or 0
+
+    @staticmethod
+    def _call_args_brief(call) -> str:
+        args = call.get("args", {}) if isinstance(call, dict) else getattr(call, "args", {}) or {}
+        if not isinstance(args, dict):
+            return str(args)[:80]
+        brief = ", ".join(f"{k}: {str(v)[:50]}" for k, v in list(args.items())[:3])
+        return brief[:100]
+
+    def _print_tool_call(self, call, node: str) -> None:
+        name = call.get("name", "?") if isinstance(call, dict) else getattr(call, "name", "?")
+        line = Text()
+        line.append("⏺ ", style="loom.tool")
+        line.append(name, style="loom.tool")
+        brief = self._call_args_brief(call)
+        if brief:
+            line.append(f"({brief})", style="loom.dim")
+        if node not in ("agent", "model"):
+            line.append(f"  [{node}]", style="loom.dim")
+        self.console.print(line)
+
+    def _print_tool_result(self, msg) -> None:
+        content = str(getattr(msg, "content", "") or "").strip()
+        if not content:
+            return
+        first = content.splitlines()[0][:120]
+        more = len(content.splitlines()) - 1
+        suffix = f" … +{more} lines" if more > 0 else ""
+        self.console.print(Text(f"  ⎿ {first}{suffix}", style="loom.dim"))
+
+    def _print_assistant(self, text: str, node: str) -> None:
+        bullet = Text("⏺ ", style="loom.agent" if node in ("agent", "model") else "loom.subagent")
+        if node not in ("agent", "model"):
+            bullet.append(f"[{node}] ", style="loom.dim")
+        self.console.print(bullet, end="")
+        try:
+            self.console.print(Markdown(text))
+        except Exception:
+            self.console.print(text)
+        self.console.print()
+
     def _stream(self, agent, inputs, run_config=None) -> None:
         ui = self.settings.ui
         final_text = None
@@ -145,14 +245,17 @@ class Session:
                 if not msgs:
                     continue
                 msg = msgs[-1]
-                text = getattr(msg, "content", "")
+                self._track_usage(msg)
+                if getattr(msg, "type", "") == "tool":
+                    if ui.show_tool_calls:
+                        self._print_tool_result(msg)
+                    continue
                 for call in getattr(msg, "tool_calls", []) or []:
                     if ui.show_tool_calls:
-                        name = call.get("name", "?") if isinstance(call, dict) else getattr(call, "name", "?")
-                        self.console.print(f"  [loom.tool]→ {name}[/loom.tool]")
+                        self._print_tool_call(call, node)
+                text = getattr(msg, "content", "")
                 if text:
-                    style = "loom.subagent" if node != "agent" else "loom.agent"
-                    self.console.print(Panel(str(text), border_style=style, title=f"[{style}]{node}[/{style}]"))
+                    self._print_assistant(str(text), node)
                     final_text = str(text)
         # Only mirror into the local transcript when the graph isn't persisting.
         if final_text is not None and not (self.bundle and self.bundle.persistent):
@@ -162,7 +265,7 @@ class Session:
         msgs = result.get("messages", []) if isinstance(result, dict) else []
         if msgs:
             text = str(getattr(msgs[-1], "content", msgs[-1]))
-            self.console.print(Panel(text, title="[loom.agent]loom[/loom.agent]", border_style="loom.agent"))
+            self._print_assistant(text, "agent")
             self.messages.append(("assistant", text))
 
 
@@ -174,13 +277,14 @@ class Session:
 def _banner(session: Session) -> Panel:
     from loom import __version__
 
-    t = Table.grid(padding=(0, 2))
-    t.add_row("[loom.accent]Loom[/loom.accent]", f"v{__version__} · hybrid local/cloud agents")
-    t.add_row("orchestrator", session.settings.models.orchestrator)
-    t.add_row("advisor", session.settings.models.advisor)
-    t.add_row("cwd", str(session.cwd))
-    t.add_row("[loom.dim]tips[/loom.dim]", "/help for commands · /plan · /local · Ctrl-D to exit")
-    return Panel(t, border_style="loom.accent", title="welcome")
+    cfg = session.settings.models
+    body = Text()
+    body.append("✻ Welcome to Loom!", style="loom.accent")
+    body.append(f"  v{__version__}\n\n", style="loom.dim")
+    body.append("  /help for help, /status for your current setup\n\n", style="loom.dim")
+    body.append(f"  model: {cfg.orchestrator} · advisor: {cfg.advisor}\n", style="loom.dim")
+    body.append(f"  cwd: {session.cwd}", style="loom.dim")
+    return Panel(body, border_style="loom.accent", expand=False, padding=(0, 1))
 
 
 def _toolbar(session: Session):
@@ -191,8 +295,10 @@ def _toolbar(session: Session):
         modes.append("LOCAL")
     if session.yolo:
         modes.append("YOLO")
+    if session.vim:
+        modes.append("VIM")
     mode_str = " ".join(modes) or "normal"
-    return f" {session.settings.ui.prompt_symbol}  model={session.settings.models.orchestrator}  mode={mode_str} "
+    return f" {session.settings.models.orchestrator} · {mode_str} · /help "
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +312,7 @@ def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yol
         session.console.print(_banner(session))
 
     prompt_session = _make_prompt_session()
+    session._prompt_session = prompt_session
 
     while True:
         try:

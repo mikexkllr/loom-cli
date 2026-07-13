@@ -7,6 +7,7 @@ string, and returns ``True`` if the loop should continue (always, except
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from rich.panel import Panel
@@ -32,7 +33,7 @@ def dispatch(session: "Session", line: str) -> bool:
     parts = line[1:].split(maxsplit=1)
     name = parts[0] if parts else ""
     args = parts[1] if len(parts) > 1 else ""
-    aliases = {"quit": "exit", "q": "exit", "?": "help", "h": "help"}
+    aliases = {"quit": "exit", "q": "exit", "?": "help", "h": "help", "config": "settings"}
     name = aliases.get(name, name)
     entry = _REGISTRY.get(name)
     if entry is None:
@@ -181,4 +182,227 @@ def _settings(session: "Session", args: str) -> bool:
 @command("cwd", "Show the project root the agents are sandboxed to")
 def _cwd(session: "Session", args: str) -> bool:
     session.console.print(str(session.cwd))
+    return True
+
+
+@command("status", "Show version, models, modes, MCP, and session usage")
+def _status(session: "Session", args: str) -> bool:
+    from loom import __version__
+    from loom.core.mcp import mcp_status
+
+    cfg = session.settings.models
+    modes = [m for m, on in (("plan", session.plan), ("local-only", session.local_only), ("yolo", session.yolo)) if on]
+    mcp_line = ", ".join(
+        f"{r['name']} ({r['state']}{', ' + str(len(r['tools'])) + ' tools' if r['tools'] else ''})"
+        for r in mcp_status(session.settings)
+    ) or "—"
+    u = session.usage
+    table = Table.grid(padding=(0, 2))
+    table.add_row("[loom.dim]version[/loom.dim]", f"loom v{__version__}")
+    table.add_row("[loom.dim]cwd[/loom.dim]", str(session.cwd))
+    table.add_row("[loom.dim]orchestrator[/loom.dim]", cfg.orchestrator)
+    table.add_row("[loom.dim]advisor[/loom.dim]", cfg.advisor)
+    table.add_row("[loom.dim]mode[/loom.dim]", ", ".join(modes) or "normal")
+    table.add_row("[loom.dim]permissions[/loom.dim]", f"default: {session.settings.permissions.default_mode}")
+    table.add_row("[loom.dim]mcp[/loom.dim]", mcp_line)
+    table.add_row("[loom.dim]memory[/loom.dim]", str(session.memory_path() or "— (create with /init)"))
+    table.add_row("[loom.dim]session[/loom.dim]", f"{u['turns']} turns · {u['input_tokens']} in / {u['output_tokens']} out tokens")
+    session.console.print(Panel(table, title="status", border_style="loom.accent", expand=False))
+    return True
+
+
+@command("mcp", "List MCP servers, connection state, and their tools")
+def _mcp(session: "Session", args: str) -> bool:
+    from loom.core.mcp import mcp_status
+
+    rows = mcp_status(session.settings)
+    if not rows:
+        session.console.print("[loom.dim]no MCP servers configured (settings.json → mcp_servers)[/loom.dim]")
+        return True
+    table = Table(show_header=True, header_style="loom.accent")
+    for col in ("Server", "Transport", "Target", "State", "Tools"):
+        table.add_column(col)
+    for r in rows:
+        tools = f"{len(r['tools'])}: {', '.join(r['tools'][:5])}{'…' if len(r['tools']) > 5 else ''}" if r["tools"] else "—"
+        table.add_row(r["name"], r["transport"], r["target"], r["state"], tools)
+    session.console.print(table)
+    session.console.print("[loom.dim]servers connect on the first task; browser_* tools power the tester subagent[/loom.dim]")
+    return True
+
+
+@command("cost", "Show token usage for this session")
+def _cost(session: "Session", args: str) -> bool:
+    u = session.usage
+    session.console.print(
+        f"session: [loom.accent]{u['turns']}[/loom.accent] turns · "
+        f"[loom.accent]{u['input_tokens']:,}[/loom.accent] input / "
+        f"[loom.accent]{u['output_tokens']:,}[/loom.accent] output tokens"
+    )
+    session.console.print("[loom.dim]local (ollama) tokens are free; cloud tokens are billed by your provider[/loom.dim]")
+    return True
+
+
+@command("compact", "Summarize the conversation and free up context")
+def _compact(session: "Session", args: str) -> bool:
+    transcript = session.transcript()
+    if not transcript:
+        session.console.print("[loom.dim]nothing to compact yet[/loom.dim]")
+        return True
+    lines = []
+    for m in transcript:
+        role = m[0] if isinstance(m, tuple) else getattr(m, "type", "?")
+        content = m[1] if isinstance(m, tuple) else getattr(m, "content", "")
+        if content and role in ("user", "human", "assistant", "ai"):
+            lines.append(f"{role}: {str(content)[:2000]}")
+    if not lines:
+        session.console.print("[loom.dim]nothing to compact yet[/loom.dim]")
+        return True
+
+    from loom.core.model_router import build_model
+
+    cfg = session.settings.models
+    model_string = cfg.subagents.get("general", cfg.orchestrator) if session.local_only else cfg.orchestrator
+    try:
+        model = build_model(model_string, cfg)
+        prompt = (
+            "Summarize this coding-session transcript so work can continue "
+            "seamlessly: goals, decisions, files touched, current state, and "
+            "open next steps. Be concise but lose nothing load-bearing.\n\n"
+            + "\n".join(lines)
+        )
+        summary = str(model.invoke(prompt).content)
+    except Exception as exc:
+        session.console.print(f"[loom.err]compact failed:[/loom.err] {exc}")
+        return True
+    session.reset()
+    session.pending_context = summary
+    session.console.print("[loom.dim]✻ context compacted — summary will be carried into your next message[/loom.dim]")
+    return True
+
+
+@command("doctor", "Check the health of your Loom setup")
+def _doctor(session: "Session", args: str) -> bool:
+    import os
+    import shutil
+    import sys
+
+    from loom.core import ollama
+    from loom.core.mcp import mcp_status
+
+    def row(ok: bool | None, label: str, detail: str) -> str:
+        mark = "[loom.subagent]✓[/loom.subagent]" if ok else ("[loom.warn]•[/loom.warn]" if ok is None else "[loom.err]✗[/loom.err]")
+        return f" {mark} {label}: {detail}"
+
+    out = [row(sys.version_info >= (3, 11), "python", sys.version.split()[0])]
+
+    st = ollama.status(session.settings.models)
+    if st.installed:
+        out.append(row(st.running, "ollama", f"{'running' if st.running else 'not running'} @ {st.endpoint}"))
+        missing = ollama.missing_models(session.settings.models)
+        out.append(row(not missing, "local models", ", ".join(missing) + " missing" if missing else "all present"))
+    else:
+        out.append(row(False, "ollama", "not installed"))
+
+    for key in ("ANTHROPIC_API_KEY",):
+        out.append(row(bool(os.environ.get(key)), key.lower(), "set" if os.environ.get(key) else "not set"))
+
+    out.append(row(bool(shutil.which("npx")), "npx", "found" if shutil.which("npx") else "not found (Playwright MCP needs Node)"))
+    for r in mcp_status(session.settings):
+        ok: bool | None = True if r["state"] == "connected" else (None if r["state"] in ("not connected", "disabled") else False)
+        out.append(row(ok, f"mcp:{r['name']}", r["state"]))
+
+    session.console.print(Panel("\n".join(out), title="doctor", border_style="loom.accent", expand=False))
+    return True
+
+
+@command("init", "Analyze the codebase and write a LOOM.md memory file")
+def _init(session: "Session", args: str) -> bool:
+    existing = session.memory_path()
+    if existing is not None and existing.name == "LOOM.md":
+        session.console.print(f"[loom.warn]{existing}[/loom.warn] already exists — edit it with /memory")
+        return True
+    session.run_turn(
+        "Analyze this codebase and write a LOOM.md file in the project root: a "
+        "concise memory file for AI coding agents. Include: what the project "
+        "is, how to build/test/run it, architecture and key directories, and "
+        "any conventions an agent must follow. Keep it under ~60 lines."
+    )
+    return True
+
+
+@command("memory", "Show the project memory file (LOOM.md / CLAUDE.md)")
+def _memory(session: "Session", args: str) -> bool:
+    from rich.markdown import Markdown
+
+    path = session.memory_path()
+    if path is None:
+        session.console.print("[loom.dim]no memory file (LOOM.md / CLAUDE.md / AGENTS.md) — create one with /init[/loom.dim]")
+        return True
+    session.console.print(Panel(Markdown(path.read_text(encoding="utf-8")), title=str(path), border_style="loom.dim"))
+    session.console.print(f"[loom.dim]it is sent with your first message each session; edit: $EDITOR {path.name}[/loom.dim]")
+    return True
+
+
+@command("export", "Save the conversation to a markdown file: /export [path]")
+def _export(session: "Session", args: str) -> bool:
+    from datetime import datetime
+
+    target = Path(args.strip()) if args.strip() else session.cwd / f"loom-session-{datetime.now():%Y%m%d-%H%M%S}.md"
+    lines = ["# Loom session\n"]
+    for m in session.transcript():
+        role = m[0] if isinstance(m, tuple) else getattr(m, "type", "?")
+        content = m[1] if isinstance(m, tuple) else getattr(m, "content", "")
+        if content and role in ("user", "human", "assistant", "ai"):
+            who = "You" if role in ("user", "human") else "Loom"
+            lines.append(f"## {who}\n\n{content}\n")
+    target.write_text("\n".join(lines), encoding="utf-8")
+    session.console.print(f"exported → [loom.accent]{target}[/loom.accent]")
+    return True
+
+
+@command("hooks", "Show the configured tool hooks")
+def _hooks(session: "Session", args: str) -> bool:
+    h = session.settings.hooks
+    table = Table(show_header=True, header_style="loom.accent")
+    for col in ("Event", "Matcher", "Command"):
+        table.add_column(col)
+    for event in ("pre_tool_use", "post_tool_use", "user_prompt_submit", "stop"):
+        for hook in getattr(h, event):
+            table.add_row(event, hook.matcher, hook.command)
+    if table.row_count:
+        session.console.print(table)
+    else:
+        session.console.print("[loom.dim]no hooks configured (settings.json → hooks)[/loom.dim]")
+    return True
+
+
+@command("theme", "Show or set the UI theme: /theme dark|light|mono|auto")
+def _theme(session: "Session", args: str) -> bool:
+    if not args.strip():
+        session.console.print(f"theme: [loom.accent]{session.settings.ui.theme}[/loom.accent] (dark, light, mono, auto)")
+        return True
+    from loom.core import settings as st
+
+    try:
+        st.set_value("ui.theme", args.strip())
+    except Exception as exc:
+        session.console.print(f"[loom.err]{exc}[/loom.err]")
+        return True
+    session.reload_settings()
+    session.console.print(f"theme → [loom.accent]{args.strip()}[/loom.accent]")
+    return True
+
+
+@command("vim", "Toggle vim editing mode for the input line")
+def _vim(session: "Session", args: str) -> bool:
+    session.vim = not session.vim
+    ps = getattr(session, "_prompt_session", None)
+    if ps is not None:
+        try:
+            from prompt_toolkit.enums import EditingMode
+
+            ps.editing_mode = EditingMode.VI if session.vim else EditingMode.EMACS
+        except Exception:
+            pass
+    session.console.print(f"vim mode: [loom.accent]{'on' if session.vim else 'off'}[/loom.accent]")
     return True

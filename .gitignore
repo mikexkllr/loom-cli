@@ -10,3 +10,4 @@ venv/
 .loom/
 .pytest_cache/
 .ruff_cache/
+.playwright-mcp/

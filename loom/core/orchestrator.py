@@ -1,6 +1,6 @@
 """Orchestrator assembly (build step 3).
 
-Wires the cloud orchestrator model + the six subagents + the consult tool +
+Wires the cloud orchestrator model + the subagent fleet + the consult tool +
 summarization middleware into a single deepagents agent via
 ``create_deep_agent``. The orchestrator plans, decomposes, and routes — it never
 touches raw tool output; subagents quarantine that.
@@ -39,13 +39,27 @@ How to work:
    - editor    : apply a specific code change to named files
    - bash      : run tests/builds/git and report the verdict
    - reviewer  : after a significant write, get a risk rating
+   - tester    : drive a real browser (Playwright) through a user journey and
+                 report PASS/FAIL per step
    - general   : multi-step work that mixes the above
 3. Never read large files or run noisy commands yourself — delegate. You may use
    read_file only for small, targeted confirmations.
-4. Consult the Advisor with `consult(question, context_summary)` at decision
+4. MANDATORY end-to-end verification: whenever the work changes anything a user
+   can see or interact with through a frontend (a web page, UI component, form,
+   route, or an API a visible screen depends on), you MUST verify it from the
+   user's perspective before declaring the task done — unit tests and code
+   review are NOT sufficient. Concretely: have bash start (or confirm) the dev
+   server, then route a tester task that names the URL and the exact user
+   journey to walk (what to click/type and what must visibly happen at each
+   step), covering both the changed behavior and the surrounding happy path.
+   If the tester reports FAIL, treat the task as not done: fix and re-test.
+   Skip this only when the change has no user-visible surface (pure backend
+   library code, tests, docs, tooling) — and say explicitly that you skipped
+   it and why.
+5. Consult the Advisor with `consult(question, context_summary)` at decision
    gates: before major/destructive work, after repeated failures, or before
    declaring done. The Advisor only advises; you decide.
-5. After the reviewer flags HIGH risk or withholds approval, STOP and surface it
+6. After the reviewer flags HIGH risk or withholds approval, STOP and surface it
    to the human before continuing.
 
 Keep your messages tight. Synthesize subagent summaries; do not echo their raw
@@ -61,6 +75,12 @@ LOCAL_ONLY_SUFFIX = """
 
 LOCAL-ONLY MODE: No cloud calls are permitted. The Advisor and cloud reviewer are
 unavailable. Rely on local subagents and your own judgment."""
+
+NO_TESTER_SUFFIX = """
+
+NOTE: The tester subagent is unavailable in this run (no browser/MCP tools
+connected). Skip rule 4's browser verification, state that end-to-end testing
+was skipped, and tell the user how to verify manually."""
 
 # Read-only subagents permitted in plan mode.
 _PLAN_SUBAGENTS = {"explorer", "searcher", "reviewer"}
@@ -114,6 +134,14 @@ def build_orchestrator(
         orch_model_string = config.orchestrator
     orch_model = build_model(orch_model_string, config)
 
+    # ----- MCP tools (Playwright browser etc.) -----
+    # Sessions are process-wide singletons so the browser survives rebuilds.
+    mcp_tools: list[Any] = []
+    if loom_settings is not None and loom_settings.mcp_servers and not plan:
+        from loom.core.mcp import get_mcp_tools
+
+        mcp_tools = get_mcp_tools(loom_settings)
+
     # ----- assemble subagents -----
     subagents = build_all_subagents(config)
     if plan:
@@ -121,6 +149,25 @@ def build_orchestrator(
     if local_only:
         # Drop any cloud-backed subagent (e.g. reviewer on Haiku).
         subagents = [s for s in subagents if config.is_local(config.subagents.get(s["name"], ""))]
+
+    # The tester only exists when browser MCP tools actually connected.
+    browser_tools = [t for t in mcp_tools if t.name.startswith("browser_")]
+    has_tester = False
+    for sub in list(subagents):
+        if sub["name"] != "tester":
+            continue
+        if browser_tools:
+            sub["tools"] = list(sub["tools"]) + browser_tools
+            has_tester = True
+        else:
+            subagents.remove(sub)
+
+    # Any other MCP tools (non-browser servers the user added) go to general.
+    other_mcp = [t for t in mcp_tools if not t.name.startswith("browser_")]
+    if other_mcp:
+        for sub in subagents:
+            if sub["name"] == "general":
+                sub["tools"] = list(sub["tools"]) + other_mcp
 
     # ----- orchestrator tools -----
     tools: list[Any] = [read_file]
@@ -133,6 +180,8 @@ def build_orchestrator(
         system += PLAN_SUFFIX
     if local_only:
         system += LOCAL_ONLY_SUFFIX
+    if not has_tester and not plan:
+        system += NO_TESTER_SUFFIX
 
     # ----- middleware: deepagents defaults + our summarization tuning -----
     middleware: list[Any] = []
