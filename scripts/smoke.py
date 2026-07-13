@@ -124,13 +124,21 @@ def test_repl_turn() -> None:
     session = Session(st.load_settings(), cwd=".")
 
     class StubAgent:
-        def stream(self, inputs, **kw):
-            # Mimic deepagents `updates` stream: {node: {"messages": [msg]}}
-            yield {"explorer": {"messages": [SimpleNamespace(content="looked around", tool_calls=[{"name": "ls"}])]}}
-            yield {"agent": {"messages": [SimpleNamespace(content="Done: added the endpoint.", tool_calls=[])]}}
+        def stream(self, inputs, *, stream_mode="updates", **kw):
+            # Mimic deepagents streams: multi-mode yields (mode, payload)
+            # tuples; plain updates mode yields {node: {"messages": [msg]}}.
+            updates = [
+                {"explorer": {"messages": [SimpleNamespace(content="looked around", tool_calls=[{"name": "ls"}], type="ai")]}},
+                {"agent": {"messages": [SimpleNamespace(content="Done: added the endpoint.", tool_calls=[], type="ai")]}},
+            ]
+            if isinstance(stream_mode, list):
+                for u in updates:
+                    yield ("updates", u)
+            else:
+                yield from updates
 
     # Inject a stub bundle so ensure_bundle() doesn't build a real orchestrator.
-    session.bundle = SimpleNamespace(agent=StubAgent(), persistent=False, mode="normal")
+    session.bundle = SimpleNamespace(agent=StubAgent(), persistent=False, mode="normal", fallbacks={})
     session.run_turn("add a health endpoint")
 
     transcript = "".join(str(m) for m in session.messages)

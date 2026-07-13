@@ -440,10 +440,33 @@ def _toolbar(session: Session):
 # ---------------------------------------------------------------------------
 
 
+def _setup_hint(session: Session) -> None:
+    """First-run guidance when neither a cloud key nor Ollama is available."""
+    import os
+
+    cloud_keys = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")
+    if any(os.environ.get(k) for k in cloud_keys):
+        return
+    try:
+        from loom.core import ollama
+
+        if ollama.status(session.settings.models).running:
+            return
+    except Exception:
+        pass
+    session.console.print(
+        "[loom.warn]⚠ No cloud API key and no Ollama daemon found — tasks will fail.[/loom.warn]\n"
+        "[loom.dim]  cloud:  export ANTHROPIC_API_KEY=…\n"
+        "  local:  install Ollama (https://ollama.com) · loom models pull\n"
+        "  check:  /doctor[/loom.dim]"
+    )
+
+
 def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yolo=False, airgap=False) -> None:
     session = Session(settings, cwd, plan=plan, local_only=local_only, yolo=yolo, airgap=airgap)
     if settings.ui.banner:
         session.console.print(_banner(session))
+    _setup_hint(session)
 
     prompt_session = _make_prompt_session()
     session._prompt_session = prompt_session
