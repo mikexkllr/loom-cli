@@ -27,7 +27,27 @@ from loom.core import settings as settings_mod
 from loom.tools import sandbox
 
 console = Console()
+
+
+class _PromptOrCommandGroup(typer.core.TyperGroup):
+    """Let the root command take either a free-form task or a subcommand.
+
+    Click parses the group's ``[PROMPT]`` argument before resolving
+    subcommands, so ``loom models status`` would otherwise become the task
+    "models". If the first non-option token names a known subcommand, insert
+    an empty prompt placeholder so the subcommand resolves normally.
+    """
+
+    def parse_args(self, ctx, args):
+        first = next((a for a in args if not a.startswith("-")), None)
+        if first is not None and first in self.commands:
+            idx = args.index(first)
+            args = [*args[:idx], "", *args[idx:]]
+        return super().parse_args(ctx, args)
+
+
 app = typer.Typer(
+    cls=_PromptOrCommandGroup,
     add_completion=False,
     help="Loom — hybrid local/cloud multi-agent CLI coding assistant.",
     no_args_is_help=False,  # no args -> launch the interactive REPL
@@ -113,6 +133,12 @@ def _run_task(settings, prompt: str, *, plan: bool, local_only: bool, airgap: bo
         )
         raise typer.Exit(1)
 
+    if bundle.fallbacks:
+        roles = ", ".join(sorted(bundle.fallbacks))
+        console.print(
+            f"[yellow]⚠ Ollama unavailable — {roles} running on {config.cloud_fallback} "
+            f"this session (billed). Start Ollama and `loom models pull` to go hybrid.[/yellow]"
+        )
     console.print(_fleet_panel(config, bundle))
     console.print(Panel(prompt, title="Task", border_style="cyan"))
 
@@ -339,6 +365,43 @@ def models_pull(
             console.print(f"[red]✗ pull failed for {tag} (exit {code})[/red]")
             raise typer.Exit(code)
     console.print("[green]✓ done[/green]")
+
+
+@app.command("doctor")
+def doctor(root: str = typer.Option(".", "--root")) -> None:
+    """Health-check the Loom setup: python, ollama, API keys, npx, MCP."""
+    import os
+    import shutil as _shutil
+    import sys as _sys
+
+    from loom.core import ollama
+    from loom.core.mcp import mcp_status
+
+    settings = settings_mod.load_settings(root)
+    config = settings.models
+
+    def row(ok, label, detail) -> str:
+        mark = "[green]✓[/green]" if ok else ("[yellow]•[/yellow]" if ok is None else "[red]✗[/red]")
+        return f" {mark} {label}: {detail}"
+
+    lines = [row(_sys.version_info >= (3, 11), "python", _sys.version.split()[0])]
+    st = ollama.status(config)
+    if st.installed:
+        lines.append(row(st.running, "ollama", f"{'running' if st.running else 'not running'} @ {st.endpoint}"))
+        missing = ollama.missing_models(config)
+        lines.append(row(not missing, "local models", ", ".join(missing) + " missing" if missing else "all present"))
+        if not st.running or missing:
+            lines.append(row(None, "cloud fallback", f"local roles will run on {config.cloud_fallback} (billed)"))
+    else:
+        lines.append(row(False, "ollama", "not installed"))
+        lines.append(row(None, "cloud fallback", f"local roles will run on {config.cloud_fallback} (billed)"))
+    key_set = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    lines.append(row(key_set, "anthropic_api_key", "set" if key_set else "not set"))
+    lines.append(row(bool(_shutil.which("npx")), "npx", "found" if _shutil.which("npx") else "not found (Playwright MCP needs Node)"))
+    for r in mcp_status(settings):
+        ok = True if r["state"] == "connected" else (None if r["state"] in ("not connected", "disabled") else False)
+        lines.append(row(ok, f"mcp:{r['name']}", r["state"]))
+    console.print(Panel("\n".join(lines), title="loom doctor", border_style="blue"))
 
 
 if __name__ == "__main__":

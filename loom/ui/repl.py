@@ -107,6 +107,13 @@ class Session:
                 cwd=str(self.cwd),
                 checkpointer=self.checkpointer,
             )
+            if self.bundle.fallbacks:
+                roles = ", ".join(sorted(self.bundle.fallbacks))
+                self.console.print(
+                    f"[loom.warn]⚠ Ollama unavailable — {roles} running on "
+                    f"{self.settings.models.cloud_fallback} this session (billed).[/loom.warn] "
+                    f"[loom.dim]Start Ollama and `loom models pull` to go hybrid; /doctor for details.[/loom.dim]"
+                )
         return self.bundle
 
     def _run_config(self):

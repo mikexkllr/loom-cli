@@ -32,6 +32,12 @@ ollama_endpoint: http://localhost:11434
 # window, escalate that single call to this cloud model instead of failing.
 escalation_model: claude-sonnet-4-6
 
+# When Ollama is unavailable (daemon not running, or a model isn't pulled),
+# local roles run on this cheap cloud model for the session instead of
+# failing mid-run. Loom tells you when this happens. Does not apply in
+# --local-only or --airgap modes (those refuse to touch the cloud with code).
+cloud_fallback: claude-haiku-4-5
+
 # Context-window sizes (in tokens) used by the prompt-size guard to decide when
 # to escalate. Override per-model as needed.
 context_windows:

@@ -462,13 +462,17 @@ def _doctor(session: "Session", args: str) -> bool:
 
     out = [row(sys.version_info >= (3, 11), "python", sys.version.split()[0])]
 
-    st = ollama.status(session.settings.models)
+    cfg = session.settings.models
+    st = ollama.status(cfg)
     if st.installed:
         out.append(row(st.running, "ollama", f"{'running' if st.running else 'not running'} @ {st.endpoint}"))
-        missing = ollama.missing_models(session.settings.models)
+        missing = ollama.missing_models(cfg)
         out.append(row(not missing, "local models", ", ".join(missing) + " missing" if missing else "all present"))
+        if not st.running or missing:
+            out.append(row(None, "cloud fallback", f"local roles run on {cfg.cloud_fallback} (billed)"))
     else:
         out.append(row(False, "ollama", "not installed"))
+        out.append(row(None, "cloud fallback", f"local roles run on {cfg.cloud_fallback} (billed)"))
 
     for key in ("ANTHROPIC_API_KEY",):
         out.append(row(bool(os.environ.get(key)), key.lower(), "set" if os.environ.get(key) else "not set"))

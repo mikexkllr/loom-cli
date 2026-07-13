@@ -152,7 +152,14 @@ loom --advisor-threshold high "redesign the DB schema"# only consult advisor on 
 loom config set orchestrator gpt-4o                   # reconfigure model routing
 loom settings set ui.theme light                      # reconfigure UI/permissions/…
 loom agents list                                      # subagents + assigned models
+loom doctor                                           # health-check: ollama, keys, npx, MCP
 ```
+
+**No Ollama? Loom still works.** If the daemon isn't running (or a model
+isn't pulled), local roles automatically run on a cheap cloud model
+(`cloud_fallback`, default `claude-haiku-4-5`) for the session — Loom tells
+you loudly, and the cost receipts show the spend. `--local-only` and
+`--airgap` refuse to fall back and fail fast with instructions instead.
 
 ## Configuration
 

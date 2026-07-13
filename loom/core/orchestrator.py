@@ -14,7 +14,7 @@ Run modes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from loom.core.advisor import make_consult_tool
@@ -94,6 +94,62 @@ was skipped, and tell the user how to verify manually."""
 _PLAN_SUBAGENTS = {"explorer", "searcher", "reviewer"}
 
 
+def apply_cloud_fallback(config: LoomConfig) -> tuple[LoomConfig, dict[str, str]]:
+    """Reroute local roles to ``config.cloud_fallback`` when Ollama can't serve them.
+
+    Returns the (possibly rewritten) config and a map of role -> original
+    local model for every role that was rerouted. No network is touched when
+    the config has no local roles at all.
+    """
+    from loom.core import ollama
+    from loom.core.model_router import resolve
+
+    local_roles = {role: m for role, m in config.subagents.items() if config.is_local(m)}
+    orch_local = config.is_local(config.orchestrator)
+    if not local_roles and not orch_local:
+        return config, {}
+
+    try:
+        status = ollama.status(config)
+        available = set(status.models) if status.running else set()
+    except Exception:
+        available = set()
+
+    def _served(model: str) -> bool:
+        name = resolve(model).name
+        return name in available or f"{name}:latest" in available
+
+    fallbacks: dict[str, str] = {}
+    subagents = dict(config.subagents)
+    for role, model in local_roles.items():
+        if not _served(model):
+            subagents[role] = config.cloud_fallback
+            fallbacks[role] = model
+    update: dict[str, Any] = {"subagents": subagents}
+    if orch_local and not _served(config.orchestrator):
+        update["orchestrator"] = config.cloud_fallback
+        fallbacks["orchestrator"] = config.orchestrator
+    if not fallbacks:
+        return config, {}
+    return config.model_copy(update=update), fallbacks
+
+
+def _require_ollama(config: LoomConfig, mode: str) -> None:
+    """local-only / airgap cannot fall back to the cloud — fail fast instead
+    of dying mid-run with connection errors."""
+    from loom.core import ollama
+
+    local_models = [m for m in config.all_models().values() if config.is_local(m)]
+    if not local_models:
+        return
+    status = ollama.status(config)
+    if not status.running:
+        raise RuntimeError(
+            f"{mode} mode needs local models, but the Ollama daemon isn't reachable "
+            f"at {config.ollama_endpoint}. {ollama.INSTALL_HINT}"
+        )
+
+
 @dataclass
 class OrchestratorBundle:
     """The compiled agent plus metadata the CLI needs to render status."""
@@ -103,6 +159,9 @@ class OrchestratorBundle:
     subagent_names: list[str]
     mode: str
     persistent: bool = False  # True if a checkpointer is active (resume/thread state)
+    # role -> original local model, for every role rerouted to the cloud
+    # because Ollama couldn't serve it this session.
+    fallbacks: dict[str, str] = field(default_factory=dict)
 
 
 def build_orchestrator(
@@ -138,6 +197,15 @@ def build_orchestrator(
         # Cloud escalation would ship raw prompts (file contents) to the cloud;
         # an unbuildable escalation model makes the guard fall through to local.
         config = config.model_copy(update={"escalation_model": ""})
+
+    # ----- Ollama availability -----
+    fallbacks: dict[str, str] = {}
+    if local_only or airgap:
+        _require_ollama(config, "local-only" if local_only else "airgap")
+    else:
+        # No Ollama? Run the local roles on a cheap cloud model this session
+        # rather than failing mid-run (the REPL surfaces this loudly).
+        config, fallbacks = apply_cloud_fallback(config)
 
     # ----- pick the orchestrator model -----
     if local_only:
@@ -235,6 +303,7 @@ def build_orchestrator(
     return OrchestratorBundle(
         agent=agent,
         persistent=persistent,
+        fallbacks=fallbacks,
         model_string=orch_model_string,
         subagent_names=[s["name"] for s in subagents],
         mode="plan" if plan else ("local-only" if local_only else ("airgap" if airgap else "normal")),

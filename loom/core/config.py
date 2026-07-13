@@ -40,6 +40,9 @@ class LoomConfig(BaseModel):
     ollama_endpoint: str = "http://localhost:11434"
 
     escalation_model: str = "claude-sonnet-4-6"
+    # When Ollama is unavailable (daemon down / model not pulled), local roles
+    # temporarily run on this cheap cloud model instead of failing mid-run.
+    cloud_fallback: str = "claude-haiku-4-5"
     context_windows: dict[str, int] = Field(default_factory=dict)
 
     compaction_threshold: float = 0.70
