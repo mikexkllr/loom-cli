@@ -1,6 +1,8 @@
 # Loom
 
 [![CI](https://github.com/mikexkllr/loom-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/mikexkllr/loom-cli/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11%E2%80%933.14-blue)](#python)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 A hybrid local/cloud multi-agent CLI coding assistant. A strong **cloud
 orchestrator** plans and routes; specialized **subagents** — mostly local
@@ -11,6 +13,21 @@ own context windows and return only summaries.
 > subagents don't make the model smarter — they **preserve the orchestrator's
 > context quality** by quarantining noisy tool output, logs, and file content
 > into isolated windows that hand back only a summary.
+
+## Contents
+
+- [Why Ollama for local models](#why-ollama-for-local-models)
+- [Install](#install)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [Settings (`settings.json`)](#settings-settingsjson)
+- [The fleet](#the-fleet)
+- [How it stays clean](#how-it-stays-clean)
+- [Architecture](#architecture)
+- [Tests](#tests)
+- [deepagents compatibility](#deepagents-compatibility)
+- [Python](#python)
+- [Notes on model names](#notes-on-model-names)
 
 ## Why Ollama for local models
 
@@ -62,7 +79,7 @@ status toolbar:
 ```
 $ loom
 ╭──────────────────────────────────────────────────╮
-│ ✻ Welcome to Loom!  v0.1.0                       │
+│ ✻ Welcome to Loom!  v0.2.0                       │
 │                                                  │
 │   /help for help, /status for your current setup │
 │                                                  │
