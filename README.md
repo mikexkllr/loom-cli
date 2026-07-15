@@ -18,6 +18,7 @@ own context windows and return only summaries.
 
 - [Why Ollama for local models](#why-ollama-for-local-models)
 - [Install](#install)
+- [Setup wizard](#setup-wizard)
 - [Usage](#usage)
 - [Configuration](#configuration)
 - [Settings (`settings.json`)](#settings-settingsjson)
@@ -37,7 +38,8 @@ code**:
 | Platform | Acceleration | How |
 |---|---|---|
 | macOS (Apple Silicon) | Metal / MLX-class | Ollama uses the Metal backend automatically |
-| Linux / Windows | CUDA | Ollama uses the CUDA backend automatically |
+| Linux / Windows (NVIDIA) | CUDA | Ollama uses the CUDA backend automatically |
+| Linux / Windows (AMD) | ROCm | Ollama uses the ROCm backend automatically on supported GPUs |
 | Any | CPU fallback | automatic |
 
 Installing and running a model is one command (`loom models pull`). If you'd
@@ -51,7 +53,13 @@ is rarely needed.
 pip install -e .            # or: pip install -e ".[dev]"
 ```
 
-Set provider keys for whichever cloud models you use:
+Then run `loom` — on a true first run (no `settings.json` anywhere yet) it
+launches the **setup wizard** automatically; run it again any time with
+`/setup` (REPL) or `loom setup` (shell). See [Setup wizard](#setup-wizard)
+below for what it configures and which providers it supports.
+
+Prefer to configure by hand? Set provider keys for whichever cloud models you
+use:
 
 ```bash
 export ANTHROPIC_API_KEY=...      # claude-* (orchestrator / advisor / reviewer)
@@ -65,6 +73,61 @@ Install Ollama and pull the local models named in your config:
 ```bash
 loom models status     # check daemon + what's missing
 loom models pull       # pull everything missing in one shot
+```
+
+## Setup wizard
+
+`loom setup` (or `/setup` in the REPL) walks through every model role —
+`orchestrator`, `advisor`, `escalation`, and each subagent — and writes the
+result straight to `settings.json`, reloading it live. No manual YAML/JSON
+editing required.
+
+- **Quick setup** (default): pick one local Ollama model for the
+  local-leaning roles (explorer/editor/bash/searcher/general/tester) and one
+  cloud provider for the cloud-leaning roles (orchestrator/advisor/escalation/
+  reviewer) — the provider's strongest model goes to `advisor`, its
+  lightest/cheapest to `reviewer`.
+- **Advanced**: configure every role individually — local or cloud, any
+  provider, any model id.
+- **Local models**: lists what's already installed via Ollama, plus
+  hardware-aware recommendations (detects OS, RAM, and Apple Silicon/NVIDIA/
+  AMD GPU + VRAM — see [`loom/core/recommendations.py`](loom/core/recommendations.py))
+  with an offer to `ollama pull` on the spot. The recommendation table is a
+  hand-curated, best-effort snapshot — there's no live "best coding model"
+  API — so treat it as a sane starting point, not gospel.
+- **Credentials**: prompted per provider and written to `settings.json`'s
+  `env` block (`loom settings show env` to inspect, `/setup` to redo).
+- **Scope**: save to your user settings (`~/.loom/settings.json`) or this
+  project's (`.loom/settings.json`) — pass `--scope user|project` to `loom
+  setup` to skip that prompt.
+
+### Supported providers
+
+| Provider | Notes |
+|---|---|
+| **Local (Ollama)** | Free, private. Metal (macOS), CUDA (NVIDIA), or ROCm (AMD) — Ollama picks the right backend automatically. |
+| **Anthropic** | Direct API — `ANTHROPIC_API_KEY`. |
+| **Anthropic via AWS Bedrock** | `AWS_BEARER_TOKEN_BEDROCK` (or real AWS credentials) + optional `ANTHROPIC_BEDROCK_BASE_URL` for a corporate proxy. Needs `pip install -e ".[bedrock]"`. |
+| **OpenAI** | `OPENAI_API_KEY`. |
+| **OpenAI-compatible (custom endpoint)** | Any server speaking the OpenAI Chat Completions API — vLLM, LM Studio, Together, Groq, etc. `LOOM_CUSTOM_BASE_URL` + `LOOM_CUSTOM_API_KEY`. |
+| **OpenCode Zen** | Curated pay-per-use model gateway (several free models). `OPENCODE_ZEN_API_KEY`. Only OpenAI-shaped Zen models are wired up so far. |
+| **OpenCode Go** | $5 first month / $10-mo subscription to curated open models (GLM, Kimi, DeepSeek, MiMo). `OPENCODE_GO_API_KEY`. |
+| **Google AI Studio** (Gemini API) | Personal API key, no GCP project — `GOOGLE_API_KEY`. |
+| **Google Vertex AI** | GCP project + Application Default Credentials (`gcloud auth application-default login`). Needs `pip install -e ".[vertexai]"`. |
+
+Each provider maps to a config model-string prefix — see
+[`loom/core/providers.py`](loom/core/providers.py) for the full catalog (also
+used to power the wizard). A few examples, settable directly with `/model
+<role> <model>` without the wizard:
+
+```
+ollama/qwen2.5-coder:32b     # local
+anthropic:claude-sonnet-4-6  # Anthropic direct or Bedrock (env-flag controlled)
+openai:gpt-5.2               # OpenAI
+zen:glm-5.2                  # OpenCode Zen
+go:deepseek-v4-flash         # OpenCode Go
+vertexai:gemini-3-pro        # Google Vertex AI
+custom:my-self-hosted-model  # any OpenAI-compatible endpoint
 ```
 
 ## Usage
@@ -103,6 +166,7 @@ Slash commands (Claude Code-compatible where it makes sense):
 | `/model` | show every role's model + installed Ollama models |
 | `/model <role>` | interactive picker (installed local models + cloud) |
 | `/model <role> <model>` | assign any model to any role |
+| `/setup [roles…]` | full setup wizard: providers, credentials, hardware-aware local picks |
 | `/agents` | subagents and their models |
 | `/models` | local Ollama daemon + model status |
 | `/mcp` | MCP servers, connection state, tools |
@@ -276,6 +340,10 @@ wins:
   lint-gates, or audit logging.
 - **env** — injected before any model call (`setdefault`, so your real shell
   env still wins).
+- **models** — same shape as `config.yaml` (`orchestrator`, `advisor`,
+  `escalation_model`, `subagents: {...}`); deep-merges on top of it regardless
+  of layer. This is what [`/setup`](#setup-wizard) writes — role assignments
+  work identically whether they land in the user or project layer.
 - **ui** — theme, streaming, tool-call visibility, prompt symbol, banner.
 - **mcp_servers** — MCP servers to connect (stdio subprocess or
   `streamable_http`/`sse` via `url`). Sessions are held open for the whole

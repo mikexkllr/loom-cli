@@ -28,7 +28,10 @@ if TYPE_CHECKING:  # avoid importing heavy deps at module load
 # Provider resolution
 # ----------------------------------------------------------------------------
 
-# Prefix/pattern -> LangChain provider id used by init_chat_model.
+# Prefix/pattern -> internal provider id. Providers recognized natively by
+# ``init_chat_model`` (anthropic/openai/google_genai/google_vertexai) use its
+# id directly; the rest (opencode_zen/opencode_go/custom) are OpenAI-compatible
+# endpoints Loom builds directly in ``_build_cached``.
 _CLOUD_PROVIDERS = {
     "claude": "anthropic",
     "anthropic": "anthropic",
@@ -39,6 +42,13 @@ _CLOUD_PROVIDERS = {
     "openai": "openai",
     "gemini": "google_genai",
     "google": "google_genai",
+    "vertexai": "google_vertexai",
+    "vertex": "google_vertexai",
+    "zen": "opencode_zen",
+    "opencode-zen": "opencode_zen",
+    "go": "opencode_go",
+    "opencode-go": "opencode_go",
+    "custom": "custom",
 }
 
 
@@ -104,6 +114,51 @@ def _use_bedrock() -> bool:
     return flag in {"1", "true", "yes"} or bool(os.environ.get("ANTHROPIC_BEDROCK_BASE_URL"))
 
 
+# OpenAI-compatible endpoints Loom builds directly (rather than via
+# init_chat_model) so each one reads its *own* base_url/api_key env vars and
+# several can coexist in one session without clobbering a shared OPENAI_*.
+# base_url_env is checked first so a self-hosted Zen/Go mirror can override it.
+_OPENAI_COMPATIBLE: dict[str, dict[str, str]] = {
+    "opencode_zen": {
+        "base_url": "https://opencode.ai/zen/v1",
+        "base_url_env": "OPENCODE_ZEN_BASE_URL",
+        "api_key_env": "OPENCODE_ZEN_API_KEY",
+        "api_key_env_fallback": "OPENCODE_API_KEY",
+    },
+    "opencode_go": {
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "base_url_env": "OPENCODE_GO_BASE_URL",
+        "api_key_env": "OPENCODE_GO_API_KEY",
+        "api_key_env_fallback": "OPENCODE_API_KEY",
+    },
+    "custom": {
+        "base_url": "",
+        "base_url_env": "LOOM_CUSTOM_BASE_URL",
+        "api_key_env": "LOOM_CUSTOM_API_KEY",
+        "api_key_env_fallback": "",
+    },
+}
+
+
+def _build_openai_compatible(provider: str, name: str) -> "BaseChatModel":
+    from langchain_openai import ChatOpenAI
+
+    spec = _OPENAI_COMPATIBLE[provider]
+    base_url = os.environ.get(spec["base_url_env"]) or spec["base_url"]
+    api_key = os.environ.get(spec["api_key_env"]) or (
+        os.environ.get(spec["api_key_env_fallback"]) if spec["api_key_env_fallback"] else None
+    )
+    if not base_url:
+        raise RuntimeError(f"{spec['base_url_env']} is not set — required for the {provider!r} provider.")
+    if not api_key:
+        raise RuntimeError(
+            f"{spec['api_key_env']} is not set — required for the {provider!r} provider "
+            "(set it via settings.json's env block, e.g. `loom settings set "
+            f"env.{spec['api_key_env']} <key>`)."
+        )
+    return ChatOpenAI(model=name, base_url=base_url, api_key=api_key)
+
+
 @functools.lru_cache(maxsize=64)
 def _build_cached(provider: str, name: str, ollama_endpoint: str, num_ctx: int) -> "BaseChatModel":
     if provider == "ollama":
@@ -116,6 +171,9 @@ def _build_cached(provider: str, name: str, ollama_endpoint: str, num_ctx: int) 
             # Deterministic-ish defaults; subagents can override per-call.
             temperature=0.0,
         )
+
+    if provider in _OPENAI_COMPATIBLE:
+        return _build_openai_compatible(provider, name)
 
     if provider == "anthropic" and _use_bedrock():
         try:
@@ -131,6 +189,17 @@ def _build_cached(provider: str, name: str, ollama_endpoint: str, num_ctx: int) 
         # reads AWS_BEARER_TOKEN_BEDROCK / ANTHROPIC_BEDROCK_BASE_URL (or real
         # AWS credentials) straight from the environment — nothing else to pass.
         return ChatAnthropicBedrock(model=name)
+
+    if provider == "google_vertexai":
+        try:
+            from langchain.chat_models import init_chat_model
+
+            return init_chat_model(name, model_provider=provider)
+        except ImportError as exc:
+            raise ImportError(
+                "Google Vertex AI needs langchain-google-vertexai. Run "
+                "`pip install -e '.[vertexai]'` (or `pip install langchain-google-vertexai`)."
+            ) from exc
 
     from langchain.chat_models import init_chat_model
 

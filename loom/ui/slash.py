@@ -189,11 +189,15 @@ def _set_role_model(session: "Session", role: str, model: str) -> None:
 
 
 def _model_candidates(session: "Session") -> list[str]:
-    """Installed local Ollama models first, then common cloud models."""
+    """Installed local Ollama models first, then each cloud provider's
+    example models. For full control over providers/credentials, use /setup."""
     from loom.core import ollama
+    from loom.core import providers as prov
 
     local = [f"ollama/{tag}" for tag in ollama.status(session.settings.models).models]
-    cloud = ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-8"]
+    # Use the full prefixed string (not the bare model id) — some providers
+    # (zen/go/custom/vertexai) need it to resolve to the right provider at all.
+    cloud = [p.model_string(m) for p in prov.cloud_providers() for m in p.example_models]
     return local + [c for c in cloud if c not in local]
 
 
@@ -253,6 +257,25 @@ def _model(session: "Session", args: str) -> bool:
     if choice.isdigit() and 1 <= int(choice) <= len(candidates):
         choice = candidates[int(choice) - 1]
     _set_role_model(session, role, choice)
+    return True
+
+
+@command("setup", "Run the setup wizard: configure providers/models for every role")
+def _setup(session: "Session", args: str) -> bool:
+    from loom.ui import onboarding
+
+    roles = onboarding.ALL_ROLES
+    if args.strip():
+        requested = tuple(r for r in args.split() if r in onboarding.ALL_ROLES)
+        if requested:
+            roles = requested
+    try:
+        onboarding.run(session.console, root=session.cwd, roles=roles)
+    except (KeyboardInterrupt, EOFError):
+        session.console.print("\n[loom.dim]setup cancelled[/loom.dim]")
+        return True
+    session.reload_settings()
+    session.rebuild()
     return True
 
 

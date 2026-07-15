@@ -18,7 +18,7 @@ EXPECTED_COMMANDS = {
     "resume", "undo",
     # Loom-specific
     "plan", "local", "yolo", "agents", "models", "settings", "theme", "cwd",
-    "airgap",
+    "airgap", "setup",
 }
 
 
@@ -118,6 +118,46 @@ def test_model_role_set_routes_to_settings(tmp_path, monkeypatch, capsys):
         ("models.advisor", "claude-opus-4-8"),
         ("models.orchestrator", "claude-sonnet-4-6"),
     ]
+
+
+def test_setup_dispatches_to_onboarding_and_reloads(tmp_path, monkeypatch):
+    from loom.ui import onboarding
+
+    calls = []
+    monkeypatch.setattr(onboarding, "run", lambda console, **kw: calls.append(kw) or None)
+    s = _session(tmp_path)
+    reloaded = []
+    monkeypatch.setattr(s, "reload_settings", lambda: reloaded.append(True))
+    monkeypatch.setattr(s, "rebuild", lambda: reloaded.append(True))
+
+    assert slash.dispatch(s, "/setup") is True
+    assert calls and calls[0]["root"] == s.cwd
+    assert reloaded == [True, True]
+
+
+def test_setup_with_role_args_filters_roles(tmp_path, monkeypatch):
+    from loom.ui import onboarding
+
+    calls = []
+    monkeypatch.setattr(onboarding, "run", lambda console, **kw: calls.append(kw) or None)
+    s = _session(tmp_path)
+    monkeypatch.setattr(s, "reload_settings", lambda: None)
+    monkeypatch.setattr(s, "rebuild", lambda: None)
+
+    slash.dispatch(s, "/setup orchestrator advisor")
+    assert calls[0]["roles"] == ("orchestrator", "advisor")
+
+
+def test_setup_cancelled_does_not_crash(tmp_path, monkeypatch, capsys):
+    from loom.ui import onboarding
+
+    def _cancel(console, **kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(onboarding, "run", _cancel)
+    s = _session(tmp_path)
+    assert slash.dispatch(s, "/setup") is True
+    assert "cancelled" in capsys.readouterr().out
 
 
 def test_airgap_toggle(tmp_path, capsys):

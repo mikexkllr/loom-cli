@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Setup wizard** (`loom setup` / `/setup`) — configure every model role
+  (orchestrator/advisor/escalation/subagents) from the UI: pick a provider,
+  enter credentials, pick a model, all written straight to `settings.json`
+  and reloaded live. Auto-launches on a true first run.
+- **Hardware-aware local model recommendations** — detects OS, RAM, and
+  Apple Silicon/NVIDIA/AMD GPU + VRAM, and suggests an Ollama coding model
+  that actually fits, with an offer to `ollama pull` on the spot
+  (`loom/core/recommendations.py`).
+- **New providers**: AWS Bedrock (Anthropic), OpenAI-compatible custom
+  endpoints, OpenCode Zen, OpenCode Go, and Google Vertex AI — alongside the
+  existing Anthropic, OpenAI, and Google AI Studio. Full catalog in
+  `loom/core/providers.py`.
+- `settings.json` can now carry a top-level `models` key (deep-merged on top
+  of `config.yaml`, at either the user or project layer) — what `/setup`
+  writes, but also settable by hand.
+
 ## 0.2.0 — 2026-07-13
 
 ### Added

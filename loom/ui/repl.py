@@ -529,11 +529,30 @@ def _setup_hint(session: Session) -> None:
     )
 
 
+def _maybe_run_onboarding(session: Session) -> None:
+    """True first run (no settings.json anywhere yet): launch the setup
+    wizard instead of silently falling back to packaged defaults. Falls back
+    to the passive `_setup_hint` if the user cancels or it's not a first run."""
+    from loom.ui import onboarding
+
+    if not onboarding.needs_onboarding(session.cwd):
+        _setup_hint(session)
+        return
+    session.console.print("[loom.dim]No settings.json found yet — let's configure your models (/setup to redo this later).[/loom.dim]")
+    try:
+        onboarding.run(session.console, root=session.cwd)
+    except (KeyboardInterrupt, EOFError):
+        session.console.print("\n[loom.dim]setup skipped — run /setup any time to configure models[/loom.dim]")
+        return
+    session.reload_settings()
+    session.rebuild()
+
+
 def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yolo=False, airgap=False) -> None:
     session = Session(settings, cwd, plan=plan, local_only=local_only, yolo=yolo, airgap=airgap)
     if settings.ui.banner:
         session.console.print(_banner(session))
-    _setup_hint(session)
+    _maybe_run_onboarding(session)
 
     prompt_session = _make_prompt_session(session)
     session._prompt_session = prompt_session

@@ -396,5 +396,20 @@ def doctor(root: str = typer.Option(".", "--root")) -> None:
     console.print(Panel("\n".join(lines), title="loom doctor", border_style="blue"))
 
 
+@app.command("setup")
+def setup(
+    root: str = typer.Option(".", "--root"),
+    scope: Optional[str] = typer.Option(None, "--scope", help="Skip the scope prompt: user | project."),
+) -> None:
+    """Run the interactive setup wizard: pick providers/models for every role."""
+    from loom.ui import onboarding
+
+    try:
+        onboarding.run(console, root=root, scope=scope)
+    except (KeyboardInterrupt, EOFError):
+        console.print("\n[loom.dim]setup cancelled[/loom.dim]")
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

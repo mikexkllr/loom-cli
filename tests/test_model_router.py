@@ -20,6 +20,13 @@ from loom.core import model_router as mr
         ("openai:gpt-4o-mini", "openai", "gpt-4o-mini"),
         ("o3", "openai", "o3"),
         ("gemini-2.5-pro", "google_genai", "gemini-2.5-pro"),
+        ("vertexai:gemini-2.5-pro", "google_vertexai", "gemini-2.5-pro"),
+        ("vertex:gemini-2.5-pro", "google_vertexai", "gemini-2.5-pro"),
+        ("zen:glm-5.2", "opencode_zen", "glm-5.2"),
+        ("opencode-zen:glm-5.2", "opencode_zen", "glm-5.2"),
+        ("go:deepseek-v4-flash", "opencode_go", "deepseek-v4-flash"),
+        ("opencode-go:deepseek-v4-flash", "opencode_go", "deepseek-v4-flash"),
+        ("custom:my-self-hosted-model", "custom", "my-self-hosted-model"),
     ],
 )
 def test_resolve(raw, provider, name):
@@ -78,5 +85,74 @@ def test_anthropic_routes_through_bedrock_when_flagged(monkeypatch):
 
         model = mr._build_cached("anthropic", "claude-sonnet-4-6", "", 0)
         assert isinstance(model, ChatAnthropicBedrock)
+    finally:
+        mr._build_cached.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "provider,api_key_env,default_base_url",
+    [
+        ("opencode_zen", "OPENCODE_ZEN_API_KEY", "https://opencode.ai/zen/v1"),
+        ("opencode_go", "OPENCODE_GO_API_KEY", "https://opencode.ai/zen/go/v1"),
+    ],
+)
+def test_opencode_presets_build_chat_openai(monkeypatch, provider, api_key_env, default_base_url):
+    pytest.importorskip("langchain_openai")
+    from langchain_openai import ChatOpenAI
+
+    monkeypatch.setenv(api_key_env, "test-key")
+    mr._build_cached.cache_clear()
+    try:
+        model = mr._build_cached(provider, "some-model", "", 0)
+        assert isinstance(model, ChatOpenAI)
+        assert model.openai_api_base == default_base_url
+    finally:
+        mr._build_cached.cache_clear()
+
+
+def test_opencode_zen_falls_back_to_shared_api_key(monkeypatch):
+    pytest.importorskip("langchain_openai")
+    monkeypatch.delenv("OPENCODE_ZEN_API_KEY", raising=False)
+    monkeypatch.setenv("OPENCODE_API_KEY", "shared-key")
+    mr._build_cached.cache_clear()
+    try:
+        model = mr._build_cached("opencode_zen", "glm-5.2", "", 0)
+        assert model.openai_api_key.get_secret_value() == "shared-key"
+    finally:
+        mr._build_cached.cache_clear()
+
+
+def test_custom_provider_requires_base_url(monkeypatch):
+    monkeypatch.delenv("LOOM_CUSTOM_BASE_URL", raising=False)
+    mr._build_cached.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="LOOM_CUSTOM_BASE_URL"):
+            mr._build_cached("custom", "my-model", "", 0)
+    finally:
+        mr._build_cached.cache_clear()
+
+
+def test_custom_provider_requires_api_key(monkeypatch):
+    monkeypatch.setenv("LOOM_CUSTOM_BASE_URL", "https://example.com/v1")
+    monkeypatch.delenv("LOOM_CUSTOM_API_KEY", raising=False)
+    mr._build_cached.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="LOOM_CUSTOM_API_KEY"):
+            mr._build_cached("custom", "my-model", "", 0)
+    finally:
+        mr._build_cached.cache_clear()
+
+
+def test_custom_provider_builds_chat_openai(monkeypatch):
+    pytest.importorskip("langchain_openai")
+    from langchain_openai import ChatOpenAI
+
+    monkeypatch.setenv("LOOM_CUSTOM_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("LOOM_CUSTOM_API_KEY", "test-key")
+    mr._build_cached.cache_clear()
+    try:
+        model = mr._build_cached("custom", "my-model", "", 0)
+        assert isinstance(model, ChatOpenAI)
+        assert model.openai_api_base == "https://example.com/v1"
     finally:
         mr._build_cached.cache_clear()
