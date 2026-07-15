@@ -194,7 +194,9 @@ def set_value(dotted_key: str, value: str, root: str | Path = ".") -> Settings:
     cursor: Any = data
     for part in parts[:-1]:
         cursor = cursor.setdefault(part, {})
-    cursor[parts[-1]] = cfg._coerce(value)
+    # `env` values are always strings (they end up as process env vars) —
+    # skip bool/int/float coercion so e.g. `env.FOO 1` doesn't become int 1.
+    cursor[parts[-1]] = value if parts[0] == "env" else cfg._coerce(value)
 
     # Re-validate the whole object (models re-loaded from disk).
     merged = {**data, "models": settings.models.model_dump()}
