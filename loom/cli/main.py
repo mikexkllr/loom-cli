@@ -361,6 +361,7 @@ def doctor(root: str = typer.Option(".", "--root")) -> None:
     from loom.core.mcp import mcp_status
 
     settings = settings_mod.load_settings(root)
+    settings.apply_env()  # so settings.json-provided credentials are reflected below
     config = settings.models
 
     def row(ok, label, detail) -> str:
@@ -378,7 +379,7 @@ def doctor(root: str = typer.Option(".", "--root")) -> None:
     else:
         lines.append(row(False, "ollama", "not installed"))
         lines.append(row(None, "cloud fallback", f"local roles will run on {config.cloud_fallback} (billed)"))
-    key_set = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    key_set = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
     lines.append(row(key_set, "anthropic_api_key", "set" if key_set else "not set"))
     lines.append(row(bool(_shutil.which("npx")), "npx", "found" if _shutil.which("npx") else "not found (Playwright MCP needs Node)"))
     for r in mcp_status(settings):
