@@ -14,6 +14,7 @@ name inference.
 from __future__ import annotations
 
 import functools
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -91,6 +92,18 @@ def resolve(model: str) -> ResolvedModel:
 # ----------------------------------------------------------------------------
 
 
+def _use_bedrock() -> bool:
+    """True if Claude models should route through AWS Bedrock (or a Bedrock-
+    compatible corporate proxy) instead of the direct Anthropic API.
+
+    Mirrors Claude Code's own convention: ``CLAUDE_CODE_USE_BEDROCK=1`` or an
+    explicit ``ANTHROPIC_BEDROCK_BASE_URL`` opts in. Set via ``settings.json``'s
+    ``env`` block (see ``loom settings set env.CLAUDE_CODE_USE_BEDROCK 1``).
+    """
+    flag = os.environ.get("CLAUDE_CODE_USE_BEDROCK", "").strip().lower()
+    return flag in {"1", "true", "yes"} or bool(os.environ.get("ANTHROPIC_BEDROCK_BASE_URL"))
+
+
 @functools.lru_cache(maxsize=64)
 def _build_cached(provider: str, name: str, ollama_endpoint: str, num_ctx: int) -> "BaseChatModel":
     if provider == "ollama":
@@ -103,6 +116,21 @@ def _build_cached(provider: str, name: str, ollama_endpoint: str, num_ctx: int) 
             # Deterministic-ish defaults; subagents can override per-call.
             temperature=0.0,
         )
+
+    if provider == "anthropic" and _use_bedrock():
+        try:
+            from langchain_aws import ChatAnthropicBedrock
+        except ImportError as exc:
+            raise ImportError(
+                "CLAUDE_CODE_USE_BEDROCK / ANTHROPIC_BEDROCK_BASE_URL is set, but "
+                "langchain-aws isn't installed. Run `pip install -e '.[bedrock]'` "
+                "(or `pip install langchain-aws`)."
+            ) from exc
+
+        # ChatAnthropicBedrock wraps anthropic's AnthropicBedrock client, which
+        # reads AWS_BEARER_TOKEN_BEDROCK / ANTHROPIC_BEDROCK_BASE_URL (or real
+        # AWS credentials) straight from the environment — nothing else to pass.
+        return ChatAnthropicBedrock(model=name)
 
     from langchain.chat_models import init_chat_model
 

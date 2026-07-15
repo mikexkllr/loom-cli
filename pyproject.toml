@@ -47,6 +47,12 @@ mlx = [
     # only needed if you want to run models directly through MLX instead.
     "mlx-lm>=0.18.0; platform_system == 'Darwin'",
 ]
+bedrock = [
+    # Routes claude-* models through AWS Bedrock (or a Bedrock-compatible
+    # corporate proxy) instead of the direct Anthropic API — only needed when
+    # CLAUDE_CODE_USE_BEDROCK / ANTHROPIC_BEDROCK_BASE_URL is set.
+    "langchain-aws>=1.4.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

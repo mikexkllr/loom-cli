@@ -47,3 +47,36 @@ def test_should_escalate_local_over_threshold():
 def test_cloud_models_never_escalate():
     c = cfg.load_config(path=cfg.DEFAULT_CONFIG_PATH)
     assert mr.should_escalate(10**9, "claude-sonnet-4-6", c) is False
+
+
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        ({}, False),
+        ({"CLAUDE_CODE_USE_BEDROCK": "1"}, True),
+        ({"CLAUDE_CODE_USE_BEDROCK": "true"}, True),
+        ({"CLAUDE_CODE_USE_BEDROCK": "0"}, False),
+        ({"ANTHROPIC_BEDROCK_BASE_URL": "https://example.com"}, True),
+    ],
+)
+def test_use_bedrock_flag(monkeypatch, env, expected):
+    monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BEDROCK_BASE_URL", raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert mr._use_bedrock() is expected
+
+
+def test_anthropic_routes_through_bedrock_when_flagged(monkeypatch):
+    pytest.importorskip("langchain_aws")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-token")
+    monkeypatch.setenv("ANTHROPIC_BEDROCK_BASE_URL", "https://example.com")
+    mr._build_cached.cache_clear()
+    try:
+        from langchain_aws import ChatAnthropicBedrock
+
+        model = mr._build_cached("anthropic", "claude-sonnet-4-6", "", 0)
+        assert isinstance(model, ChatAnthropicBedrock)
+    finally:
+        mr._build_cached.cache_clear()

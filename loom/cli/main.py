@@ -361,8 +361,12 @@ def doctor(root: str = typer.Option(".", "--root")) -> None:
     from loom.core.mcp import mcp_status
 
     settings = settings_mod.load_settings(root)
-    settings.apply_env()  # so settings.json-provided credentials are reflected below
     config = settings.models
+
+    def effective_env(key: str) -> str | None:
+        """Value ``key`` would resolve to without mutating the real process
+        env (doctor is read-only): real env wins, else settings.json's env."""
+        return os.environ.get(key) or settings.env.get(key)
 
     def row(ok, label, detail) -> str:
         mark = "[green]✓[/green]" if ok else ("[yellow]•[/yellow]" if ok is None else "[red]✗[/red]")
@@ -379,7 +383,11 @@ def doctor(root: str = typer.Option(".", "--root")) -> None:
     else:
         lines.append(row(False, "ollama", "not installed"))
         lines.append(row(None, "cloud fallback", f"local roles will run on {config.cloud_fallback} (billed)"))
-    key_set = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+    key_set = bool(
+        effective_env("ANTHROPIC_API_KEY")
+        or effective_env("ANTHROPIC_AUTH_TOKEN")
+        or effective_env("AWS_BEARER_TOKEN_BEDROCK")
+    )
     lines.append(row(key_set, "anthropic_api_key", "set" if key_set else "not set"))
     lines.append(row(bool(_shutil.which("npx")), "npx", "found" if _shutil.which("npx") else "not found (Playwright MCP needs Node)"))
     for r in mcp_status(settings):
