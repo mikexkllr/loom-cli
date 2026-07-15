@@ -295,15 +295,21 @@ def build_orchestrator(
 
     # Optional LangGraph persistence: pass a checkpointer if create_deep_agent
     # supports it, so the REPL keeps thread state and can resume across runs.
-    persistent = False
-    if checkpointer is not None:
-        try:
-            agent = create_deep_agent(**kwargs, checkpointer=checkpointer)
-            persistent = True
-        except TypeError:
-            agent = create_deep_agent(**kwargs)  # older signature — no persistence
-    else:
-        agent = create_deep_agent(**kwargs)
+    def _build_agent(kw: dict[str, Any]) -> tuple[Any, bool]:
+        if checkpointer is not None:
+            try:
+                return create_deep_agent(**kw, checkpointer=checkpointer), True
+            except TypeError:
+                return create_deep_agent(**kw), False  # older signature — no persistence
+        return create_deep_agent(**kw), False
+
+    try:
+        agent, persistent = _build_agent(kwargs)
+    except AssertionError:
+        # deepagents >= 0.6 already injects its own SummarizationMiddleware into
+        # the base stack — drop ours rather than crash on duplicate middleware.
+        kwargs["middleware"] = [m for m in middleware if m is not summ]
+        agent, persistent = _build_agent(kwargs)
 
     from loom.middleware.prompt_size_guard import PromptSizeGuard
 

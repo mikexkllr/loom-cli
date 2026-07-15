@@ -61,6 +61,22 @@ def summarization_middleware(config: LoomConfig):
 
     window = config.context_window_for(config.orchestrator, default=200_000)
     trigger = int(window * config.compaction_threshold)
+
+    # deepagents >= 0.6 requires an explicit `backend` (for offloaded history)
+    # and renamed `max_tokens_before_summary` -> `trigger=("tokens", n)`.
+    # StateBackend is ephemeral (in-process/graph state), so this stays a
+    # dependency-free default — it doesn't touch the filesystem.
+    try:
+        from deepagents.backends import StateBackend
+
+        return SummarizationMiddleware(
+            model=config.orchestrator,
+            backend=StateBackend(),
+            trigger=("tokens", trigger),
+        )
+    except (ImportError, TypeError):
+        pass
+
     try:
         return SummarizationMiddleware(
             model=config.orchestrator,
