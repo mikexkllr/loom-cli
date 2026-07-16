@@ -27,7 +27,9 @@ _SPECIFIER_FIELD = {
     "read_file": "path",
     "ls": "path",
     "glob_tool": "pattern",
+    "glob": "pattern",
     "grep_tool": "pattern",
+    "grep": "pattern",
     "web_search": "query",
 }
 
@@ -36,6 +38,28 @@ class Decision(str, Enum):
     allow = "allow"
     ask = "ask"
     deny = "deny"
+
+
+def _tool_input_value(tool_name: str, field: str, tool_input: dict) -> str:
+    """Return the value for a specifier field, aliasing ``file_path`` to ``path``.
+
+    deepagents' FilesystemMiddleware tools use ``file_path`` for the target path.
+    We also strip a leading ``/`` so that virtual absolute paths produced by
+    those tools (``/src/foo.py``) match relative globs the user wrote
+    (``src/**``).
+    """
+    if field == "path":
+        value = tool_input.get("path") or tool_input.get("file_path")
+    else:
+        value = tool_input.get(field)
+    if value is None:
+        return ""
+    value = str(value)
+    # Normalize virtual absolute paths to relative-looking strings for glob
+    # matching. The actual sandbox resolution happens later in the tool.
+    if value.startswith("/"):
+        value = value.lstrip("/")
+    return value
 
 
 def _rule_matches(rule: str, tool_name: str, tool_input: dict) -> bool:
@@ -52,7 +76,7 @@ def _rule_matches(rule: str, tool_name: str, tool_input: dict) -> bool:
         if name not in ("*", tool_name):
             return False
         field = _SPECIFIER_FIELD.get(tool_name)
-        value = str(tool_input.get(field, "")) if field else " ".join(map(str, tool_input.values()))
+        value = _tool_input_value(tool_name, field, tool_input) if field else " ".join(map(str, tool_input.values()))
         return fnmatch.fnmatch(value, spec.strip())
     return False
 

@@ -287,14 +287,21 @@ class Session:
 
     def _diff_for(self, tool_name: str, tool_input: dict) -> Text | None:
         """Unified diff preview for write_file / edit_file approvals."""
-        path = tool_input.get("path")
+        # deepagents' own FilesystemMiddleware tools (used by the orchestrator
+        # directly) key the target path as `file_path`; Loom's sandboxed tools
+        # (used by subagents) key it as `path`.
+        path = tool_input.get("path") or tool_input.get("file_path")
         if not path:
+            return None
+        try:
+            target = sandbox.resolve_in_sandbox(str(path))
+            display_path = target.relative_to(self.cwd)
+        except Exception:
             return None
         if tool_name == "edit_file":
             old = str(tool_input.get("old_string", ""))
             new = str(tool_input.get("new_string", ""))
         elif tool_name == "write_file":
-            target = self.cwd / path if not Path(path).is_absolute() else Path(path)
             try:
                 old = target.read_text(encoding="utf-8", errors="replace") if target.exists() else ""
             except OSError:
@@ -303,7 +310,7 @@ class Session:
         else:
             return None
         lines = list(
-            difflib.unified_diff(old.splitlines(), new.splitlines(), fromfile=f"a/{path}", tofile=f"b/{path}", lineterm="")
+            difflib.unified_diff(old.splitlines(), new.splitlines(), fromfile=f"a/{display_path}", tofile=f"b/{display_path}", lineterm="")
         )
         if not lines:
             return None

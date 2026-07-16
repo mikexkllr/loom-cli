@@ -27,13 +27,27 @@ def get_root() -> Path:
 def resolve_in_sandbox(relative_or_abs: str) -> Path:
     """Resolve a tool-supplied path and assert it stays under the sandbox root.
 
+    Supports both ordinary relative paths and *virtual absolute* paths
+    (e.g. ``/cs_ai_quiz/quiz.py``) produced by deepagents' filesystem tools.
+    A real absolute path that is already under the root is allowed unchanged;
+    any other absolute path is treated as virtual and anchored to the root.
+
     Raises ``ValueError`` on traversal outside the root — surfaced back to the
     model as a tool error so it can correct course.
     """
     root = get_root()
     candidate = Path(relative_or_abs)
-    full = candidate if candidate.is_absolute() else root / candidate
-    full = full.resolve()
+    if candidate.is_absolute():
+        # First, treat it as a real absolute path; resolve and verify it is
+        # under the root. If it is not, treat the leading ``/`` as a virtual
+        # root and anchor the remainder under the sandbox root.
+        resolved = candidate.resolve()
+        if root not in resolved.parents and resolved != root:
+            virtual = candidate.relative_to("/")
+            resolved = (root / virtual).resolve()
+        full = resolved
+    else:
+        full = (root / candidate).resolve()
     if root not in full.parents and full != root:
         raise ValueError(
             f"Path {relative_or_abs!r} escapes the sandbox root {root}. "

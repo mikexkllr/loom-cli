@@ -568,8 +568,15 @@ def _doctor(session: "Session", args: str) -> bool:
         out.append(row(False, "ollama", "not installed"))
         out.append(row(None, "cloud fallback", f"local roles run on {cfg.cloud_fallback} (billed)"))
 
-    for key in ("ANTHROPIC_API_KEY",):
-        out.append(row(bool(os.environ.get(key)), key.lower(), "set" if os.environ.get(key) else "not set"))
+    def effective_env(key: str) -> str | None:
+        return os.environ.get(key) or session.settings.env.get(key)
+
+    key_set = bool(
+        effective_env("ANTHROPIC_API_KEY")
+        or effective_env("ANTHROPIC_AUTH_TOKEN")
+        or effective_env("AWS_BEARER_TOKEN_BEDROCK")
+    )
+    out.append(row(key_set, "anthropic_api_key", "set" if key_set else "not set"))
 
     out.append(row(bool(shutil.which("npx")), "npx", "found" if shutil.which("npx") else "not found (Playwright MCP needs Node)"))
     for r in mcp_status(session.settings):

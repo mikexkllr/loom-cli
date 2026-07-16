@@ -18,6 +18,7 @@ from loom.core import hooks as hooks_engine
 from loom.core import permissions as perm_engine
 from loom.core.permissions import Decision
 from loom.core.settings import Settings
+from loom.tools.sandbox import resolve_in_sandbox
 
 try:
     from langchain.agents.middleware import AgentMiddleware
@@ -43,6 +44,39 @@ auto_approve_edits: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 _EDIT_TOOLS = {"write_file", "edit_file"}
+
+
+def _normalize_path_arg(args: dict, cwd: str) -> dict:
+    """Alias deepagents' ``file_path`` to Loom's ``path`` key and normalize it.
+
+    Loom's own filesystem tools (and the permission engine, /undo, and the
+    REPL's diff preview) key on ``path``. deepagents' built-in
+    ``FilesystemMiddleware`` tools — which the orchestrator uses directly,
+    without Loom's sandboxed wrappers — key on ``file_path`` instead, and use
+    absolute virtual paths such as ``/cs_ai_quiz/quiz.py``. We resolve those
+    against the sandbox root and convert the value to a path relative to the
+    current working directory so permission specifiers like
+    ``write_file(secrets/**)``, /undo snapshots, and diff previews all work.
+    """
+    if "path" not in args and "file_path" in args:
+        args = {**args, "path": args["file_path"]}
+    path = args.get("path")
+    if path is None:
+        return args
+    from pathlib import Path
+
+    try:
+        target = resolve_in_sandbox(str(path))
+        rel = str(target.resolve().relative_to(Path(cwd).resolve()))
+        args = {**args, "path": rel}
+    except Exception:
+        # Best-effort: if we can't resolve, at least strip a leading ``/`` so
+        # permission globs that expect relative paths (``src/**``) still match
+        # virtual absolute paths (``/src/foo.py``).
+        p = str(path)
+        if p.startswith("/"):
+            args = {**args, "path": p.lstrip("/")}
+    return args
 
 
 class PolicyMiddleware(AgentMiddleware):
@@ -107,17 +141,17 @@ class PolicyMiddleware(AgentMiddleware):
             hooks_engine.post_tool_use(self.settings.hooks, name, args, self.cwd)
 
     # --- helpers (aligned to ToolCallRequest.call = {name, args, id}) ---
-    @staticmethod
-    def _extract(request: Any) -> tuple[str | None, dict, str]:
+    def _extract(self, request: Any) -> tuple[str | None, dict, str]:
         call = getattr(request, "call", None) or getattr(request, "tool_call", None)
         if isinstance(call, dict):
             args = call.get("args", {}) or {}
-            return call.get("name"), args if isinstance(args, dict) else {}, call.get("id", "")
+            args = args if isinstance(args, dict) else {}
+            return call.get("name"), _normalize_path_arg(args, self.cwd), call.get("id", "")
         # Older/alternate shapes.
         name = getattr(request, "tool_name", None) or getattr(request, "name", None)
         args = getattr(request, "args", None) or getattr(request, "tool_input", None) or {}
         if name:
-            return name, args if isinstance(args, dict) else {}, ""
+            return name, _normalize_path_arg(args if isinstance(args, dict) else {}, self.cwd), ""
         return None, {}, ""
 
     def _blocked(self, request: Any, message: str) -> Any:

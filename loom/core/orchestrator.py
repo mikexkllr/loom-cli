@@ -25,7 +25,7 @@ from loom.core.artifact_store import summarization_middleware
 from loom.core.config import LoomConfig
 from loom.core.model_router import build_model
 from loom.subagents import build_all_subagents
-from loom.tools import read_file
+from loom.tools.sandbox import get_root
 
 ORCHESTRATOR_SYSTEM = """You are Loom, a hybrid local/cloud multi-agent coding orchestrator.
 
@@ -259,8 +259,14 @@ def build_orchestrator(
     # ----- orchestrator tools -----
     # Airgap: the (cloud) orchestrator loses read_file so raw file contents
     # can never enter its context — only subagent summaries.
-    tools: list[Any] = [] if airgap else [read_file]
-    if not local_only:
+    # deepagents' FilesystemMiddleware injects ls/read_file/write_file/edit_file/
+    # glob/grep/execute automatically. The orchestrator may use read_file (via
+    # the deepagents schema, with virtual absolute paths) and the read-only
+    # ls/glob/grep tools; write_file/edit_file/execute are removed below.
+    tools: list[Any] = []
+    if not local_only and not airgap:
+        # consult sends the question+context to a cloud advisor; in airgap and
+        # local-only modes no orchestrator-originated data may leave the machine.
         tools.append(make_consult_tool(config))
 
     # ----- system prompt (kept prefix-stable for prompt caching) -----
@@ -283,7 +289,44 @@ def build_orchestrator(
         # Permission + hook enforcement around every tool call.
         from loom.middleware.policy import PolicyMiddleware
 
-        middleware.append(PolicyMiddleware(loom_settings, cwd=cwd))
+        # Airgap: harden the policy gate so that even if a file tool slips
+        # through the tool-exclusion middleware, the policy gate rejects it.
+        if airgap:
+            from loom.core.settings import Permissions
+
+            policy_settings = loom_settings.model_copy(
+                update={
+                    "permissions": Permissions(
+                        default_mode="deny",
+                        allow=["task", "write_todos"],
+                        deny=["read_file", "write_file", "edit_file", "execute", "ls", "glob", "grep"],
+                    )
+                }
+            )
+        else:
+            policy_settings = loom_settings
+        middleware.append(PolicyMiddleware(policy_settings, cwd=cwd))
+
+    # deepagents always injects FilesystemMiddleware (ls/read_file/write_file/
+    # edit_file/glob/grep/execute). Use a *sandbox* backend so the `execute`
+    # tool is not filtered out for subagents that need it (bash, general).
+    # Loom's own ``execute`` tool shadows the middleware one, so this only
+    # affects the availability check; the actual shell commands still run
+    # through Loom's sandboxed wrapper in ``loom.tools.shell``.
+    from deepagents.backends import LocalShellBackend
+
+    backend = LocalShellBackend(root_dir=get_root(), virtual_mode=True, inherit_env=True)
+
+    # Strip dangerous/file tools from the orchestrator request. The middleware
+    # injects them unconditionally, but the orchestrator should only read and
+    # delegate; writes and shell execution belong to subagents.
+    from loom.middleware.tool_exclusion import ToolExclusionMiddleware
+
+    excluded_tools = {"write_file", "edit_file", "execute"}
+    if airgap:
+        # Airgap: no orchestrator tool may touch the filesystem or run a process.
+        excluded_tools = {"read_file", "write_file", "edit_file", "execute", "ls", "glob", "grep"}
+    middleware.append(ToolExclusionMiddleware(excluded_tools))
 
     kwargs: dict[str, Any] = dict(
         model=orch_model,
@@ -291,6 +334,7 @@ def build_orchestrator(
         system_prompt=system,
         subagents=subagents,
         middleware=middleware,
+        backend=backend,
     )
 
     # Optional LangGraph persistence: pass a checkpointer if create_deep_agent
