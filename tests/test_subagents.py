@@ -29,7 +29,7 @@ def test_modes_match_spec():
 
 def test_tool_sets_match_spec():
     explorer_tools = {t.name for t in SPECS["explorer"].tools}
-    assert explorer_tools == {"ls", "read_file", "glob_tool", "grep_tool"}
+    assert explorer_tools == {"ls", "read_file", "glob", "grep"}
 
     editor_tools = {t.name for t in SPECS["editor"].tools}
     assert editor_tools == {"read_file", "write_file", "edit_file"}
@@ -38,7 +38,7 @@ def test_tool_sets_match_spec():
     assert "execute" in bash_tools
 
     reviewer_tools = {t.name for t in SPECS["reviewer"].tools}
-    assert reviewer_tools == {"read_file", "grep_tool"}
+    assert reviewer_tools == {"read_file", "grep"}
 
     general_tools = {t.name for t in SPECS["general"].tools}
     assert "execute" in general_tools and "write_file" in general_tools

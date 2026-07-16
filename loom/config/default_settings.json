@@ -4,8 +4,8 @@
     "allow": [
       "read_file",
       "ls",
-      "glob_tool",
-      "grep_tool",
+      "glob",
+      "grep",
       "web_search",
       "browser_*"
     ],

@@ -7,7 +7,7 @@ the orchestrator can gate on risk programmatically.
 
 from loom.core.advisor import REVIEW_SYSTEM, ReviewVerdict
 from loom.subagents.base import SubagentSpec
-from loom.tools import grep_tool, read_file
+from loom.tools import grep, read_file
 
 
 def spec() -> SubagentSpec:
@@ -19,7 +19,7 @@ def spec() -> SubagentSpec:
             "issues. High risk => surface to the human before continuing."
         ),
         system_prompt=REVIEW_SYSTEM,
-        tools=[read_file, grep_tool],
+        tools=[read_file, grep],
         mode="read-only",
     )
 

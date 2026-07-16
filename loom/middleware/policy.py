@@ -23,6 +23,7 @@ from loom.tools.sandbox import resolve_in_sandbox
 try:
     from langchain.agents.middleware import AgentMiddleware
 except Exception:  # pragma: no cover
+
     class AgentMiddleware:  # type: ignore[no-redef]
         pass
 
@@ -35,7 +36,9 @@ confirm_callback: contextvars.ContextVar[Callable[[str, dict, str], bool]] = con
 )
 
 # When true, "ask" auto-approves (the REPL's /yolo mode, or --yes flag).
-auto_approve: contextvars.ContextVar[bool] = contextvars.ContextVar("loom_auto_approve", default=False)
+auto_approve: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "loom_auto_approve", default=False
+)
 
 # Claude Code-style "accept edits" mode: file writes auto-approve, everything
 # else (shell, etc.) still asks.
@@ -47,16 +50,15 @@ _EDIT_TOOLS = {"write_file", "edit_file"}
 
 
 def _normalize_path_arg(args: dict, cwd: str) -> dict:
-    """Alias deepagents' ``file_path`` to Loom's ``path`` key and normalize it.
+    """Normalize the path argument for permission, /undo, and diff preview hooks.
 
-    Loom's own filesystem tools (and the permission engine, /undo, and the
-    REPL's diff preview) key on ``path``. deepagents' built-in
-    ``FilesystemMiddleware`` tools — which the orchestrator uses directly,
-    without Loom's sandboxed wrappers — key on ``file_path`` instead, and use
-    absolute virtual paths such as ``/cs_ai_quiz/quiz.py``. We resolve those
-    against the sandbox root and convert the value to a path relative to the
-    current working directory so permission specifiers like
-    ``write_file(secrets/**)``, /undo snapshots, and diff previews all work.
+    Both deepagents' built-in ``FilesystemMiddleware`` tools and Loom's custom
+    filesystem tools use ``file_path`` and absolute virtual paths such as
+    ``/cs_ai_quiz/quiz.py``. We resolve those against the sandbox root and add a
+    ``path`` key relative to the current working directory, keeping both keys in
+    ``args`` so the tool call still receives ``file_path`` while Loom's
+    permission specifiers (e.g. ``write_file(secrets/**)``), /undo snapshots, and
+    diff previews all work.
     """
     if "path" not in args and "file_path" in args:
         args = {**args, "path": args["file_path"]}

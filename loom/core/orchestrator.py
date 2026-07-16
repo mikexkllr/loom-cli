@@ -15,13 +15,13 @@ Run modes:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from loom.core.settings import Settings
 
 from loom.core.advisor import make_consult_tool
-from loom.core.artifact_store import summarization_middleware
 from loom.core.config import LoomConfig
 from loom.core.model_router import build_model
 from loom.subagents import build_all_subagents
@@ -280,11 +280,8 @@ def build_orchestrator(
     if not has_tester and not plan:
         system += NO_TESTER_SUFFIX
 
-    # ----- middleware: deepagents defaults + our summarization tuning -----
+    # ----- middleware: deepagents defaults (incl. SummarizationMiddleware) -----
     middleware: list[Any] = []
-    summ = summarization_middleware(config)
-    if summ is not None:
-        middleware.append(summ)
     if loom_settings is not None:
         # Permission + hook enforcement around every tool call.
         from loom.middleware.policy import PolicyMiddleware
@@ -299,7 +296,15 @@ def build_orchestrator(
                     "permissions": Permissions(
                         default_mode="deny",
                         allow=["task", "write_todos"],
-                        deny=["read_file", "write_file", "edit_file", "execute", "ls", "glob", "grep"],
+                        deny=[
+                            "read_file",
+                            "write_file",
+                            "edit_file",
+                            "execute",
+                            "ls",
+                            "glob",
+                            "grep",
+                        ],
                     )
                 }
             )
@@ -308,14 +313,25 @@ def build_orchestrator(
         middleware.append(PolicyMiddleware(policy_settings, cwd=cwd))
 
     # deepagents always injects FilesystemMiddleware (ls/read_file/write_file/
-    # edit_file/glob/grep/execute). Use a *sandbox* backend so the `execute`
-    # tool is not filtered out for subagents that need it (bash, general).
-    # Loom's own ``execute`` tool shadows the middleware one, so this only
-    # affects the availability check; the actual shell commands still run
-    # through Loom's sandboxed wrapper in ``loom.tools.shell``.
-    from deepagents.backends import LocalShellBackend
+    # edit_file/glob/grep/execute). Use a composite backend so large tool results
+    # and summarization offloads are persisted under ``.loom/`` rather than in
+    # the project root, while the default sandbox still runs shell commands in
+    # the project/worktree root.
+    from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 
-    backend = LocalShellBackend(root_dir=get_root(), virtual_mode=True, inherit_env=True)
+    sessions_dir = Path(cwd) / ".loom" / "sessions"
+    artifacts_dir = Path(cwd) / ".loom" / "artifacts"
+    backend = CompositeBackend(
+        default=LocalShellBackend(root_dir=get_root(), virtual_mode=True, inherit_env=True),
+        routes={
+            "/conversation_history/": FilesystemBackend(
+                root_dir=sessions_dir / "conversation_history", virtual_mode=True
+            ),
+            "/large_tool_results/": FilesystemBackend(
+                root_dir=artifacts_dir / "large_tool_results", virtual_mode=True
+            ),
+        },
+    )
 
     # Strip dangerous/file tools from the orchestrator request. The middleware
     # injects them unconditionally, but the orchestrator should only read and
@@ -347,17 +363,13 @@ def build_orchestrator(
                 return create_deep_agent(**kw), False  # older signature — no persistence
         return create_deep_agent(**kw), False
 
-    try:
-        agent, persistent = _build_agent(kwargs)
-    except AssertionError:
-        # deepagents >= 0.6 already injects its own SummarizationMiddleware into
-        # the base stack — drop ours rather than crash on duplicate middleware.
-        kwargs["middleware"] = [m for m in middleware if m is not summ]
-        agent, persistent = _build_agent(kwargs)
+    agent, persistent = _build_agent(kwargs)
 
     from loom.middleware.prompt_size_guard import PromptSizeGuard
 
-    guards = [m for s in subagents for m in s.get("middleware", []) if isinstance(m, PromptSizeGuard)]
+    guards = [
+        m for s in subagents for m in s.get("middleware", []) if isinstance(m, PromptSizeGuard)
+    ]
 
     return OrchestratorBundle(
         agent=agent,
@@ -366,5 +378,7 @@ def build_orchestrator(
         guards=guards,
         model_string=orch_model_string,
         subagent_names=[s["name"] for s in subagents],
-        mode="plan" if plan else ("local-only" if local_only else ("airgap" if airgap else "normal")),
+        mode="plan"
+        if plan
+        else ("local-only" if local_only else ("airgap" if airgap else "normal")),
     )
