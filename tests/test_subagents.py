@@ -28,24 +28,20 @@ def test_modes_match_spec():
 
 
 def test_tool_sets_match_spec():
-    explorer_tools = {t.name for t in SPECS["explorer"].tools}
-    assert explorer_tools == {"ls", "read_file", "glob", "grep"}
+    # deepagents' FilesystemMiddleware injects ls/read/write/edit/glob/grep/execute
+    # into every subagent, so Loom's specs only list extra tools (web_search,
+    # plus MCP browser tools that are appended at orchestrator build time).
+    assert {t.name for t in SPECS["explorer"].tools} == set()
+    assert {t.name for t in SPECS["editor"].tools} == set()
+    assert {t.name for t in SPECS["bash"].tools} == set()
+    assert {t.name for t in SPECS["reviewer"].tools} == set()
 
-    editor_tools = {t.name for t in SPECS["editor"].tools}
-    assert editor_tools == {"read_file", "write_file", "edit_file"}
+    assert {t.name for t in SPECS["searcher"].tools} == {"web_search"}
+    assert {t.name for t in SPECS["general"].tools} == {"web_search"}
 
-    bash_tools = {t.name for t in SPECS["bash"].tools}
-    assert "execute" in bash_tools
-
-    reviewer_tools = {t.name for t in SPECS["reviewer"].tools}
-    assert reviewer_tools == {"read_file", "grep"}
-
-    general_tools = {t.name for t in SPECS["general"].tools}
-    assert "execute" in general_tools and "write_file" in general_tools
-
-    # tester: write_file for evidence reports; browser_* tools come from the
-    # Playwright MCP server at build time.
-    assert {t.name for t in SPECS["tester"].tools} == {"write_file"}
+    # tester: browser_* MCP tools are injected at build time; write_file is
+    # supplied by deepagents' FilesystemMiddleware.
+    assert {t.name for t in SPECS["tester"].tools} == set()
 
 
 def test_describe_subagents_marks_local_vs_cloud():

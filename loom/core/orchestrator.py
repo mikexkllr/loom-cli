@@ -316,7 +316,8 @@ def build_orchestrator(
     # edit_file/glob/grep/execute). Use a composite backend so large tool results
     # and summarization offloads are persisted under ``.loom/`` rather than in
     # the project root, while the default sandbox still runs shell commands in
-    # the project/worktree root.
+    # the project/worktree root. Loom's own filesystem/shell tools have been
+    # removed; filesystem and terminal calls now go through deepagents.
     from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 
     sessions_dir = Path(cwd) / ".loom" / "sessions"

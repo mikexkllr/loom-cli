@@ -7,7 +7,6 @@ is dropped from the fleet for that run.
 """
 
 from loom.subagents.base import ISOLATION_PREAMBLE, SubagentSpec
-from loom.tools import write_file
 
 SPEC = SubagentSpec(
     name="tester",
@@ -35,6 +34,6 @@ SPEC = SubagentSpec(
         "Then return only a terse verdict — PASS or FAIL per step, the report "
         "path, and (on failure) the most likely cause."
     ),
-    tools=[write_file],  # + Playwright MCP tools injected at build time
+    tools=[],  # + Playwright MCP tools injected at build time; deepagents provides write_file
     mode="write",
 )

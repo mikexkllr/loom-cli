@@ -1,7 +1,6 @@
 """bash — runs sandboxed shell commands on a local mid-size model."""
 
 from loom.subagents.base import ISOLATION_PREAMBLE, SubagentSpec
-from loom.tools import execute, write_file
 
 SPEC = SubagentSpec(
     name="bash",
@@ -18,6 +17,6 @@ SPEC = SubagentSpec(
         "it pass/fail, the key error if any, and next-step suggestion. The raw "
         "log stays with you — quarantine it from the orchestrator's context."
     ),
-    tools=[execute, write_file],
+    tools=[],
     mode="write",
 )

@@ -1,7 +1,6 @@
 """explorer — read-only codebase reconnaissance on a local small model."""
 
 from loom.subagents.base import ISOLATION_PREAMBLE, SubagentSpec
-from loom.tools import READ_ONLY_FS
 
 SPEC = SubagentSpec(
     name="explorer",
@@ -16,6 +15,6 @@ SPEC = SubagentSpec(
         "sparingly. Report: the files that matter, the relevant symbols/line "
         "ranges, and a one-paragraph synthesis. Do NOT modify anything."
     ),
-    tools=READ_ONLY_FS,
+    tools=[],
     mode="read-only",
 )

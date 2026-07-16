@@ -1,7 +1,6 @@
 """editor — applies bounded code edits on a local mid-size model."""
 
 from loom.subagents.base import ISOLATION_PREAMBLE, SubagentSpec
-from loom.tools import WRITE_FS
 
 SPEC = SubagentSpec(
     name="editor",
@@ -17,6 +16,6 @@ SPEC = SubagentSpec(
         "surrounding code style. Report each file you changed and the gist of "
         "the change. Do not run shell commands."
     ),
-    tools=WRITE_FS,
+    tools=[],
     mode="write",
 )

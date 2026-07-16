@@ -1,7 +1,7 @@
 """searcher — read-only code + optional web search on a local small model."""
 
 from loom.subagents.base import ISOLATION_PREAMBLE, SubagentSpec
-from loom.tools import SEARCH
+from loom.tools import web_search
 
 SPEC = SubagentSpec(
     name="searcher",
@@ -17,6 +17,6 @@ SPEC = SubagentSpec(
         "meanings), use it. Return a direct answer and cite the file:line or URL "
         "you used. Keep it short."
     ),
-    tools=SEARCH,
+    tools=[web_search],
     mode="read-only",
 )

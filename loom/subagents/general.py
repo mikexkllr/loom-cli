@@ -1,12 +1,12 @@
 """general — fallback all-tools subagent on a local mid-size model.
 
 deepagents auto-adds a `general-purpose` subagent when none is supplied; Loom
-ships its own so the fallback runs on the configured local model and is bound to
-Loom's sandboxed tools.
+ships its own so the fallback runs on the configured local model. The filesystem,
+terminal, and todo tools come from deepagents; Loom only adds web_search here.
 """
 
 from loom.subagents.base import ISOLATION_PREAMBLE, SubagentSpec
-from loom.tools import ALL_TOOLS
+from loom.tools import web_search
 
 SPEC = SubagentSpec(
     name="general",
@@ -21,6 +21,6 @@ SPEC = SubagentSpec(
         "summary of what you changed and how you confirmed it. Keep the "
         "orchestrator's context clean — summarize, don't dump."
     ),
-    tools=ALL_TOOLS,
+    tools=[web_search],
     mode="write",
 )
