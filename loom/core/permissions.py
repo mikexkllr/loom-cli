@@ -24,6 +24,7 @@ _SPECIFIER_FIELD = {
     "execute": "command",
     "write_file": "path",
     "edit_file": "path",
+    "delete": "path",
     "read_file": "path",
     "ls": "path",
     "glob_tool": "pattern",

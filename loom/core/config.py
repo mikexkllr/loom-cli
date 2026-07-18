@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ----------------------------------------------------------------------------
 # Paths
@@ -54,6 +54,21 @@ class LoomConfig(BaseModel):
     worktree_isolation: bool = True
 
     # ----- validation -----
+
+    @model_validator(mode="before")
+    @classmethod
+    def _rename_general_role(cls, data: Any) -> Any:
+        """Back-compat: the fallback subagent was renamed ``general`` →
+        ``general-purpose`` (it must carry deepagents' reserved name to
+        override the auto-added default). Old configs keep working."""
+        if isinstance(data, dict):
+            subagents = data.get("subagents")
+            if isinstance(subagents, dict) and "general" in subagents:
+                subagents = dict(subagents)
+                # An explicit general-purpose entry wins over the legacy key.
+                subagents.setdefault("general-purpose", subagents.pop("general"))
+                data = {**data, "subagents": subagents}
+        return data
 
     @field_validator("advisor_threshold")
     @classmethod
@@ -103,6 +118,19 @@ def _read_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(fh) or {}
 
 
+def _normalize_legacy_roles(data: dict[str, Any]) -> dict[str, Any]:
+    """Rename the legacy ``subagents.general`` key to ``general-purpose`` in a
+    single config layer. Applied per layer BEFORE merging so a user override
+    written under the old name still beats packaged defaults under the new
+    one. Within one layer, an explicit ``general-purpose`` wins."""
+    subagents = data.get("subagents")
+    if isinstance(subagents, dict) and "general" in subagents:
+        subagents = dict(subagents)
+        subagents.setdefault("general-purpose", subagents.pop("general"))
+        data = {**data, "subagents": subagents}
+    return data
+
+
 def ensure_user_config() -> Path:
     """Create ``~/.loom/config.yaml`` from the packaged default if missing."""
     if not USER_CONFIG_PATH.exists():
@@ -120,10 +148,10 @@ def load_config(path: Path | None = None) -> LoomConfig:
     merged = _read_yaml(DEFAULT_CONFIG_PATH)
 
     if path is not None:
-        merged = _deep_merge(merged, _read_yaml(path))
+        merged = _deep_merge(merged, _normalize_legacy_roles(_read_yaml(path)))
     else:
         ensure_user_config()
-        merged = _deep_merge(merged, _read_yaml(USER_CONFIG_PATH))
+        merged = _deep_merge(merged, _normalize_legacy_roles(_read_yaml(USER_CONFIG_PATH)))
 
     return LoomConfig(**merged)
 

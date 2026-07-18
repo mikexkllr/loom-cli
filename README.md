@@ -83,7 +83,7 @@ result straight to `settings.json`, reloading it live. No manual YAML/JSON
 editing required.
 
 - **Quick setup** (default): pick one local Ollama model for the
-  local-leaning roles (explorer/editor/bash/searcher/general/tester) and one
+  local-leaning roles (explorer/editor/bash/searcher/general-purpose/tester) and one
   cloud provider for the cloud-leaning roles (orchestrator/advisor/escalation/
   reviewer) — the provider's strongest model goes to `advisor`, its
   lightest/cheapest to `reviewer`.
@@ -288,7 +288,7 @@ subagents:
   bash:     ollama/qwen3:14b
   searcher: ollama/qwen3:4b
   reviewer: claude-haiku-4-5
-  general:  ollama/qwen3:14b
+  general-purpose: ollama/qwen3:14b
   tester:   ollama/qwen3:14b
 advisor: claude-opus-4-8       # consulted on-demand only
 ollama_endpoint: http://localhost:11434
@@ -353,7 +353,7 @@ wins:
   default (needs `npx`); disable with
   `{"mcp_servers": {"playwright": {"enabled": false}}}`. Its `browser_*`
   tools power the `tester` subagent and are allowed by default; other
-  servers' tools go to `general` and follow normal permission rules.
+  servers' tools go to `general-purpose` and follow normal permission rules.
 
 Edit from the CLI (`loom settings set permissions.default_mode allow`), from the
 REPL (`/settings ui.theme light`), or by hand.
@@ -367,7 +367,7 @@ REPL (`/settings ui.theme light`), or by hand.
 | `bash`     | local mid   | `execute` (sandboxed shell), `write_file` | write |
 | `searcher` | local small | `grep`, `glob`, `web_search` (optional) | read-only |
 | `reviewer` | cloud cheap | `read_file`, `grep` | read-only |
-| `general`  | local mid   | all tools | fallback |
+| `general-purpose` | local mid | all tools | fallback |
 | `tester`   | local mid   | `browser_*` (Playwright MCP) | write |
 
 **Advisor** (`consult` tool): the strongest cloud model, called on-demand at
@@ -420,7 +420,7 @@ loom/
 │   ├── sessions.py         # SQLite persistence + /resume index
 │   ├── undo.py             # per-turn file snapshots for /undo
 │   └── repomap.py          # repo map + @file mention expansion
-├── subagents/              # explorer, editor, bash, searcher, reviewer, general, tester
+├── subagents/              # explorer, editor, bash, searcher, reviewer, general-purpose, tester
 ├── middleware/
 │   ├── prompt_size_guard.py
 │   └── policy.py           # enforce permissions + run hooks per tool call

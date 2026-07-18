@@ -107,9 +107,13 @@ class PolicyMiddleware(AgentMiddleware):
         return result
 
     def _snapshot(self, request: Any) -> None:
-        """Record the pre-write file state so /undo can roll the turn back."""
+        """Record the pre-write file state so /undo can roll the turn back.
+
+        ``delete`` is snapshotted too (single files restore; directory deletes
+        are best-effort — the copy fails silently and /undo skips them).
+        """
         name, args, _ = self._extract(request)
-        if name in ("write_file", "edit_file") and args.get("path"):
+        if name in ("write_file", "edit_file", "delete") and args.get("path"):
             try:
                 from loom.core import undo
 

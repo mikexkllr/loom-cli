@@ -30,7 +30,7 @@ from loom.core.settings import Settings
 # LoomConfig fields configured directly (not under `subagents`).
 TOP_LEVEL_ROLES = ("orchestrator", "advisor", "escalation")
 # Subagent roles, in the order they run day to day.
-SUBAGENT_ROLES = ("explorer", "editor", "bash", "searcher", "reviewer", "general", "tester")
+SUBAGENT_ROLES = ("explorer", "editor", "bash", "searcher", "reviewer", "general-purpose", "tester")
 ALL_ROLES = TOP_LEVEL_ROLES + SUBAGENT_ROLES
 
 # Quick-setup grouping: which roles default to cloud vs local, and which
@@ -265,7 +265,7 @@ def run(
 
     known_env: dict[str, str] = {}
     if mode == "quick":
-        console.print("\n[bold cyan]── local models (explorer/editor/bash/searcher/general/tester) ──[/bold cyan]")
+        console.print("\n[bold cyan]── local models (explorer/editor/bash/searcher/general-purpose/tester) ──[/bold cyan]")
         local_tag = prompt_local_model(console, hw)
         console.print("\n[bold cyan]── cloud provider (orchestrator/advisor/escalation/reviewer) ──[/bold cyan]")
         use_cloud = Confirm.ask("  use a cloud provider for these roles?", default=True)

@@ -21,8 +21,10 @@ classifiers = [
 ]
 
 dependencies = [
-    # Agent harness + orchestration
-    "deepagents>=0.2.0",
+    # Agent harness + orchestration. Loom relies on 0.6-era APIs
+    # (deepagents.backends, per-subagent middleware, the general-purpose
+    # override); <0.7 guards against breaking changes in the beta surfaces.
+    "deepagents>=0.6,<0.7",
     "langchain>=1.0.0",
     "langgraph>=1.0.0",
     # Model providers

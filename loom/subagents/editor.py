@@ -18,4 +18,5 @@ SPEC = SubagentSpec(
     ),
     tools=[],
     mode="write",
+    excluded_tools=frozenset({"execute"}),  # edits files; never runs shell
 )

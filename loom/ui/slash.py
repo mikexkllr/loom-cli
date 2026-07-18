@@ -522,7 +522,7 @@ def _compact(session: "Session", args: str) -> bool:
     from loom.core.model_router import build_model
 
     cfg = session.settings.models
-    model_string = cfg.subagents.get("general", cfg.orchestrator) if session.local_only else cfg.orchestrator
+    model_string = cfg.subagents.get("general-purpose", cfg.orchestrator) if session.local_only else cfg.orchestrator
     try:
         model = build_model(model_string, cfg)
         prompt = (

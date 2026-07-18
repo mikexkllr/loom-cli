@@ -44,7 +44,7 @@ How to work:
    - reviewer  : after a significant write, get a risk rating
    - tester    : drive a real browser (Playwright) through a user journey and
                  report PASS/FAIL per step
-   - general   : multi-step work that mixes the above
+   - general-purpose : multi-step work that mixes the above
 3. Never read large files or run noisy commands yourself — delegate. You may use
    read_file only for small, targeted confirmations.
 4. MANDATORY end-to-end verification: whenever the work changes anything a user
@@ -93,8 +93,57 @@ NOTE: The tester subagent is unavailable in this run (no browser/MCP tools
 connected). Skip rule 4's browser verification, state that end-to-end testing
 was skipped, and tell the user how to verify manually."""
 
-# Read-only subagents permitted in plan mode.
-_PLAN_SUBAGENTS = {"explorer", "searcher", "reviewer"}
+# Subagents permitted in plan mode. general-purpose stays (built read-only in
+# plan mode) because dropping it would let deepagents auto-add its own
+# write-capable default under that reserved name.
+_PLAN_SUBAGENTS = {"explorer", "searcher", "reviewer", "general-purpose"}
+
+# Every filesystem/shell tool deepagents' FilesystemMiddleware can inject.
+_ALL_FS_TOOLS = frozenset(
+    {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+)
+
+
+def _ensure_general_purpose(
+    subagents: list[dict[str, Any]],
+    config: LoomConfig,
+    settings: Any,
+    cwd: str,
+    *,
+    read_only: bool,
+) -> list[dict[str, Any]]:
+    """Guarantee a subagent named ``general-purpose`` survives every run mode.
+
+    deepagents auto-adds its own general-purpose subagent — orchestrator model,
+    full filesystem/execute toolset, none of Loom's policy middleware — whenever
+    no spec carries that exact name. If mode filtering dropped ours (e.g. it was
+    assigned a cloud model in local-only/airgap), rebuild it pinned to a local
+    model; with no local model available, keep the name claimed but strip every
+    filesystem/shell tool so it can never touch code.
+    """
+    if any(s["name"] == "general-purpose" for s in subagents):
+        return subagents
+
+    from loom.subagents import SPECS, WRITE_TOOLS
+
+    spec = SPECS["general-purpose"]
+    candidates = [
+        config.subagents.get("general-purpose", ""),
+        *config.subagents.values(),
+        config.orchestrator,
+    ]
+    local_model = next((m for m in candidates if m and config.is_local(m)), None)
+    if local_model is not None:
+        sub = spec.build(
+            config,
+            settings,
+            cwd,
+            model_string=local_model,
+            extra_excluded=WRITE_TOOLS if read_only else frozenset(),
+        )
+    else:
+        sub = spec.build(config, settings, cwd, extra_excluded=_ALL_FS_TOOLS)
+    return [*subagents, sub]
 
 
 def apply_cloud_fallback(config: LoomConfig) -> tuple[LoomConfig, dict[str, str]]:
@@ -214,8 +263,8 @@ def build_orchestrator(
 
     # ----- pick the orchestrator model -----
     if local_only:
-        # Fall back to the general local model so nothing hits the cloud.
-        orch_model_string = config.subagents.get("general", config.orchestrator)
+        # Fall back to the general-purpose local model so nothing hits the cloud.
+        orch_model_string = config.subagents.get("general-purpose", config.orchestrator)
     else:
         orch_model_string = config.orchestrator
     orch_model = build_model(orch_model_string, config)
@@ -229,13 +278,21 @@ def build_orchestrator(
         mcp_tools = get_mcp_tools(loom_settings)
 
     # ----- assemble subagents -----
-    subagents = build_all_subagents(config)
+    # Subagents carry their own PolicyMiddleware (permissions/hooks/undo) and
+    # ToolExclusionMiddleware: deepagents builds a fresh middleware stack per
+    # subagent, so nothing from the orchestrator's stack applies down there.
+    # In airgap mode subagents keep the NORMAL settings — they must read and
+    # edit files locally; only the orchestrator gets the hardened deny policy.
+    subagents = build_all_subagents(config, loom_settings, cwd, read_only=plan)
     if plan:
         subagents = [s for s in subagents if s["name"] in _PLAN_SUBAGENTS]
     if local_only or airgap:
         # Drop any cloud-backed subagent (e.g. reviewer on Haiku). In airgap
         # mode only local subagents may touch raw code.
         subagents = [s for s in subagents if config.is_local(config.subagents.get(s["name"], ""))]
+    # deepagents auto-adds an unrestricted general-purpose subagent if the name
+    # is absent — never let mode filtering open that hole.
+    subagents = _ensure_general_purpose(subagents, config, loom_settings, cwd, read_only=plan)
 
     # The tester only exists when browser MCP tools actually connected.
     browser_tools = [t for t in mcp_tools if t.name.startswith("browser_")]
@@ -249,20 +306,21 @@ def build_orchestrator(
         else:
             subagents.remove(sub)
 
-    # Any other MCP tools (non-browser servers the user added) go to general.
+    # Any other MCP tools (non-browser servers the user added) go to
+    # general-purpose.
     other_mcp = [t for t in mcp_tools if not t.name.startswith("browser_")]
     if other_mcp:
         for sub in subagents:
-            if sub["name"] == "general":
+            if sub["name"] == "general-purpose":
                 sub["tools"] = list(sub["tools"]) + other_mcp
 
     # ----- orchestrator tools -----
     # Airgap: the (cloud) orchestrator loses read_file so raw file contents
     # can never enter its context — only subagent summaries.
     # deepagents' FilesystemMiddleware injects ls/read_file/write_file/edit_file/
-    # glob/grep/execute automatically. The orchestrator may use read_file (via
-    # the deepagents schema, with virtual absolute paths) and the read-only
-    # ls/glob/grep tools; write_file/edit_file/execute are removed below.
+    # delete/glob/grep/execute automatically. The orchestrator may use read_file
+    # (via the deepagents schema, with virtual absolute paths) and the read-only
+    # ls/glob/grep tools; the mutating tools are removed below.
     tools: list[Any] = []
     if not local_only and not airgap:
         # consult sends the question+context to a cloud advisor; in airgap and
@@ -296,15 +354,7 @@ def build_orchestrator(
                     "permissions": Permissions(
                         default_mode="deny",
                         allow=["task", "write_todos"],
-                        deny=[
-                            "read_file",
-                            "write_file",
-                            "edit_file",
-                            "execute",
-                            "ls",
-                            "glob",
-                            "grep",
-                        ],
+                        deny=sorted(_ALL_FS_TOOLS),
                     )
                 }
             )
@@ -339,10 +389,10 @@ def build_orchestrator(
     # delegate; writes and shell execution belong to subagents.
     from loom.middleware.tool_exclusion import ToolExclusionMiddleware
 
-    excluded_tools = {"write_file", "edit_file", "execute"}
+    excluded_tools = {"write_file", "edit_file", "delete", "execute"}
     if airgap:
         # Airgap: no orchestrator tool may touch the filesystem or run a process.
-        excluded_tools = {"read_file", "write_file", "edit_file", "execute", "ls", "glob", "grep"}
+        excluded_tools = set(_ALL_FS_TOOLS)
     middleware.append(ToolExclusionMiddleware(excluded_tools))
 
     kwargs: dict[str, Any] = dict(
@@ -354,17 +404,12 @@ def build_orchestrator(
         backend=backend,
     )
 
-    # Optional LangGraph persistence: pass a checkpointer if create_deep_agent
-    # supports it, so the REPL keeps thread state and can resume across runs.
-    def _build_agent(kw: dict[str, Any]) -> tuple[Any, bool]:
-        if checkpointer is not None:
-            try:
-                return create_deep_agent(**kw, checkpointer=checkpointer), True
-            except TypeError:
-                return create_deep_agent(**kw), False  # older signature — no persistence
-        return create_deep_agent(**kw), False
-
-    agent, persistent = _build_agent(kwargs)
+    # LangGraph persistence: the REPL keeps thread state and can resume across
+    # runs (checkpointer is a stable create_deep_agent parameter in >=0.6).
+    if checkpointer is not None:
+        kwargs["checkpointer"] = checkpointer
+    agent = create_deep_agent(**kwargs)
+    persistent = checkpointer is not None
 
     from loom.middleware.prompt_size_guard import PromptSizeGuard
 

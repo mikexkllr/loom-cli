@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Security
+- **Permissions, hooks, and `/undo` now enforce inside subagents.** deepagents
+  builds a fresh middleware stack per subagent, so the orchestrator-level
+  policy gate never saw the `write_file`/`edit_file`/`execute` calls that
+  actually happen inside editor/bash/general-purpose. Every subagent now
+  carries its own `PolicyMiddleware`; delegation (`task`) is allowed by
+  default and approval happens at the real write/execute instead.
+- **Closed the hidden `general-purpose` subagent hole.** deepagents auto-adds
+  an unrestricted general-purpose subagent (orchestrator model, full
+  filesystem + shell, no policy middleware) whenever no subagent carries that
+  exact name — silently bypassing plan mode's read-only guarantee and
+  airgap's "raw code never reaches the cloud" guarantee. Loom's fallback
+  subagent now claims the reserved name (`general` → `general-purpose`,
+  legacy config keys still work), survives every run mode, and is rebuilt
+  read-only in plan mode / pinned local in local-only and airgap.
+- **Read-only subagents are enforced, not just prompted.** explorer, searcher,
+  and reviewer lose `write_file`/`edit_file`/`delete`/`execute` via
+  middleware; the editor and tester lose `execute`.
+- **The `delete` filesystem tool is now covered** by the orchestrator's tool
+  exclusions, airgap's deny list, the default ask-list, `delete(path/**)`
+  permission specifiers, and pre-delete `/undo` snapshots.
+
+### Changed
+- `deepagents` is now pinned `>=0.6,<0.7` (the code relies on 0.6-era APIs:
+  `deepagents.backends`, per-subagent middleware, the general-purpose
+  override).
+
 ### Added
 - **Setup wizard** (`loom setup` / `/setup`) — configure every model role
   (orchestrator/advisor/escalation/subagents) from the UI: pick a provider,

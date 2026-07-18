@@ -7,11 +7,15 @@
       "glob",
       "grep",
       "web_search",
-      "browser_*"
+      "browser_*",
+      "task",
+      "write_todos",
+      "consult"
     ],
     "ask": [
       "write_file",
       "edit_file",
+      "delete",
       "execute"
     ],
     "deny": [

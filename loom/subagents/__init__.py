@@ -6,28 +6,47 @@ config into deepagents subagent dicts.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loom.core.config import LoomConfig
 from loom.subagents import bash, editor, explorer, general, reviewer, searcher, tester
+from loom.subagents.base import WRITE_TOOLS
+
+if TYPE_CHECKING:
+    from loom.core.settings import Settings
 
 # Ordered registry of specs. Names match config keys and the spec table.
+# "general-purpose" MUST keep that exact name: it overrides the subagent
+# deepagents would otherwise auto-add with the orchestrator's model and an
+# unrestricted toolset (see loom/subagents/general.py).
 SPECS = {
     "explorer": explorer.SPEC,
     "editor": editor.SPEC,
     "bash": bash.SPEC,
     "searcher": searcher.SPEC,
     "reviewer": reviewer.SPEC,
-    "general": general.SPEC,
+    "general-purpose": general.SPEC,
     "tester": tester.SPEC,
 }
 
 
-def build_all_subagents(config: LoomConfig) -> list[dict[str, Any]]:
-    """Resolve every registered subagent into a deepagents subagent dict."""
+def build_all_subagents(
+    config: LoomConfig,
+    settings: "Settings | None" = None,
+    cwd: str = ".",
+    *,
+    read_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Resolve every registered subagent into a deepagents subagent dict.
+
+    ``settings`` attaches the per-subagent policy gate (permissions, hooks,
+    /undo snapshots). ``read_only=True`` (plan mode) strips the write/execute
+    tools from every subagent, not just the read-only ones.
+    """
+    extra = WRITE_TOOLS if read_only else frozenset()
     out: list[dict[str, Any]] = []
     for name, spec in SPECS.items():
-        sub = spec.build(config)
+        sub = spec.build(config, settings, cwd, extra_excluded=extra)
         if name == "reviewer":
             # Reviewer returns a structured verdict the orchestrator can gate on.
             sub["response_format"] = reviewer.RESPONSE_FORMAT
@@ -53,4 +72,4 @@ def describe_subagents(config: LoomConfig) -> list[dict[str, str]]:
     return rows
 
 
-__all__ = ["SPECS", "build_all_subagents", "describe_subagents"]
+__all__ = ["SPECS", "WRITE_TOOLS", "build_all_subagents", "describe_subagents"]

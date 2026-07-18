@@ -154,15 +154,22 @@ def load_settings(root: str | Path = ".", *, extra_path: Path | None = None) -> 
     # 2. Model routing defaults + legacy ~/.loom/config.yaml, folded into `models`.
     base_models = cfg._read_yaml(cfg.DEFAULT_CONFIG_PATH)
     if cfg.USER_CONFIG_PATH.exists():
-        base_models = cfg._deep_merge(base_models, cfg._read_yaml(cfg.USER_CONFIG_PATH))
-    merged["models"] = cfg._deep_merge(base_models, merged.get("models", {}))
+        base_models = cfg._deep_merge(
+            base_models, cfg._normalize_legacy_roles(cfg._read_yaml(cfg.USER_CONFIG_PATH))
+        )
+    merged["models"] = cfg._deep_merge(
+        base_models, cfg._normalize_legacy_roles(merged.get("models", {}))
+    )
 
     # 3. Layered settings.json files.
     layers = [USER_SETTINGS_PATH, *project_settings_paths(root)]
     if extra_path is not None:
         layers.append(extra_path)
     for layer in layers:
-        merged = cfg._deep_merge(merged, _read_json(layer))
+        data = _read_json(layer)
+        if isinstance(data.get("models"), dict):
+            data = {**data, "models": cfg._normalize_legacy_roles(data["models"])}
+        merged = cfg._deep_merge(merged, data)
 
     return Settings(**merged)
 

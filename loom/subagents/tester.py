@@ -36,4 +36,5 @@ SPEC = SubagentSpec(
     ),
     tools=[],  # + Playwright MCP tools injected at build time; deepagents provides write_file
     mode="write",
+    excluded_tools=frozenset({"execute"}),  # drives the browser; bash starts servers
 )

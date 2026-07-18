@@ -14,7 +14,9 @@ def _config():
 
 
 def test_all_seven_subagents_registered():
-    assert set(SPECS) == {"explorer", "editor", "bash", "searcher", "reviewer", "general", "tester"}
+    # "general-purpose" must keep deepagents' reserved name — it overrides the
+    # unrestricted default subagent create_deep_agent would otherwise add.
+    assert set(SPECS) == {"explorer", "editor", "bash", "searcher", "reviewer", "general-purpose", "tester"}
 
 
 def test_modes_match_spec():
@@ -23,7 +25,7 @@ def test_modes_match_spec():
     assert SPECS["reviewer"].mode == "read-only"
     assert SPECS["editor"].mode == "write"
     assert SPECS["bash"].mode == "write"
-    assert SPECS["general"].mode == "write"
+    assert SPECS["general-purpose"].mode == "write"
     assert SPECS["tester"].mode == "write"
 
 
@@ -37,7 +39,7 @@ def test_tool_sets_match_spec():
     assert {t.name for t in SPECS["reviewer"].tools} == set()
 
     assert {t.name for t in SPECS["searcher"].tools} == {"web_search"}
-    assert {t.name for t in SPECS["general"].tools} == {"web_search"}
+    assert {t.name for t in SPECS["general-purpose"].tools} == {"web_search"}
 
     # tester: browser_* MCP tools are injected at build time; write_file is
     # supplied by deepagents' FilesystemMiddleware.
