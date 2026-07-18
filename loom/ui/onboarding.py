@@ -162,11 +162,15 @@ def _print_hardware_and_local_recs(console: Console, hw: rec.Hardware, installed
     return options
 
 
-def prompt_local_model(console: Console, hw: rec.Hardware) -> str:
-    """Pick (and optionally pull) a local Ollama model tag."""
-    from loom.core.config import LoomConfig
+def prompt_local_model(console: Console, hw: rec.Hardware, config: "cfg.LoomConfig | None" = None) -> str:
+    """Pick (and optionally pull) a local Ollama model tag.
 
-    st = ollama_mod.status(LoomConfig())
+    ``config`` supplies the daemon endpoint — pulls go through the HTTP API of
+    the configured (possibly remote) daemon, so no ollama binary is needed.
+    """
+    if config is None:
+        config = cfg.LoomConfig()
+    st = ollama_mod.status(config)
     options = _print_hardware_and_local_recs(console, hw, st.models)
     choice = Prompt.ask("  number, or type any ollama tag", default="1" if options else "")
     if choice.isdigit() and options and 1 <= int(choice) <= len(options):
@@ -175,12 +179,16 @@ def prompt_local_model(console: Console, hw: rec.Hardware) -> str:
         tag = choice.strip()
     if not tag:
         tag = options[0] if options else "qwen3:14b"
-    if tag not in st.models:
-        if not st.installed:
-            console.print(f"[yellow]{ollama_mod.INSTALL_HINT}[/yellow]")
+    if not ollama_mod.is_served(tag, st.models):
+        if not st.running:
+            hint = ollama_mod.daemon_hint(st.endpoint) if st.installed else ollama_mod.INSTALL_HINT
+            console.print(f"[yellow]{hint}[/yellow]")
         elif Confirm.ask(f"  `{tag}` isn't pulled yet — pull it now?", default=True):
-            console.print(f"[dim]ollama pull {tag} …[/dim]")
-            ollama_mod.pull(tag)
+            if ollama_mod.pull(tag, config.ollama_endpoint, console) != 0:
+                console.print(
+                    f"[yellow]pull failed — roles on `{tag}` use the cloud fallback "
+                    f"until `loom models pull {tag}` succeeds.[/yellow]"
+                )
     return tag
 
 
@@ -226,12 +234,16 @@ def prompt_cloud_model(console: Console, provider: prov.ProviderInfo, tier: str 
 
 
 def _configure_one_role(
-    console: Console, role: str, hw: rec.Hardware, known_env: dict[str, str]
+    console: Console,
+    role: str,
+    hw: rec.Hardware,
+    known_env: dict[str, str],
+    config: "cfg.LoomConfig | None" = None,
 ) -> tuple[str, dict[str, str]]:
     console.print(f"\n[bold cyan]── {role} ──[/bold cyan]")
     kind = Prompt.ask("  local or cloud?", choices=["local", "cloud"], default="cloud")
     if kind == "local":
-        tag = prompt_local_model(console, hw)
+        tag = prompt_local_model(console, hw, config)
         return prov.get("ollama").model_string(tag), {}
     provider = prompt_provider(console, prov.cloud_providers())
     env = prompt_credentials(console, provider, known_env)
@@ -261,12 +273,14 @@ def run(
         )
     )
     hw = rec.detect_hardware()
+    # The merged config supplies the (possibly remote) Ollama endpoint pulls go to.
+    models_config = settings_mod.load_settings(root).models
     mode = Prompt.ask("  quick setup or advanced?", choices=["quick", "advanced"], default="quick")
 
     known_env: dict[str, str] = {}
     if mode == "quick":
         console.print("\n[bold cyan]── local models (explorer/editor/bash/searcher/general-purpose/tester) ──[/bold cyan]")
-        local_tag = prompt_local_model(console, hw)
+        local_tag = prompt_local_model(console, hw, models_config)
         console.print("\n[bold cyan]── cloud provider (orchestrator/advisor/escalation/reviewer) ──[/bold cyan]")
         use_cloud = Confirm.ask("  use a cloud provider for these roles?", default=True)
         cloud_provider = None
@@ -277,7 +291,7 @@ def run(
     else:
         models = {}
         for role in roles:
-            model_string, env = _configure_one_role(console, role, hw, known_env)
+            model_string, env = _configure_one_role(console, role, hw, known_env, models_config)
             models[role] = model_string
             known_env.update(env)
 

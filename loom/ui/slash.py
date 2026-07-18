@@ -186,19 +186,64 @@ def _set_role_model(session: "Session", role: str, model: str) -> None:
     session.reload_settings()
     session.rebuild()
     session.console.print(f"{role} → [loom.accent]{model}[/loom.accent]")
+    _offer_pull_if_missing(session, model)
 
 
-def _model_candidates(session: "Session") -> list[str]:
-    """Installed local Ollama models first, then each cloud provider's
-    example models. For full control over providers/credentials, use /setup."""
+def _offer_pull_if_missing(session: "Session", model: str) -> None:
+    """Local model just assigned but not installed? Offer to pull it now —
+    otherwise the next build silently reroutes the role to the billed cloud
+    fallback."""
+    from loom.core import ollama
+    from loom.core.model_router import resolve
+
+    cfg = session.settings.models
+    if not cfg.is_local(model):
+        return
+    tag = resolve(model).name
+    st = ollama.status(cfg)
+    if st.running and ollama.is_served(tag, st.models):
+        return
+    if not st.running:
+        session.console.print(f"[loom.warn]{ollama.daemon_hint(st.endpoint)} — until then this role runs on {cfg.cloud_fallback} (billed).[/loom.warn]")
+        return
+    from rich.prompt import Confirm
+
+    if Confirm.ask(f"  `{tag}` isn't pulled yet — pull it now?", default=True):
+        if ollama.pull(tag, cfg.ollama_endpoint, session.console) == 0:
+            session.console.print(f"[loom.subagent]✓ {tag} ready[/loom.subagent]")
+            session.rebuild()
+        else:
+            session.console.print(f"[loom.warn]pull failed — this role runs on {cfg.cloud_fallback} (billed) until `{tag}` is pulled.[/loom.warn]")
+    else:
+        session.console.print(f"[loom.dim]skipped — this role runs on {cfg.cloud_fallback} (billed) until you pull `{tag}`.[/loom.dim]")
+
+
+def _model_candidates(session: "Session") -> list[tuple[str, str]]:
+    """(model string, where-label) pairs: installed local Ollama models first,
+    then hardware-fitting recommendations that just need a pull, then each
+    cloud provider's example models. For full provider/credential control,
+    use /setup."""
     from loom.core import ollama
     from loom.core import providers as prov
+    from loom.core import recommendations as rec
 
-    local = [f"ollama/{tag}" for tag in ollama.status(session.settings.models).models]
+    st = ollama.status(session.settings.models)
+    out: list[tuple[str, str]] = [(f"ollama/{tag}", "local · installed") for tag in st.models]
+    seen = {m for m, _ in out}
+    for r in rec.recommend_local_models(rec.detect_hardware()):
+        model = f"ollama/{r.tag}"
+        if model not in seen and not ollama.is_served(r.tag, st.models):
+            out.append((model, "local · pulls on select"))
+            seen.add(model)
     # Use the full prefixed string (not the bare model id) — some providers
     # (zen/go/custom/vertexai) need it to resolve to the right provider at all.
-    cloud = [p.model_string(m) for p in prov.cloud_providers() for m in p.example_models]
-    return local + [c for c in cloud if c not in local]
+    for p in prov.cloud_providers():
+        for m in p.example_models:
+            model = p.model_string(m)
+            if model not in seen:
+                out.append((model, "cloud"))
+                seen.add(model)
+    return out
 
 
 @command("model", "Show models, or set one: /model [role] [model] — /model editor picks interactively")
@@ -217,7 +262,7 @@ def _model(session: "Session", args: str) -> bool:
         for name, model in cfg.subagents.items():
             table.add_row(name, model, "local" if cfg.is_local(model) else "cloud")
         session.console.print(table)
-        local = [c for c in _model_candidates(session) if c.startswith("ollama/")]
+        local = [m for m, where in _model_candidates(session) if where == "local · installed"]
         if local:
             session.console.print(f"[loom.dim]installed local models: {', '.join(m[7:] for m in local)}[/loom.dim]")
         session.console.print("[loom.dim]set: /model <role> <model> · pick interactively: /model <role>[/loom.dim]")
@@ -233,7 +278,9 @@ def _model(session: "Session", args: str) -> bool:
         _set_role_model(session, role, parts[1])
         return True
 
-    # Interactive picker: installed ollama models + common cloud models.
+    # Interactive picker: installed local models, hardware-recommended pulls,
+    # and common cloud models. Picking a not-yet-pulled local model offers to
+    # download it on the spot.
     candidates = _model_candidates(session)
     if not candidates:
         session.console.print("[loom.warn]no models found — is the Ollama daemon running?[/loom.warn]")
@@ -244,8 +291,7 @@ def _model(session: "Session", args: str) -> bool:
         "escalation": cfg.escalation_model,
     }.get(role) or cfg.subagents.get(role, "(inherit)")
     session.console.print(f"pick a model for [loom.accent]{role}[/loom.accent] (current: {current}):")
-    for i, model in enumerate(candidates, 1):
-        where = "local" if model.startswith("ollama/") else "cloud"
+    for i, (model, where) in enumerate(candidates, 1):
         session.console.print(f"  [loom.accent]{i}[/loom.accent]  {model}  [loom.dim]({where})[/loom.dim]")
     from rich.prompt import Prompt
 
@@ -255,7 +301,7 @@ def _model(session: "Session", args: str) -> bool:
         session.console.print("[loom.dim]cancelled[/loom.dim]")
         return True
     if choice.isdigit() and 1 <= int(choice) <= len(candidates):
-        choice = candidates[int(choice) - 1]
+        choice = candidates[int(choice) - 1][0]
     _set_role_model(session, role, choice)
     return True
 
@@ -297,14 +343,16 @@ def _models(session: "Session", args: str) -> bool:
     from loom.core import ollama
 
     st = ollama.status(session.settings.models)
-    if not st.installed:
-        session.console.print(f"[loom.err]{ollama.INSTALL_HINT}[/loom.err]")
+    if not st.running:
+        hint = ollama.daemon_hint(st.endpoint) if st.installed else ollama.INSTALL_HINT
+        session.console.print(f"[loom.err]{hint}[/loom.err]")
         return True
     missing = ollama.missing_models(session.settings.models)
-    state = "running" if st.running else "not running"
-    session.console.print(f"ollama daemon: {state} @ {st.endpoint}")
+    session.console.print(f"ollama daemon: running @ {st.endpoint}")
     session.console.print(
-        "[loom.warn]missing:[/loom.warn] " + ", ".join(missing) if missing else "[loom.subagent]all models present[/loom.subagent]"
+        "[loom.warn]missing:[/loom.warn] " + ", ".join(missing) + " — pull with `loom models pull`"
+        if missing
+        else "[loom.subagent]all models present[/loom.subagent]"
     )
     return True
 
@@ -558,14 +606,15 @@ def _doctor(session: "Session", args: str) -> bool:
 
     cfg = session.settings.models
     st = ollama.status(cfg)
-    if st.installed:
-        out.append(row(st.running, "ollama", f"{'running' if st.running else 'not running'} @ {st.endpoint}"))
+    if st.running:
+        detail = f"running @ {st.endpoint}" + ("" if st.installed else " (remote — no local binary)")
+        out.append(row(True, "ollama", detail))
         missing = ollama.missing_models(cfg)
         out.append(row(not missing, "local models", ", ".join(missing) + " missing" if missing else "all present"))
-        if not st.running or missing:
+        if missing:
             out.append(row(None, "cloud fallback", f"local roles run on {cfg.cloud_fallback} (billed)"))
     else:
-        out.append(row(False, "ollama", "not installed"))
+        out.append(row(False, "ollama", f"not reachable @ {st.endpoint}" + ("" if st.installed else ", binary not installed")))
         out.append(row(None, "cloud fallback", f"local roles run on {cfg.cloud_fallback} (billed)"))
 
     def effective_env(key: str) -> str | None:

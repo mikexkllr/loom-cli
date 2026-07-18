@@ -296,11 +296,16 @@ def models_status() -> None:
 
     config = cfg.load_config()
     st = ollama.status(config)
-    if not st.installed:
-        console.print(f"[red]✗[/red] {ollama.INSTALL_HINT}")
+    # What matters is a reachable daemon at the configured endpoint — the
+    # binary is optional (the endpoint may be a remote host).
+    if not st.running:
+        if st.installed:
+            console.print(f"[red]✗[/red] {ollama.daemon_hint(st.endpoint)}")
+        else:
+            console.print(f"[red]✗[/red] {ollama.INSTALL_HINT}")
         raise typer.Exit(1)
-    running = "[green]running[/green]" if st.running else "[red]not running[/red]"
-    console.print(f"ollama: installed, daemon {running} at {st.endpoint}")
+    binary = "installed" if st.installed else "no local binary (remote daemon is fine)"
+    console.print(f"ollama: daemon [green]running[/green] at {st.endpoint} · {binary}")
     missing = ollama.missing_models(config)
     if missing:
         console.print(f"[yellow]missing:[/yellow] {', '.join(missing)} — run [bold]loom models pull[/bold]")
@@ -329,7 +334,8 @@ def models_list() -> None:
 def models_pull(
     model: Optional[str] = typer.Argument(None, help="Specific model tag; omit to pull all missing.")
 ) -> None:
-    """Pull local models via Ollama (`ollama pull`)."""
+    """Pull local models through the Ollama daemon's HTTP API (works with
+    remote endpoints; no ollama binary needed)."""
     from loom.core import ollama
 
     config = cfg.load_config()
@@ -338,15 +344,12 @@ def models_pull(
         console.print("[green]nothing to pull — all required models present[/green]")
         return
     for tag in targets:
-        console.print(f"[cyan]pulling[/cyan] {tag} …")
-        try:
-            code = ollama.pull(tag)
-        except FileNotFoundError:
-            console.print(f"[red]✗[/red] {ollama.INSTALL_HINT}")
-            raise typer.Exit(1)
+        console.print(f"[cyan]pulling[/cyan] {tag} from {config.ollama_endpoint} …")
+        code = ollama.pull(tag, config.ollama_endpoint, console)
         if code != 0:
-            console.print(f"[red]✗ pull failed for {tag} (exit {code})[/red]")
+            console.print(f"[red]✗ pull failed for {tag}[/red]")
             raise typer.Exit(code)
+        console.print(f"[green]✓[/green] {tag}")
     console.print("[green]✓ done[/green]")
 
 
@@ -374,14 +377,15 @@ def doctor(root: str = typer.Option(".", "--root")) -> None:
 
     lines = [row(_sys.version_info >= (3, 11), "python", _sys.version.split()[0])]
     st = ollama.status(config)
-    if st.installed:
-        lines.append(row(st.running, "ollama", f"{'running' if st.running else 'not running'} @ {st.endpoint}"))
+    if st.running:
+        detail = f"running @ {st.endpoint}" + ("" if st.installed else " (remote — no local binary)")
+        lines.append(row(True, "ollama", detail))
         missing = ollama.missing_models(config)
         lines.append(row(not missing, "local models", ", ".join(missing) + " missing" if missing else "all present"))
-        if not st.running or missing:
+        if missing:
             lines.append(row(None, "cloud fallback", f"local roles will run on {config.cloud_fallback} (billed)"))
     else:
-        lines.append(row(False, "ollama", "not installed"))
+        lines.append(row(False, "ollama", f"not reachable @ {st.endpoint}" + ("" if st.installed else ", binary not installed")))
         lines.append(row(None, "cloud fallback", f"local roles will run on {config.cloud_fallback} (billed)"))
     key_set = bool(
         effective_env("ANTHROPIC_API_KEY")

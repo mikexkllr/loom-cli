@@ -75,6 +75,12 @@ loom models status     # check daemon + what's missing
 loom models pull       # pull everything missing in one shot
 ```
 
+Pulls go through the daemon's HTTP API at your configured `ollama_endpoint`,
+so they work the same against a remote Ollama host (no local `ollama` binary
+needed). In the REPL, `/model <role>` lists installed models plus
+hardware-fitting recommendations and offers to download a not-yet-pulled
+model the moment you pick it.
+
 ## Setup wizard
 
 `loom setup` (or `/setup` in the REPL) walks through every model role —

@@ -53,7 +53,12 @@ def _no_real_ollama(monkeypatch):
     status = ollama_mod.OllamaStatus(installed=True, running=True, models=["qwen3:14b"], endpoint="http://x")
     monkeypatch.setattr(ob.ollama_mod, "status", lambda config: status)
     pulled = []
-    monkeypatch.setattr(ob.ollama_mod, "pull", lambda tag: pulled.append(tag))
+
+    def fake_pull(tag, endpoint=ollama_mod.DEFAULT_ENDPOINT, console=None):
+        pulled.append(tag)
+        return 0
+
+    monkeypatch.setattr(ob.ollama_mod, "pull", fake_pull)
     return pulled
 
 

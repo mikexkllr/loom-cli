@@ -168,8 +168,7 @@ def apply_cloud_fallback(config: LoomConfig) -> tuple[LoomConfig, dict[str, str]
         available = set()
 
     def _served(model: str) -> bool:
-        name = resolve(model).name
-        return name in available or f"{name}:latest" in available
+        return ollama.is_served(resolve(model).name, available)
 
     fallbacks: dict[str, str] = {}
     subagents = dict(config.subagents)

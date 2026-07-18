@@ -28,6 +28,25 @@
 - `deepagents` is now pinned `>=0.6,<0.7` (the code relies on 0.6-era APIs:
   `deepagents.backends`, per-subagent middleware, the general-purpose
   override).
+- **Model pulls go through the daemon's HTTP API** (`POST /api/pull`, streamed
+  per-layer progress bars) at the configured `ollama_endpoint` — remote
+  daemons now work end-to-end, and the `ollama` CLI binary is no longer
+  required for `loom models pull`, the wizard, or `/model`.
+- **Daemon reachability, not binary presence, gates the Ollama UX** —
+  `loom models status`, `loom doctor`, `/models`, and the wizard treat a
+  reachable remote daemon as healthy, and only show install instructions when
+  neither a binary nor a daemon exists.
+
+### Fixed
+- **`/model <role> <local-model>` offers to pull a missing tag on the spot**
+  (and the interactive picker now lists hardware-fitting recommendations
+  alongside installed models). Previously a missing tag was saved silently and
+  the role quietly ran on the billed cloud fallback.
+- The setup wizard checks the pull's result instead of ignoring it, and warns
+  that the role runs on the cloud fallback until the pull succeeds.
+- `loom models status` and `missing_models` now apply the same `:latest` tag
+  normalization the runtime uses — a config `ollama/qwen3` no longer reports
+  missing when the daemon serves `qwen3:latest`.
 
 ### Added
 - **Setup wizard** (`loom setup` / `/setup`) — configure every model role
