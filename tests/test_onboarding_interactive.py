@@ -47,6 +47,16 @@ def _isolated_user_settings(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_provider_env(monkeypatch):
+    """Strip real provider credentials from the environment — a developer's
+    exported ANTHROPIC_API_KEY would otherwise trigger the keep/overwrite
+    prompt and desync the scripted answers."""
+    for p in prov.PROVIDERS:
+        for v in p.env_vars:
+            monkeypatch.delenv(v.key, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_ollama(monkeypatch):
     """Every test gets a fixed, fake Ollama status/pull — no real daemon or
     network calls, and no accidental `ollama pull` of a multi-GB model."""
@@ -104,6 +114,50 @@ def test_prompt_credentials_prompts_for_missing_vars(monkeypatch):
     monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(["new-key"]))}))
     env = ob.prompt_credentials(_console(), prov.get("anthropic"), {})
     assert env == {"ANTHROPIC_API_KEY": "new-key"}
+
+
+def test_prompt_credentials_keeps_preexisting_value_on_confirm(monkeypatch):
+    """A key from a previous setup (settings.json env block) is offered for
+    keep/overwrite — keeping reuses it without prompting for a new value."""
+
+    def _boom(*a, **k):
+        raise AssertionError("kept the existing value — must not prompt for a new one")
+
+    monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_boom)}))
+    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([True]))}))
+    env = ob.prompt_credentials(_console(), prov.get("anthropic"), {}, {"ANTHROPIC_API_KEY": "old-key"})
+    assert env == {"ANTHROPIC_API_KEY": "old-key"}
+
+
+def test_prompt_credentials_overwrites_preexisting_value_on_decline(monkeypatch):
+    monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(["rotated-key"]))}))
+    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([False]))}))
+    env = ob.prompt_credentials(_console(), prov.get("anthropic"), {}, {"ANTHROPIC_API_KEY": "old-key"})
+    assert env == {"ANTHROPIC_API_KEY": "rotated-key"}
+
+
+def test_prompt_credentials_blank_after_decline_keeps_old_value(monkeypatch):
+    monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted([""]))}))
+    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([False]))}))
+    env = ob.prompt_credentials(_console(), prov.get("anthropic"), {}, {"ANTHROPIC_API_KEY": "old-key"})
+    assert env == {"ANTHROPIC_API_KEY": "old-key"}
+
+
+def test_rerun_offers_overwrite_of_saved_key(monkeypatch, tmp_path):
+    """Second run of the wizard: the previously saved API key is surfaced and
+    can be rotated — the old value must not be silently reused."""
+    monkeypatch.setattr(ob.rec, "detect_hardware", lambda: HW)
+    # First run: quick setup with cloud, key "first-key".
+    monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(["quick", "1", "1", "first-key", "user"]))}))
+    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([True]))}))
+    ob.run(_console(), root=tmp_path)
+
+    # Second run: same flow, but decline the keep and enter a rotated key.
+    monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(["quick", "1", "1", "second-key", "user"]))}))
+    # Confirms in order: use cloud provider? yes · keep existing key? no.
+    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([True, False]))}))
+    settings = ob.run(_console(), root=tmp_path)
+    assert settings.env["ANTHROPIC_API_KEY"] == "second-key"
 
 
 def test_prompt_cloud_model_defaults_to_tier(monkeypatch):

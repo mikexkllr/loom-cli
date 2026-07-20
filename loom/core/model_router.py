@@ -106,11 +106,14 @@ def _use_bedrock() -> bool:
     """True if Claude models should route through AWS Bedrock (or a Bedrock-
     compatible corporate proxy) instead of the direct Anthropic API.
 
-    Mirrors Claude Code's own convention: ``CLAUDE_CODE_USE_BEDROCK=1`` or an
-    explicit ``ANTHROPIC_BEDROCK_BASE_URL`` opts in. Set via ``settings.json``'s
-    ``env`` block (see ``loom settings set env.CLAUDE_CODE_USE_BEDROCK 1``).
+    ``LOOM_USE_BEDROCK=1`` or an explicit ``ANTHROPIC_BEDROCK_BASE_URL`` opts
+    in. Set via ``settings.json``'s ``env`` block (see ``loom settings set
+    env.LOOM_USE_BEDROCK 1``). Deliberately NOT Claude Code's
+    ``CLAUDE_CODE_USE_BEDROCK`` — Loom settings must not reconfigure a Claude
+    Code running in the same shell, and vice versa (legacy env blocks are
+    translated in ``Settings.apply_env``).
     """
-    flag = os.environ.get("CLAUDE_CODE_USE_BEDROCK", "").strip().lower()
+    flag = os.environ.get("LOOM_USE_BEDROCK", "").strip().lower()
     return flag in {"1", "true", "yes"} or bool(os.environ.get("ANTHROPIC_BEDROCK_BASE_URL"))
 
 
@@ -180,7 +183,7 @@ def _build_cached(provider: str, name: str, ollama_endpoint: str, num_ctx: int) 
             from langchain_aws import ChatAnthropicBedrock
         except ImportError as exc:
             raise ImportError(
-                "CLAUDE_CODE_USE_BEDROCK / ANTHROPIC_BEDROCK_BASE_URL is set, but "
+                "LOOM_USE_BEDROCK / ANTHROPIC_BEDROCK_BASE_URL is set, but "
                 "langchain-aws isn't installed. Run `pip install -e '.[bedrock]'` "
                 "(or `pip install langchain-aws`)."
             ) from exc

@@ -112,6 +112,13 @@ class UISettings(BaseModel):
         return v
 
 
+# Loom once reused Claude Code's CLAUDE_CODE_USE_BEDROCK flag; it now has its
+# own name so a Loom env block can never reconfigure a Claude Code running in
+# a subshell. Legacy settings.json env blocks are translated on the fly and
+# the Claude Code name is never exported into the process environment.
+_LEGACY_ENV_KEYS = {"CLAUDE_CODE_USE_BEDROCK": "LOOM_USE_BEDROCK"}
+
+
 class Settings(BaseModel):
     """The fully-merged Loom settings object."""
 
@@ -131,7 +138,7 @@ class Settings(BaseModel):
         """Inject configured env vars into the process (does not overwrite
         variables already set in the real environment)."""
         for key, value in self.env.items():
-            os.environ.setdefault(key, str(value))
+            os.environ.setdefault(_LEGACY_ENV_KEYS.get(key, key), str(value))
 
 
 # ----------------------------------------------------------------------------

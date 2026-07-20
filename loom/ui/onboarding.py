@@ -115,6 +115,11 @@ def missing_credentials(provider: prov.ProviderInfo, known_env: dict[str, str]) 
     ]
 
 
+def _mask(value: str) -> str:
+    """Show just enough of a secret to recognize it (last 4 chars)."""
+    return "…" + value[-4:] if len(value) > 8 else "(set)"
+
+
 def default_role_plan(hw: rec.Hardware, local_tag: str, cloud_provider: prov.ProviderInfo | None) -> dict[str, str]:
     """The "quick setup" assignment: one local tag for local-leaning roles,
     one cloud provider (tiered per role) for cloud-leaning roles — mirrors
@@ -203,20 +208,41 @@ def prompt_provider(console: Console, candidates: tuple[prov.ProviderInfo, ...])
     return candidates[int(choice) - 1]
 
 
-def prompt_credentials(console: Console, provider: prov.ProviderInfo, known_env: dict[str, str]) -> dict[str, str]:
-    """Collect any missing env vars for ``provider``; already-set ones are
-    reused without re-prompting."""
+def prompt_credentials(
+    console: Console,
+    provider: prov.ProviderInfo,
+    known_env: dict[str, str],
+    existing_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Collect env vars for ``provider``.
+
+    Values entered earlier in this wizard run (``known_env``) are reused
+    silently. Values that pre-date this run — the merged settings.json ``env``
+    block (``existing_env``) or the real environment — are shown masked and
+    the user picks keep vs overwrite, so re-running setup can rotate an API
+    key or endpoint instead of silently reusing the old one.
+    """
     import os
 
+    existing_env = existing_env or {}
     collected: dict[str, str] = {}
     for v in provider.env_vars:
-        current = os.environ.get(v.key) or known_env.get(v.key)
-        if current:
-            collected[v.key] = current
+        if known_env.get(v.key):
+            collected[v.key] = known_env[v.key]
             continue
+        current = os.environ.get(v.key) or existing_env.get(v.key)
+        if current:
+            shown = _mask(current) if v.secret else current
+            if Confirm.ask(f"  {v.label} ({v.key}) is already set ({shown}) — keep it?", default=True):
+                collected[v.key] = current
+                continue
         value = Prompt.ask(f"  {v.label} ({v.key})", password=v.secret, default=v.default or None)
         if value:
             collected[v.key] = value
+        elif current:
+            # Declined the keep, then entered nothing — fall back to the old
+            # value rather than leaving the provider broken.
+            collected[v.key] = current
         elif v.required:
             console.print(f"[yellow]{v.key} left blank — {provider.label} won't work until it's set.[/yellow]")
     if provider.pip_extra:
@@ -239,6 +265,7 @@ def _configure_one_role(
     hw: rec.Hardware,
     known_env: dict[str, str],
     config: "cfg.LoomConfig | None" = None,
+    existing_env: dict[str, str] | None = None,
 ) -> tuple[str, dict[str, str]]:
     console.print(f"\n[bold cyan]── {role} ──[/bold cyan]")
     kind = Prompt.ask("  local or cloud?", choices=["local", "cloud"], default="cloud")
@@ -246,10 +273,46 @@ def _configure_one_role(
         tag = prompt_local_model(console, hw, config)
         return prov.get("ollama").model_string(tag), {}
     provider = prompt_provider(console, prov.cloud_providers())
-    env = prompt_credentials(console, provider, known_env)
+    env = prompt_credentials(console, provider, known_env, existing_env)
     tier = _ROLE_TIER.get(role, "main")
     model_id = prompt_cloud_model(console, provider, tier)
     return provider.model_string(model_id), env
+
+
+def _print_current_setup(console: Console, settings: Settings) -> None:
+    """Show the existing role → model assignments and configured credentials,
+    so a re-run of the wizard starts from what's already there instead of
+    pretending it's a first run."""
+    import os
+
+    models = settings.models
+    current = {
+        "orchestrator": models.orchestrator,
+        "advisor": models.advisor,
+        "escalation": models.escalation_model,
+        **models.subagents,
+    }
+    table = Table(title="current setup", show_header=True, header_style="bold cyan")
+    for col in ("Role", "Model", "Where"):
+        table.add_column(col)
+    for role in ALL_ROLES:
+        model = current.get(role)
+        if model:
+            table.add_row(role, model, "⌂ local" if models.is_local(model) else "☁ cloud")
+    console.print(table)
+
+    creds = sorted(
+        {
+            f"{v.key} ({_mask(str(os.environ.get(v.key) or settings.env[v.key])) if v.secret else 'set'})"
+            for p in prov.PROVIDERS
+            for v in p.env_vars
+            if os.environ.get(v.key) or settings.env.get(v.key)
+        }
+    )
+    if creds:
+        console.print(
+            "[dim]credentials on file: " + ", ".join(creds) + " — you'll be asked before any are overwritten[/dim]"
+        )
 
 
 def run(
@@ -273,8 +336,13 @@ def run(
         )
     )
     hw = rec.detect_hardware()
-    # The merged config supplies the (possibly remote) Ollama endpoint pulls go to.
-    models_config = settings_mod.load_settings(root).models
+    # The merged current settings supply the (possibly remote) Ollama endpoint
+    # pulls go to, plus the existing models/env the wizard starts from.
+    current_settings = settings_mod.load_settings(root)
+    models_config = current_settings.models
+    existing_env = dict(current_settings.env)
+    if not needs_onboarding(root):
+        _print_current_setup(console, current_settings)
     mode = Prompt.ask("  quick setup or advanced?", choices=["quick", "advanced"], default="quick")
 
     known_env: dict[str, str] = {}
@@ -286,12 +354,12 @@ def run(
         cloud_provider = None
         if use_cloud:
             cloud_provider = prompt_provider(console, prov.cloud_providers())
-            known_env = prompt_credentials(console, cloud_provider, known_env)
+            known_env = prompt_credentials(console, cloud_provider, known_env, existing_env)
         models = default_role_plan(hw, local_tag, cloud_provider)
     else:
         models = {}
         for role in roles:
-            model_string, env = _configure_one_role(console, role, hw, known_env, models_config)
+            model_string, env = _configure_one_role(console, role, hw, known_env, models_config, existing_env)
             models[role] = model_string
             known_env.update(env)
 

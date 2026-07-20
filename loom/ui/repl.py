@@ -376,6 +376,30 @@ class Session:
 
     # ----- rendering (Claude Code style: ⏺ bullets + ⎿ results) -----
 
+    def model_origin(self, node: str) -> tuple[str, bool] | None:
+        """(model string, is_local) for a role / stream-node name, accounting
+        for live Ollama fallbacks (a role whose local model is unreachable is
+        actually running on the billed cloud fallback). None if unknown."""
+        cfg = self.settings.models
+        role = "orchestrator" if node in ("agent", "model") else node
+        if role == "orchestrator":
+            model = cfg.orchestrator
+        elif role == "advisor":
+            model = cfg.advisor
+        elif role == "escalation":
+            model = cfg.escalation_model
+        else:
+            model = cfg.subagents.get(role)
+        if model is None:
+            return None
+        if role in (getattr(self.bundle, "fallbacks", None) or {}):
+            return cfg.cloud_fallback, False
+        return model, cfg.is_local(model)
+
+    @staticmethod
+    def _where_badge(is_local: bool) -> str:
+        return "⌂ local" if is_local else "☁ cloud"
+
     @staticmethod
     def _call_args_brief(call) -> str:
         args = call.get("args", {}) if isinstance(call, dict) else getattr(call, "args", {}) or {}
@@ -386,14 +410,25 @@ class Session:
 
     def _print_tool_call(self, call, node: str) -> None:
         name = call.get("name", "?") if isinstance(call, dict) else getattr(call, "name", "?")
+        args = call.get("args", {}) if isinstance(call, dict) else getattr(call, "args", {}) or {}
         line = Text()
         line.append("⏺ ", style="loom.tool")
         line.append(name, style="loom.tool")
         brief = self._call_args_brief(call)
         if brief:
             line.append(f"({brief})", style="loom.dim")
+        # Delegation calls: show which model will do the work, and where it
+        # runs (⌂ local / ☁ cloud), so billed calls are visible at a glance.
+        target = None
+        if name == "task" and isinstance(args, dict):
+            target = args.get("subagent_type") or "general-purpose"
+        elif name == "consult":
+            target = "advisor"
+        origin = self.model_origin(target) if target else None
+        if origin:
+            line.append(f"  → {origin[0]} ({self._where_badge(origin[1])})", style="loom.dim")
         if node not in ("agent", "model"):
-            line.append(f"  [{node}]", style="loom.dim")
+            line.append(f"  [{self._node_label(node)}]", style="loom.dim")
         self.console.print(line)
 
     def _print_tool_result(self, msg) -> None:
@@ -405,10 +440,15 @@ class Session:
         suffix = f" … +{more} lines" if more > 0 else ""
         self.console.print(Text(f"  ⎿ {first}{suffix}", style="loom.dim"))
 
+    def _node_label(self, node: str) -> str:
+        """Node name plus its ⌂ local / ☁ cloud badge when the model is known."""
+        origin = self.model_origin(node)
+        return f"{node} · {self._where_badge(origin[1])}" if origin else node
+
     def _print_assistant(self, text: str, node: str) -> None:
         bullet = Text("⏺ ", style="loom.agent" if node in ("agent", "model") else "loom.subagent")
         if node not in ("agent", "model"):
-            bullet.append(f"[{node}] ", style="loom.dim")
+            bullet.append(f"[{self._node_label(node)}] ", style="loom.dim")
         self.console.print(bullet, end="")
         try:
             self.console.print(Markdown(text))
@@ -537,11 +577,13 @@ def _banner(session: Session) -> Panel:
     from loom import __version__
 
     cfg = session.settings.models
+    o_badge = "⌂" if cfg.is_local(cfg.orchestrator) else "☁"
+    a_badge = "⌂" if cfg.is_local(cfg.advisor) else "☁"
     body = Text()
     body.append("✻ Welcome to Loom!", style="loom.accent")
     body.append(f"  v{__version__}\n\n", style="loom.dim")
     body.append("  /help for help, /status for your current setup\n\n", style="loom.dim")
-    body.append(f"  model: {cfg.orchestrator} · advisor: {cfg.advisor}\n", style="loom.dim")
+    body.append(f"  model: {o_badge} {cfg.orchestrator} · advisor: {a_badge} {cfg.advisor}\n", style="loom.dim")
     body.append(f"  cwd: {session.cwd}", style="loom.dim")
     return Panel(body, border_style="loom.accent", expand=False, padding=(0, 1))
 
@@ -558,7 +600,11 @@ def _toolbar(session: Session):
         modes.append("VIM")
     mode_str = " ".join(modes) or "normal"
     cost = session.tracker.session.cloud_cost
-    return f" {session.settings.models.orchestrator} · {mode_str} · ${cost:.3f} · shift+tab: mode · /help "
+    # model_origin is fallback-aware: if Ollama is down the orchestrator badge
+    # flips to the billed ☁ cloud fallback rather than lying about being local.
+    model, is_local = session.model_origin("orchestrator")
+    where = "⌂" if is_local else "☁"
+    return f" {where} {model} · {mode_str} · ${cost:.3f} · shift+tab: mode · /help "
 
 
 # ---------------------------------------------------------------------------

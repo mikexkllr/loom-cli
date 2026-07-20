@@ -96,7 +96,7 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
         kind="cloud",
         prefix="anthropic",
         env_vars=(
-            EnvVar("CLAUDE_CODE_USE_BEDROCK", "Enable Bedrock routing", secret=False, default="1"),
+            EnvVar("LOOM_USE_BEDROCK", "Enable Bedrock routing", secret=False, default="1"),
             EnvVar("AWS_BEARER_TOKEN_BEDROCK", "Bedrock API key / bearer token"),
             EnvVar("ANTHROPIC_BEDROCK_BASE_URL", "Bedrock base URL (blank = real AWS)", secret=False, required=False),
         ),

@@ -61,10 +61,28 @@ def test_set_value_env_stays_string(tmp_path, monkeypatch):
     # env.* values must stay str (they become process env vars) — numeric-
     # looking values like "1"/"0" must not be coerced to int/bool.
     monkeypatch.setattr(st, "USER_SETTINGS_PATH", tmp_path / "settings.json")
-    st.set_value("env.CLAUDE_CODE_USE_BEDROCK", "1")
+    st.set_value("env.LOOM_USE_BEDROCK", "1")
     s = st.set_value("env.ANTHROPIC_BEDROCK_BASE_URL", "https://example.com")
-    assert s.env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+    assert s.env["LOOM_USE_BEDROCK"] == "1"
     assert s.env["ANTHROPIC_BEDROCK_BASE_URL"] == "https://example.com"
+
+
+def test_apply_env_translates_legacy_bedrock_flag(monkeypatch):
+    # Loom's Bedrock opt-in once reused Claude Code's env var name; old env
+    # blocks are translated to LOOM_USE_BEDROCK and the Claude Code name is
+    # never exported (it would reconfigure Claude Code in subshells).
+    import os
+
+    monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+    monkeypatch.delenv("LOOM_USE_BEDROCK", raising=False)
+    s = st.load_settings()
+    s.env = {"CLAUDE_CODE_USE_BEDROCK": "1"}
+    s.apply_env()
+    try:
+        assert os.environ.get("LOOM_USE_BEDROCK") == "1"
+        assert "CLAUDE_CODE_USE_BEDROCK" not in os.environ
+    finally:
+        os.environ.pop("LOOM_USE_BEDROCK", None)
 
 
 def test_project_settings_json_can_set_env(tmp_path):
