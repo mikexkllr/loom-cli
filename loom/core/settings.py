@@ -98,7 +98,7 @@ class UISettings(BaseModel):
     theme: str = "auto"  # auto | dark | light | mono
     streaming: bool = True
     show_tool_calls: bool = True
-    show_thinking: bool = False
+    show_thinking: bool = True
     show_fleet_panel: bool = True
     prompt_symbol: str = ">"
     banner: bool = True

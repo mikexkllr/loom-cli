@@ -43,7 +43,7 @@
     "theme": "auto",
     "streaming": true,
     "show_tool_calls": true,
-    "show_thinking": false,
+    "show_thinking": true,
     "show_fleet_panel": true,
     "prompt_symbol": ">",
     "banner": true

@@ -16,7 +16,6 @@ from pathlib import Path
 
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.prompt import Confirm
 from rich.text import Text
 
 from loom.core import repomap
@@ -58,6 +57,8 @@ class Session:
         self.accept_edits = False
         self.airgap = airgap
         self.vim = False
+        # Tools approved with "don't ask again" — cleared when the session ends.
+        self.session_allowed: set[str] = set()
         self._interrupted = False
         self.console = make_console(settings.ui)
         self.messages: list = []
@@ -330,8 +331,12 @@ class Session:
             next_prompt = "Continue the loop task from where you left off." + self.LOOP_NOTE
         self.console.print(f"[loom.warn]loop ended after {max_iters} iterations without completing[/loom.warn]")
 
-    # ----- approval prompt with diff preview -----
-    def _confirm(self, tool_name: str, tool_input: dict, reason: str) -> bool:
+    # ----- approval prompt with diff preview (Claude Code-style selector) -----
+    def _confirm(self, tool_name: str, tool_input: dict, reason: str) -> "bool | tuple[bool, str]":
+        if tool_name in self.session_allowed:
+            return True
+        from rich.prompt import Prompt
+
         detail = ", ".join(f"{k}={str(v)[:60]}" for k, v in (tool_input or {}).items())
         self.console.print(
             Panel(f"[loom.tool]{tool_name}[/loom.tool]  {detail}", title=f"approve? ({reason})", border_style="loom.warn")
@@ -339,7 +344,25 @@ class Session:
         diff = self._diff_for(tool_name, tool_input or {})
         if diff:
             self.console.print(diff)
-        return Confirm.ask("  run this tool?", default=False)
+        self.console.print(
+            f"  [loom.accent]1[/loom.accent]  yes\n"
+            f"  [loom.accent]2[/loom.accent]  yes, don't ask again for [loom.tool]{tool_name}[/loom.tool] this session\n"
+            f"  [loom.accent]3[/loom.accent]  no, and tell Loom what to do differently"
+        )
+        try:
+            choice = Prompt.ask("  choice", choices=["1", "2", "3"], default="1")
+        except (EOFError, KeyboardInterrupt):
+            return False
+        if choice == "2":
+            self.session_allowed.add(tool_name)
+            return True
+        if choice == "3":
+            try:
+                feedback = Prompt.ask("  what should Loom do instead? (enter = just decline)", default="")
+            except (EOFError, KeyboardInterrupt):
+                feedback = ""
+            return (False, feedback.strip())
+        return True
 
     def _diff_for(self, tool_name: str, tool_input: dict) -> Text | None:
         """Unified diff preview for write_file / edit_file approvals."""
@@ -434,6 +457,24 @@ class Session:
         if node not in ("agent", "model"):
             line.append(f"  [{self._node_label(node)}]", style="loom.dim")
         self.console.print(line)
+        # Inline diff for file edits — unless the approval prompt is about to
+        # render the same diff anyway.
+        if name in ("write_file", "edit_file") and isinstance(args, dict) and not self._will_prompt(name, args):
+            diff = self._diff_for(name, args)
+            if diff:
+                self.console.print(diff)
+
+    def _will_prompt(self, tool_name: str, tool_input: dict) -> bool:
+        """True if this call is about to trigger the interactive approval
+        prompt (which shows its own diff preview)."""
+        from loom.core import permissions as perm_engine
+        from loom.core.permissions import Decision
+
+        if self.yolo or tool_name in self.session_allowed:
+            return False
+        if self.accept_edits and tool_name in ("write_file", "edit_file"):
+            return False
+        return perm_engine.check(tool_name, tool_input, self.settings.permissions) is Decision.ask
 
     def _print_tool_result(self, msg) -> None:
         content = str(getattr(msg, "content", "") or "").strip()
@@ -471,46 +512,133 @@ class Session:
             )
         return ""
 
+    @staticmethod
+    def _chunk_parts(chunk) -> tuple[str, str]:
+        """(text, reasoning) in a streamed chunk. Reasoning arrives as
+        Anthropic-style "thinking" content blocks or as Ollama/OpenAI-compat
+        ``additional_kwargs["reasoning_content"]``."""
+        text: list[str] = []
+        thinking: list[str] = []
+        content = getattr(chunk, "content", "")
+        if isinstance(content, str):
+            text.append(content)
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                kind = part.get("type")
+                if kind == "text":
+                    text.append(part.get("text", ""))
+                elif kind in ("thinking", "reasoning"):
+                    thinking.append(str(part.get("thinking") or part.get("reasoning") or part.get("text") or ""))
+        reasoning = (getattr(chunk, "additional_kwargs", None) or {}).get("reasoning_content")
+        if reasoning:
+            thinking.append(str(reasoning))
+        return "".join(text), "".join(thinking)
+
+    def _stream_source(self, meta: dict | None) -> str | None:
+        """Label for the model emitting a streamed chunk: None for the
+        orchestrator itself, else "role · model (⌂ local / ☁ cloud)" — so
+        subagent/advisor output is attributed, and billed cloud calls are
+        distinguishable from free local ones mid-stream."""
+        from loom.core.model_router import resolve
+
+        meta = meta or {}
+        model = str(meta.get("ls_model_name") or "")
+        if not model:
+            return None
+        cfg = self.settings.models
+        if model == resolve(cfg.orchestrator).name:
+            return None
+        # A role on Ollama fallback streams under the cloud-fallback model's
+        # name, so it simply won't match here and shows as "<model> (☁ cloud)".
+        roles = {"advisor": cfg.advisor, "escalation": cfg.escalation_model, **cfg.subagents}
+        role = next((r for r, ms in roles.items() if resolve(ms).name == model), None)
+        provider = str(meta.get("ls_provider") or "").lower()
+        if provider:
+            is_local = provider in ("ollama", "chatollama")
+        else:
+            is_local = role is not None and cfg.is_local(roles[role])
+        where = "⌂ local" if is_local else "☁ cloud"
+        return f"{role} · {model} ({where})" if role else f"{model} ({where})"
+
     def _stream(self, agent, inputs, run_config) -> str | None:
         """Token-level streaming; falls back to per-update rendering when the
         installed langgraph doesn't support multi-mode streams. Returns the
-        final assistant text."""
+        final assistant text. ``subgraphs=True`` surfaces intermediate steps
+        from nested graphs; messages-mode token streaming reaches every model
+        call in the run tree (subagents and the advisor included) either way."""
         if not self.settings.ui.streaming:
             return self._stream_updates(agent.stream(inputs, config=run_config, stream_mode="updates"))
-        try:
-            stream = agent.stream(inputs, config=run_config, stream_mode=["updates", "messages"])
-            return self._stream_multi(stream)
-        except (TypeError, ValueError):
-            return self._stream_updates(agent.stream(inputs, config=run_config, stream_mode="updates"))
+        for kwargs in ({"subgraphs": True}, {}):
+            try:
+                stream = agent.stream(inputs, config=run_config, stream_mode=["updates", "messages"], **kwargs)
+                return self._stream_multi(stream)
+            except (TypeError, ValueError):
+                continue
+        return self._stream_updates(agent.stream(inputs, config=run_config, stream_mode="updates"))
 
     def _stream_multi(self, stream) -> str | None:
         ui = self.settings.ui
         streamed: set[str] = set()  # finalized token-streamed texts (dedup vs updates)
         buf: list[str] = []
+        open_key: tuple[str, str | None] | None = None  # (kind, source) of the open token block
         final_text = None
 
         def finish_block() -> None:
-            nonlocal buf
-            if buf:
-                streamed.add("".join(buf).strip())
+            nonlocal buf, open_key
+            if open_key is not None:
+                if open_key[0] == "text" and buf:
+                    streamed.add("".join(buf).strip())
                 buf = []
+                open_key = None
                 self.console.print("\n")
 
+        def emit(kind: str, source: str | None, piece: str) -> None:
+            """Append tokens to the current block, opening a new headed block
+            whenever the kind (text vs thinking) or emitting model changes."""
+            nonlocal open_key
+            if open_key != (kind, source):
+                finish_block()
+                open_key = (kind, source)
+                header = Text()
+                if kind == "thinking":
+                    header.append("✻ thinking…", style="loom.dim")
+                    if source:
+                        header.append(f" [{source}]", style="loom.dim")
+                    header.append("\n")
+                else:
+                    header.append("⏺ ", style="loom.agent" if source is None else "loom.subagent")
+                    if source:
+                        header.append(f"[{source}] ", style="loom.dim")
+                self.console.print(header, end="")
+            if kind == "text":
+                buf.append(piece)
+                self.console.print(piece, end="", markup=False, highlight=False, soft_wrap=True)
+            else:
+                self.console.print(Text(piece, style="loom.dim"), end="", soft_wrap=True)
+
         for item in stream:
-            if not (isinstance(item, tuple) and len(item) == 2):
+            if not isinstance(item, tuple):
                 continue
-            mode, payload = item
+            if len(item) == 3:  # subgraphs=True → (namespace, mode, payload)
+                _ns, mode, payload = item
+            elif len(item) == 2:
+                mode, payload = item
+            else:
+                continue
             if mode == "messages":
-                chunk, _meta = payload
+                chunk, meta = payload
                 if type(chunk).__name__ != "AIMessageChunk":
                     continue
-                text = self._chunk_text(chunk)
-                if not text:
+                text, thinking = self._chunk_parts(chunk)
+                if not text and not thinking:
                     continue
-                if not buf:
-                    self.console.print(Text("⏺ ", style="loom.agent"), end="")
-                buf.append(text)
-                self.console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
+                source = self._stream_source(meta)
+                if thinking and ui.show_thinking:
+                    emit("thinking", source, thinking)
+                if text:
+                    emit("text", source, text)
                 continue
 
             # updates mode — structure: tool calls, results, non-streamed text

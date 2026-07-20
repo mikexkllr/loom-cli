@@ -71,6 +71,25 @@ def test_accept_edits_gates_only_file_writes(tmp_path):
         policy.auto_approve_edits.set(False)
 
 
+def test_decline_feedback_reaches_the_model(tmp_path):
+    settings = st.Settings(permissions=st.Permissions(default_mode="ask"))
+    mw = PolicyMiddleware(settings, cwd=str(tmp_path))
+
+    def handler(_req):
+        return SimpleNamespace(executed=True)
+
+    req = SimpleNamespace(call={"name": "execute", "args": {"command": "ls"}, "id": "x"})
+    policy.auto_approve.set(False)
+    policy.confirm_callback.set(lambda n, i, r: (False, "run pytest instead"))
+    try:
+        result = mw.wrap_tool_call(req, handler)
+        content = str(getattr(result, "content", result))
+        assert "declined" in content
+        assert "run pytest instead" in content
+    finally:
+        policy.confirm_callback.set(lambda n, i, r: False)
+
+
 # ----------------------------------------------------------------- loop
 
 

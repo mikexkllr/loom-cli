@@ -29,11 +29,22 @@ except Exception:  # pragma: no cover
 
 
 # Set by the REPL to prompt the user on "ask" decisions. Signature:
-#   confirm(tool_name: str, tool_input: dict, reason: str) -> bool
-# Default denies (safe for non-interactive/headless runs).
-confirm_callback: contextvars.ContextVar[Callable[[str, dict, str], bool]] = contextvars.ContextVar(
+#   confirm(tool_name: str, tool_input: dict, reason: str) -> bool | (bool, str)
+# The tuple form carries decline feedback ("what to do instead"), which is
+# routed back to the model in the blocking ToolMessage so it can adjust
+# course. Default denies (safe for non-interactive/headless runs).
+confirm_callback: contextvars.ContextVar[Callable[[str, dict, str], "bool | tuple"]] = contextvars.ContextVar(
     "loom_confirm_callback", default=lambda name, inp, reason: False
 )
+
+
+def _normalize_confirm(result: "bool | tuple") -> tuple[bool, str]:
+    """(approved, feedback) from either a bare bool or a (bool, str) tuple."""
+    if isinstance(result, tuple):
+        approved = bool(result[0]) if result else False
+        feedback = str(result[1]) if len(result) > 1 and result[1] else ""
+        return approved, feedback
+    return bool(result), ""
 
 # When true, "ask" auto-approves (the REPL's /yolo mode, or --yes flag).
 auto_approve: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -133,8 +144,12 @@ class PolicyMiddleware(AgentMiddleware):
             return self._blocked(request, f"Permission denied for `{name}` by policy.")
         if decision is Decision.ask and not auto_approve.get():
             if not (name in _EDIT_TOOLS and auto_approve_edits.get()):
-                if not confirm_callback.get()(name, args, "requires approval"):
-                    return self._blocked(request, f"User declined `{name}`.")
+                approved, feedback = _normalize_confirm(confirm_callback.get()(name, args, "requires approval"))
+                if not approved:
+                    msg = f"User declined `{name}`."
+                    if feedback:
+                        msg += f" The user says to do this instead: {feedback}"
+                    return self._blocked(request, msg)
 
         pre = hooks_engine.pre_tool_use(self.settings.hooks, name, args, self.cwd)
         if pre.blocked:

@@ -47,6 +47,27 @@
   `/model`, or `loom config set` to adopt the new defaults.
 
 ### Added
+- **Claude Code-style approval selector.** Tool approvals are no longer a
+  bare yes/no: pick `1` yes, `2` yes — don't ask again for this tool this
+  session, or `3` no — and tell Loom what to do differently. Decline
+  feedback is routed back to the model in the blocking tool message
+  ("The user says to do this instead: …") so the next attempt adjusts
+  course instead of retrying blind.
+- **Reasoning/thinking is streamed.** Models that emit reasoning
+  (Anthropic thinking blocks, Ollama/OpenAI-compat `reasoning_content`)
+  now stream it live in dim `✻ thinking…` blocks, from every model in the
+  run — orchestrator, subagents, and advisor alike. `ui.show_thinking` now
+  defaults to `true`; set it to `false` to hide reasoning again.
+- **Every streamed block is attributed to its model.** Token streams from
+  any model other than the orchestrator open with a
+  `[role · model (⌂ local / ☁ cloud)]` header, so subagent and advisor
+  output — and whether it's billed cloud or free local — is visible while
+  it streams, not just after. Nested-graph steps surface via
+  `subgraphs=True` streaming where the installed langgraph supports it.
+- **Inline diffs for file edits.** `write_file`/`edit_file` tool calls
+  render their unified diff under the call line whenever the approval
+  prompt isn't about to show the same diff itself (yolo, accept-edits,
+  allow-listed, or session-approved tools).
 - **Cloud vs local is visible everywhere a model acts.** The banner,
   bottom toolbar, and `/status` badge models with `⌂ local` / `☁ cloud`;
   `task`/`consult` tool-call lines show which model the work is delegated
