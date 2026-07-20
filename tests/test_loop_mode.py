@@ -28,8 +28,10 @@ def test_cycle_approval_mode(tmp_path):
     assert s.approval_mode == "default"
     assert s.cycle_approval_mode() == "accept-edits"
     assert s.accept_edits and not s.yolo
+    assert s.cycle_approval_mode() == "plan"
+    assert s.plan and not s.accept_edits and not s.yolo
     assert s.cycle_approval_mode() == "yolo"
-    assert s.yolo and not s.accept_edits
+    assert s.yolo and not s.plan and not s.accept_edits
     assert s.cycle_approval_mode() == "default"
 
 

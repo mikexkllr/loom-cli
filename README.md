@@ -190,7 +190,7 @@ Slash commands (Claude Code-compatible where it makes sense):
 | `/export [path]` | save the transcript to markdown |
 | `/doctor` | health-check your setup (ollama, keys, npx, MCP) |
 | `/theme`, `/vim` | UI theme · vim editing mode |
-| `/mode [m]` | approval mode: default / accept-edits / yolo (Shift+Tab cycles) |
+| `/mode [m]` | mode: default / accept-edits / plan / yolo (Shift+Tab cycles) |
 | `/loop [N] <task>` | iterate until done — optional `--until "pytest -q"` gate |
 | `/plan`, `/local`, `/yolo` | toggle plan / local-only / full auto-approve |
 | `/cwd`, `/exit` | sandbox root · quit |
@@ -202,17 +202,38 @@ token-by-token. When a tool needs approval (per your permission rules), Loom
 asks inline with a unified diff preview for file writes — unless `/yolo` is
 on — and every write is snapshotted so `/undo` can roll a turn back.
 
-### Approval modes
+### Modes
 
-Like Claude Code, **Shift+Tab** cycles the permission mode (also `/mode`):
+Like Claude Code, **Shift+Tab** cycles the mode (also `/mode`):
 
 | Mode | Behavior |
 |---|---|
 | `default` | every ask-rule tool prompts you (with a diff preview for writes) |
 | `accept-edits` | file writes auto-approve; shell and everything else still ask |
+| `plan` | read-only planning — approve the plan to execute it (`/plan`, `--plan`) |
 | `yolo` | everything auto-approves (`/yolo`, `--yolo`) |
 
 `deny` rules always win — even in yolo, `execute(sudo *)` stays blocked.
+
+### Plan mode
+
+Like Claude Code's plan mode / opencode's plan agent: in plan mode the agent
+is compiled read-only — only the read-only subagents run, and write/execute
+tools are stripped from every subagent (enforced by middleware, not just the
+prompt). The orchestrator investigates, then ends its turn with a concrete,
+ordered implementation plan. Loom then asks:
+
+```
+plan ready — execute it?
+  1  yes, and auto-accept edits
+  2  yes, and approve edits manually
+  3  no, keep planning
+```
+
+Approving flips plan mode off, rebuilds the full write-capable agent, and
+executes the plan in the same thread — the agent implements exactly what it
+just proposed. Answering `3` keeps you in plan mode to refine the plan with
+follow-up messages.
 
 ### Loop mode
 

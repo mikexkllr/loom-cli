@@ -72,7 +72,9 @@ PLAN_SUFFIX = """
 
 PLAN MODE: This is a read-only planning pass. Do NOT edit files or run mutating
 commands. Use explorer/searcher to investigate, then produce a concrete,
-ordered implementation plan and stop. The user will approve before any writes."""
+ordered implementation plan and stop. Your FINAL message must contain the
+complete plan (numbered steps, files to touch, how you'll verify) — the user is
+then asked to approve it, and on approval you implement exactly that plan."""
 
 LOCAL_ONLY_SUFFIX = """
 

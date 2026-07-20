@@ -69,7 +69,7 @@ class Session:
         self._memory_sent = False
         sandbox.set_root(self.cwd)
 
-    # ----- permission modes (Claude Code-style: default → accept-edits → yolo)
+    # ----- modes (Claude Code-style: default → accept-edits → plan → yolo)
     @property
     def approval_mode(self) -> str:
         if self.yolo:
@@ -78,11 +78,25 @@ class Session:
             return "accept-edits"
         return "default"
 
+    @property
+    def mode(self) -> str:
+        """The Shift+Tab-cycled mode: plan wins over the approval modes."""
+        return "plan" if self.plan else self.approval_mode
+
+    def set_mode(self, mode: str) -> None:
+        """Set the exclusive mode; entering/leaving plan rebuilds the agent
+        (plan mode compiles a read-only orchestrator)."""
+        was_plan = self.plan
+        self.plan = mode == "plan"
+        self.accept_edits = mode == "accept-edits"
+        self.yolo = mode == "yolo"
+        if self.plan != was_plan:
+            self.rebuild()
+
     def cycle_approval_mode(self) -> str:
-        order = ("default", "accept-edits", "yolo")
-        nxt = order[(order.index(self.approval_mode) + 1) % len(order)]
-        self.accept_edits = nxt == "accept-edits"
-        self.yolo = nxt == "yolo"
+        order = ("default", "accept-edits", "plan", "yolo")
+        nxt = order[(order.index(self.mode) + 1) % len(order)]
+        self.set_mode(nxt)
         return nxt
 
     # Back-compat view used by /status and tests.
@@ -232,6 +246,44 @@ class Session:
             if receipt:
                 self.console.print(Text(f"✻ {receipt}", style="loom.dim"))
         return final_text
+
+    # ----- plan mode (Claude Code-style: plan → approve → execute) -----
+    PLAN_EXECUTE_PROMPT = (
+        "The plan you just presented is APPROVED and plan mode is now off. "
+        "Implement the plan step by step, verifying as you go. If reality "
+        "diverges from the plan, adapt and say so."
+    )
+
+    def offer_plan_execution(self) -> None:
+        """After a planning turn, offer to approve the plan and execute it
+        immediately — plan mode switches off and the same thread continues,
+        so the orchestrator implements the plan it just wrote."""
+        from rich.prompt import Prompt
+
+        self.console.print(
+            Panel(
+                "[loom.accent]1[/loom.accent]  yes, and auto-accept edits\n"
+                "[loom.accent]2[/loom.accent]  yes, and approve edits manually\n"
+                "[loom.accent]3[/loom.accent]  no, keep planning",
+                title="plan ready — execute it?",
+                border_style="loom.accent",
+                expand=False,
+            )
+        )
+        try:
+            choice = Prompt.ask("  choice", choices=["1", "2", "3"], default="3")
+        except (EOFError, KeyboardInterrupt):
+            choice = "3"
+        if choice not in ("1", "2"):
+            self.console.print(
+                "[loom.dim]still in plan mode — refine the plan, or /plan to leave without executing[/loom.dim]"
+            )
+            return
+        self.set_mode("accept-edits" if choice == "1" else "default")
+        self.console.print(
+            f"[loom.accent]✓ plan approved[/loom.accent] [loom.dim]— executing (mode: {self.mode})[/loom.dim]"
+        )
+        self.run_turn(self.PLAN_EXECUTE_PROMPT)
 
     # ----- loop mode -----
     LOOP_NOTE = (
@@ -580,9 +632,12 @@ def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yol
             continue
 
         try:
-            session.run_turn(line)
+            reply = session.run_turn(line)
         except KeyboardInterrupt:
             session.console.print("[loom.warn]⏹ interrupted[/loom.warn]")
+            continue
+        if session.plan and reply and not session._interrupted:
+            session.offer_plan_execution()
 
 
 def _make_prompt_session(session: Session | None = None):

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+- **Claude Code-style plan mode.** Plan mode is now a first-class mode in the
+  Shift+Tab cycle (`default → accept-edits → plan → yolo`) and `/mode plan`.
+  After a planning turn, Loom presents the plan with an approve-&-execute
+  gate ("yes + auto-accept edits" / "yes + manual approval" / "keep
+  planning"); approving flips plan mode off, rebuilds the write-capable
+  agent, and implements the plan in the same thread. `/plan` also accepts
+  explicit `on`/`off`, and entering plan/yolo now clears the other modes
+  instead of stacking.
+
 ### Security
 - **Permissions, hooks, and `/undo` now enforce inside subagents.** deepagents
   builds a fresh middleware stack per subagent, so the orchestrator-level

@@ -72,13 +72,19 @@ def _clear(session: "Session", args: str) -> bool:
     return True
 
 
-@command("plan", "Toggle plan mode (read-only, no writes)")
+@command("plan", "Toggle plan mode: read-only planning, then approve & execute")
 def _plan(session: "Session", args: str) -> bool:
-    session.plan = not session.plan
+    choice = args.strip().lower()
+    turn_on = choice == "on" if choice in ("on", "off") else not session.plan
+    session.set_mode("plan" if turn_on else "default")
     if session.plan:
-        session.local_only = session.local_only
-    session.rebuild()
-    session.console.print(f"plan mode: [loom.accent]{'on' if session.plan else 'off'}[/loom.accent]")
+        session.console.print(
+            "plan mode: [loom.accent]on[/loom.accent] — read-only; no edits, no shell writes.\n"
+            "[loom.dim]when the plan is ready you'll be asked to approve it — approving "
+            "executes it immediately (Shift+Tab cycles modes)[/loom.dim]"
+        )
+    else:
+        session.console.print("plan mode: [loom.accent]off[/loom.accent]")
     return True
 
 
@@ -93,38 +99,36 @@ def _local(session: "Session", args: str) -> bool:
 @command("yolo", "Toggle full auto-approve (shorthand for /mode yolo)")
 def _yolo(session: "Session", args: str) -> bool:
     if session.yolo:
-        session.yolo = False
-        session.accept_edits = False
+        session.set_mode("default")
         session.console.print("auto-approve: [loom.warn]off[/loom.warn] (mode: default)")
     else:
-        session.yolo = True
-        session.accept_edits = False
+        session.set_mode("yolo")
         session.console.print("auto-approve: [loom.warn]ON — every tool runs without asking[/loom.warn]")
     return True
 
 
-@command("mode", "Show or set the approval mode: /mode [default|accept-edits|yolo] (Shift+Tab cycles)")
+@command("mode", "Show or set the mode: /mode [default|accept-edits|plan|yolo] (Shift+Tab cycles)")
 def _mode(session: "Session", args: str) -> bool:
     choice = args.strip().lower()
+    aliases = {
+        "normal": "default",
+        "edits": "accept-edits",
+        "accept_edits": "accept-edits",
+    }
+    choice = aliases.get(choice, choice)
     if not choice:
         choice = session.cycle_approval_mode()
-    elif choice in ("default", "normal"):
-        session.yolo = False
-        session.accept_edits = False
-        choice = "default"
-    elif choice in ("accept-edits", "edits", "accept_edits"):
-        session.yolo = False
-        session.accept_edits = True
-        choice = "accept-edits"
-    elif choice == "yolo":
-        session.yolo = True
-        session.accept_edits = False
+    elif choice in ("default", "accept-edits", "plan", "yolo"):
+        session.set_mode(choice)
     else:
-        session.console.print(f"[loom.err]unknown mode:[/loom.err] {choice} (default | accept-edits | yolo)")
+        session.console.print(
+            f"[loom.err]unknown mode:[/loom.err] {choice} (default | accept-edits | plan | yolo)"
+        )
         return True
     desc = {
         "default": "every ask-tool prompts you",
         "accept-edits": "file edits auto-approve; shell and the rest still ask",
+        "plan": "read-only planning — approve the plan to execute it",
         "yolo": "everything auto-approves",
     }[choice]
     session.console.print(f"mode: [loom.accent]{choice}[/loom.accent] — {desc}")
