@@ -59,6 +59,11 @@ class Session:
         self.vim = False
         # Tools approved with "don't ask again" — cleared when the session ends.
         self.session_allowed: set[str] = set()
+        # Approval prompts can fire from LangGraph worker threads; serialize
+        # them so two parallel tool calls never interleave on the terminal.
+        import threading
+
+        self._confirm_lock = threading.Lock()
         self._interrupted = False
         self.console = make_console(settings.ui)
         self.messages: list = []
@@ -247,9 +252,12 @@ class Session:
             final_text = self._absorb_result(result)
         finally:
             undo.current_turn_id.set("")
+            # Explicit end-of-turn marker: while it's absent, Loom is still
+            # streaming — intermediate text is never the final answer.
+            marker = "⏹ turn interrupted" if self._interrupted else "✔ turn complete"
             receipt = self.tracker.receipt(turn=True)
-            if receipt:
-                self.console.print(Text(f"✻ {receipt}", style="loom.dim"))
+            tail = f" · {receipt}" if receipt else ""
+            self.console.print(Text(f"{marker}{tail}", style="loom.dim"))
         return final_text
 
     # ----- plan mode (Claude Code-style: plan → approve → execute) -----
@@ -334,6 +342,12 @@ class Session:
     # ----- approval prompt with diff preview (Claude Code-style selector) -----
     def _confirm(self, tool_name: str, tool_input: dict, reason: str) -> "bool | tuple[bool, str]":
         if tool_name in self.session_allowed:
+            return True
+        with self._confirm_lock:
+            return self._confirm_locked(tool_name, tool_input, reason)
+
+    def _confirm_locked(self, tool_name: str, tool_input: dict, reason: str) -> "bool | tuple[bool, str]":
+        if tool_name in self.session_allowed:  # approved while we waited on the lock
             return True
         from rich.prompt import Prompt
 
@@ -427,6 +441,29 @@ class Session:
     def _where_badge(is_local: bool) -> str:
         return "⌂ local" if is_local else "☁ cloud"
 
+    def local_model_tags(self) -> list[str]:
+        """Distinct local (Ollama) model tags assigned to any role, excluding
+        roles currently live-fallen-back to the cloud — what's actually
+        running on this machine right now."""
+        from loom.core.model_router import resolve
+
+        cfg = self.settings.models
+        fallbacks = getattr(self.bundle, "fallbacks", None) or {}
+        roles = {
+            "orchestrator": cfg.orchestrator,
+            "advisor": cfg.advisor,
+            "escalation": cfg.escalation_model,
+            **cfg.subagents,
+        }
+        tags: list[str] = []
+        for role, model in roles.items():
+            if role in fallbacks or not cfg.is_local(model):
+                continue
+            tag = resolve(model).name
+            if tag not in tags:
+                tags.append(tag)
+        return tags
+
     @staticmethod
     def _call_args_brief(call) -> str:
         args = call.get("args", {}) if isinstance(call, dict) else getattr(call, "args", {}) or {}
@@ -435,7 +472,7 @@ class Session:
         brief = ", ".join(f"{k}: {str(v)[:50]}" for k, v in list(args.items())[:3])
         return brief[:100]
 
-    def _print_tool_call(self, call, node: str) -> None:
+    def _print_tool_call(self, call, node: str, source: str | None = None) -> None:
         name = call.get("name", "?") if isinstance(call, dict) else getattr(call, "name", "?")
         args = call.get("args", {}) if isinstance(call, dict) else getattr(call, "args", {}) or {}
         line = Text()
@@ -454,8 +491,9 @@ class Session:
         origin = self.model_origin(target) if target else None
         if origin:
             line.append(f"  → {origin[0]} ({self._where_badge(origin[1])})", style="loom.dim")
-        if node not in ("agent", "model"):
-            line.append(f"  [{self._node_label(node)}]", style="loom.dim")
+        # Every tool call says who issued it — orchestrator or a subagent.
+        caller = source or (self._node_label(node) if node not in ("agent", "model") else "orchestrator")
+        line.append(f"  [{caller}]", style="loom.dim")
         self.console.print(line)
         # Inline diff for file edits — unless the approval prompt is about to
         # render the same diff anyway.
@@ -490,9 +528,12 @@ class Session:
         origin = self.model_origin(node)
         return f"{node} · {self._where_badge(origin[1])}" if origin else node
 
-    def _print_assistant(self, text: str, node: str) -> None:
-        bullet = Text("⏺ ", style="loom.agent" if node in ("agent", "model") else "loom.subagent")
-        if node not in ("agent", "model"):
+    def _print_assistant(self, text: str, node: str, source: str | None = None) -> None:
+        is_main = source in (None, "orchestrator") and node in ("agent", "model")
+        bullet = Text("⏺ ", style="loom.agent" if is_main else "loom.subagent")
+        if source and source != "orchestrator":
+            bullet.append(f"[{source}] ", style="loom.dim")
+        elif node not in ("agent", "model"):
             bullet.append(f"[{self._node_label(node)}] ", style="loom.dim")
         self.console.print(bullet, end="")
         try:
@@ -536,15 +577,13 @@ class Session:
             thinking.append(str(reasoning))
         return "".join(text), "".join(thinking)
 
-    def _stream_source(self, meta: dict | None) -> str | None:
-        """Label for the model emitting a streamed chunk: None for the
-        orchestrator itself, else "role · model (⌂ local / ☁ cloud)" — so
-        subagent/advisor output is attributed, and billed cloud calls are
-        distinguishable from free local ones mid-stream."""
+    def _source_label(self, model: str, provider: str = "") -> str | None:
+        """Label for an emitting model: None for the orchestrator itself,
+        else "role · model (⌂ local / ☁ cloud)" — so subagent/advisor output
+        is attributed, and billed cloud calls are distinguishable from free
+        local ones."""
         from loom.core.model_router import resolve
 
-        meta = meta or {}
-        model = str(meta.get("ls_model_name") or "")
         if not model:
             return None
         cfg = self.settings.models
@@ -554,13 +593,34 @@ class Session:
         # name, so it simply won't match here and shows as "<model> (☁ cloud)".
         roles = {"advisor": cfg.advisor, "escalation": cfg.escalation_model, **cfg.subagents}
         role = next((r for r, ms in roles.items() if resolve(ms).name == model), None)
-        provider = str(meta.get("ls_provider") or "").lower()
+        provider = (provider or "").lower()
         if provider:
             is_local = provider in ("ollama", "chatollama")
+        elif role is not None:
+            is_local = cfg.is_local(roles[role])
         else:
-            is_local = role is not None and cfg.is_local(roles[role])
+            # Ollama tags look like "qwen3:14b"; cloud names never carry a colon.
+            is_local = ":" in model and not model.startswith("claude")
         where = "⌂ local" if is_local else "☁ cloud"
         return f"{role} · {model} ({where})" if role else f"{model} ({where})"
+
+    def _stream_source(self, meta: dict | None) -> str | None:
+        """Source label for a token chunk, from its callback metadata."""
+        meta = meta or {}
+        return self._source_label(str(meta.get("ls_model_name") or ""), str(meta.get("ls_provider") or ""))
+
+    def _msg_source(self, msg, nested: bool) -> str:
+        """Who produced an updates-mode AI message: "orchestrator", a
+        "role · model (badge)" label, or "subagent" when a nested-graph
+        message doesn't say which model it came from."""
+        rmeta = getattr(msg, "response_metadata", None) or {}
+        model = str(rmeta.get("model_name") or rmeta.get("model") or "")
+        label = self._source_label(model)
+        if label:
+            return label
+        if model:  # it IS the orchestrator model
+            return "orchestrator"
+        return "subagent" if nested else "orchestrator"
 
     def _stream(self, agent, inputs, run_config) -> str | None:
         """Token-level streaming; falls back to per-update rendering when the
@@ -621,12 +681,14 @@ class Session:
         for item in stream:
             if not isinstance(item, tuple):
                 continue
+            ns: tuple = ()
             if len(item) == 3:  # subgraphs=True → (namespace, mode, payload)
-                _ns, mode, payload = item
+                ns, mode, payload = item
             elif len(item) == 2:
                 mode, payload = item
             else:
                 continue
+            nested = bool(ns)
             if mode == "messages":
                 chunk, meta = payload
                 if type(chunk).__name__ != "AIMessageChunk":
@@ -652,15 +714,18 @@ class Session:
                     if ui.show_tool_calls:
                         self._print_tool_result(msg)
                     continue
+                source = self._msg_source(msg, nested)
                 for call in getattr(msg, "tool_calls", []) or []:
                     if ui.show_tool_calls:
-                        self._print_tool_call(call, node)
+                        self._print_tool_call(call, node, source=source)
                 text = getattr(msg, "content", "")
                 if text:
                     text = str(text) if isinstance(text, str) else self._chunk_text(msg)
                     if text.strip() and text.strip() not in streamed:
-                        self._print_assistant(text, node)
-                    final_text = text
+                        self._print_assistant(text, node, source=source)
+                    # Nested-graph text is a subagent's answer, not the turn's.
+                    if not nested:
+                        final_text = text
         finish_block()
         if final_text is not None and not (self.bundle and self.bundle.persistent):
             self.messages.append(("assistant", final_text))
@@ -708,14 +773,23 @@ class Session:
 def _banner(session: Session) -> Panel:
     from loom import __version__
 
+    from loom.core.model_router import resolve
+
     cfg = session.settings.models
     o_badge = "⌂" if cfg.is_local(cfg.orchestrator) else "☁"
     a_badge = "⌂" if cfg.is_local(cfg.advisor) else "☁"
+    parts = [f"model: {o_badge} {cfg.orchestrator}"]
+    # Local models power the subagent roles — show them even when the
+    # orchestrator/advisor are cloud (skip the orchestrator's own tag).
+    local = [t for t in session.local_model_tags() if not (cfg.is_local(cfg.orchestrator) and t == resolve(cfg.orchestrator).name)]
+    if local:
+        parts.append(f"local: ⌂ {', '.join(local)}")
+    parts.append(f"advisor: {a_badge} {cfg.advisor}")
     body = Text()
     body.append("✻ Welcome to Loom!", style="loom.accent")
     body.append(f"  v{__version__}\n\n", style="loom.dim")
     body.append("  /help for help, /status for your current setup\n\n", style="loom.dim")
-    body.append(f"  model: {o_badge} {cfg.orchestrator} · advisor: {a_badge} {cfg.advisor}\n", style="loom.dim")
+    body.append("  " + " · ".join(parts) + "\n", style="loom.dim")
     body.append(f"  cwd: {session.cwd}", style="loom.dim")
     return Panel(body, border_style="loom.accent", expand=False, padding=(0, 1))
 
@@ -732,11 +806,17 @@ def _toolbar(session: Session):
         modes.append("VIM")
     mode_str = " ".join(modes) or "normal"
     cost = session.tracker.session.cloud_cost
-    # model_origin is fallback-aware: if Ollama is down the orchestrator badge
-    # flips to the billed ☁ cloud fallback rather than lying about being local.
+    # model_origin/local_model_tags are fallback-aware: if Ollama is down the
+    # orchestrator badge flips to the billed ☁ cloud fallback and dead local
+    # tags drop out, rather than lying about what's running.
     model, is_local = session.model_origin("orchestrator")
     where = "⌂" if is_local else "☁"
-    return f" {where} {model} · {mode_str} · ${cost:.3f} · shift+tab: mode · /help "
+    from loom.core.model_router import resolve
+
+    cfg = session.settings.models
+    local = [t for t in session.local_model_tags() if not (is_local and t == resolve(cfg.orchestrator).name)]
+    local_str = f" · ⌂ {', '.join(local)}" if local else ""
+    return f" {where} {model}{local_str} · {mode_str} · ${cost:.3f} · shift+tab: mode · /help "
 
 
 # ---------------------------------------------------------------------------

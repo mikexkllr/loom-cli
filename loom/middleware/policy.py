@@ -11,13 +11,13 @@ tool name/args, the call passes through untouched.
 
 from __future__ import annotations
 
-import contextvars
 from typing import Any, Callable
 
 from loom.core import hooks as hooks_engine
 from loom.core import permissions as perm_engine
 from loom.core.permissions import Decision
 from loom.core.settings import Settings
+from loom.core.slot import Slot
 from loom.tools.sandbox import resolve_in_sandbox
 
 try:
@@ -33,9 +33,10 @@ except Exception:  # pragma: no cover
 # The tuple form carries decline feedback ("what to do instead"), which is
 # routed back to the model in the blocking ToolMessage so it can adjust
 # course. Default denies (safe for non-interactive/headless runs).
-confirm_callback: contextvars.ContextVar[Callable[[str, dict, str], "bool | tuple"]] = contextvars.ContextVar(
-    "loom_confirm_callback", default=lambda name, inp, reason: False
-)
+# NOTE: these are process-global Slots, NOT contextvars — LangGraph runs tool
+# calls in worker threads, where a contextvar reverts to its default and the
+# approval prompt would silently never appear (auto-deny).
+confirm_callback: Slot[Callable[[str, dict, str], "bool | tuple"]] = Slot(lambda name, inp, reason: False)
 
 
 def _normalize_confirm(result: "bool | tuple") -> tuple[bool, str]:
@@ -47,15 +48,11 @@ def _normalize_confirm(result: "bool | tuple") -> tuple[bool, str]:
     return bool(result), ""
 
 # When true, "ask" auto-approves (the REPL's /yolo mode, or --yes flag).
-auto_approve: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "loom_auto_approve", default=False
-)
+auto_approve: Slot[bool] = Slot(False)
 
 # Claude Code-style "accept edits" mode: file writes auto-approve, everything
 # else (shell, etc.) still asks.
-auto_approve_edits: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "loom_auto_approve_edits", default=False
-)
+auto_approve_edits: Slot[bool] = Slot(False)
 
 _EDIT_TOOLS = {"write_file", "edit_file"}
 

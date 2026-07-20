@@ -435,6 +435,11 @@ def _status(session: "Session", args: str) -> bool:
 
     table.add_row("[loom.dim]orchestrator[/loom.dim]", _with_badge("orchestrator", cfg.orchestrator))
     table.add_row("[loom.dim]advisor[/loom.dim]", _with_badge("advisor", cfg.advisor))
+    local_tags = session.local_model_tags()
+    table.add_row(
+        "[loom.dim]local models[/loom.dim]",
+        ("⌂ " + ", ".join(local_tags)) if local_tags else "— (all roles on cloud)",
+    )
     table.add_row("[loom.dim]mode[/loom.dim]", ", ".join(modes) or "normal")
     table.add_row("[loom.dim]permissions[/loom.dim]", f"default: {session.settings.permissions.default_mode}")
     table.add_row("[loom.dim]mcp[/loom.dim]", mcp_line)
@@ -447,6 +452,12 @@ def _status(session: "Session", args: str) -> bool:
     table.add_row(
         "[loom.dim]session[/loom.dim]",
         f"{u['turns']} turns · {u['input_tokens']} in / {u['output_tokens']} out tokens · ${u['cloud_cost']:.3f} cloud",
+    )
+    share = session.tracker.session.local_share()
+    saved = session.tracker.session.savings(cfg.orchestrator)
+    table.add_row(
+        "[loom.dim]savings[/loom.dim]",
+        f"{share:.0%} of tokens ran locally (free) · saved ~${saved:.2f} vs all-cloud",
     )
     session.console.print(Panel(table, title="status", border_style="loom.accent", expand=False))
     return True

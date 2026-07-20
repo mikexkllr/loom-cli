@@ -8,13 +8,16 @@ that didn't exist before the turn are deleted.
 
 from __future__ import annotations
 
-import contextvars
 import json
 import shutil
 from pathlib import Path
 
+from loom.core.slot import Slot
+
 # Set by the REPL at the start of each turn; empty = snapshots disabled.
-current_turn_id: contextvars.ContextVar[str] = contextvars.ContextVar("loom_turn_id", default="")
+# A process-global Slot, not a contextvar — snapshots must fire from
+# LangGraph's tool worker threads too (see loom.core.slot).
+current_turn_id: Slot[str] = Slot("")
 
 _INDEX = "index.json"
 

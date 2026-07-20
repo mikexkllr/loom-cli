@@ -76,6 +76,40 @@ def test_stream_source_unknown_model_shows_model_and_cloud(tmp_path):
     assert label == "mystery-9000 (☁ cloud)"
 
 
+# ------------------------------------------------------------ local models in banner/toolbar
+
+
+def test_local_model_tags_lists_subagent_models(tmp_path):
+    s = _session(tmp_path)
+    cfg = s.settings.models
+    expected = {resolve(m).name for m in cfg.subagents.values() if cfg.is_local(m)}
+    assert set(s.local_model_tags()) == expected
+    # A role on Ollama fallback isn't actually running locally — it drops out.
+    from types import SimpleNamespace
+
+    local_role = next(r for r, m in cfg.subagents.items() if cfg.is_local(m))
+    s.bundle = SimpleNamespace(fallbacks={local_role: cfg.subagents[local_role]}, persistent=False)
+    remaining = {
+        resolve(m).name for r, m in cfg.subagents.items() if cfg.is_local(m) and r != local_role
+    }
+    assert set(s.local_model_tags()) == remaining
+
+
+def test_banner_and_toolbar_show_local_models(tmp_path):
+    from loom.ui.repl import _banner, _toolbar
+
+    s = _session(tmp_path)
+    cfg = s.settings.models
+    tags = s.local_model_tags()
+    assert tags, "default config should assign local models to subagents"
+    banner_out = _banner(s).renderable.plain
+    toolbar_out = _toolbar(s)
+    for out in (banner_out, toolbar_out):
+        assert "⌂" in out
+        assert tags[0] in out
+        assert cfg.orchestrator in out
+
+
 # ------------------------------------------------------------ inline diffs
 
 
@@ -102,6 +136,77 @@ def test_print_tool_call_renders_diff_when_not_prompting(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "edit_file" in out
     assert "+new line" in out and "-old line" in out
+
+
+# ------------------------------------------------------------ caller attribution
+
+
+def _ai_msg(model_name=None, tool_calls=None, content=""):
+    from langchain_core.messages import AIMessage
+
+    msg = AIMessage(content=content, tool_calls=tool_calls or [])
+    if model_name:
+        msg.response_metadata = {"model_name": model_name}
+    return msg
+
+
+def test_msg_source_attribution(tmp_path):
+    s = _session(tmp_path)
+    cfg = s.settings.models
+    orch = resolve(cfg.orchestrator).name
+    assert s._msg_source(_ai_msg(orch), nested=False) == "orchestrator"
+    assert s._msg_source(_ai_msg(), nested=False) == "orchestrator"
+    assert s._msg_source(_ai_msg(), nested=True) == "subagent"
+    role, model_string = next(iter(cfg.subagents.items()))
+    label = s._msg_source(_ai_msg(resolve(model_string).name), nested=True)
+    assert role in label
+    assert ("⌂ local" in label) == cfg.is_local(model_string)
+
+
+def test_tool_calls_are_always_attributed(tmp_path, capsys):
+    s = _session(tmp_path)
+    s._print_tool_call({"name": "read_file", "args": {"path": "x"}}, "model")
+    assert "[orchestrator]" in capsys.readouterr().out
+    s._print_tool_call({"name": "read_file", "args": {"path": "x"}}, "model", source="editor · q (⌂ local)")
+    assert "editor · q (⌂ local)" in capsys.readouterr().out
+
+
+def test_turn_complete_marker_prints(tmp_path, capsys):
+    from types import SimpleNamespace
+
+    s = _session(tmp_path)
+
+    class QuietAgent:
+        def stream(self, *a, **k):
+            return iter([])
+
+    s.bundle = SimpleNamespace(agent=QuietAgent(), persistent=False, fallbacks={})
+    s.run_turn("hello")
+    assert "✔ turn complete" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------ approvals cross threads
+
+
+def test_confirm_callback_survives_worker_threads(tmp_path):
+    """LangGraph runs tools in worker threads; the confirm callback (a plain
+    Slot, not a contextvar) must be visible there or approvals silently
+    auto-deny without ever prompting."""
+    import threading
+
+    from loom.middleware import policy
+
+    seen = []
+    policy.confirm_callback.set(lambda n, i, r: (seen.append(n) or True))
+    try:
+        result = []
+        t = threading.Thread(target=lambda: result.append(policy.confirm_callback.get()("execute", {}, "ask")))
+        t.start()
+        t.join()
+        assert result == [True]
+        assert seen == ["execute"]
+    finally:
+        policy.confirm_callback.set(lambda n, i, r: False)
 
 
 # ------------------------------------------------------------ approval selector

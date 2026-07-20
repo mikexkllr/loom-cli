@@ -98,6 +98,18 @@ class TurnUsage:
         li, lo = self.tokens(self.local)
         return self.cloud_cost + cost_usd(reference_model, li, lo)
 
+    def local_share(self) -> float:
+        """Fraction (0..1) of this bucket's tokens that ran locally for free."""
+        ci, co = self.tokens(self.cloud)
+        li, lo = self.tokens(self.local)
+        total = ci + co + li + lo
+        return (li + lo) / total if total else 0.0
+
+    def savings(self, reference_model: str) -> float:
+        """USD avoided by running the local tokens locally instead of on the
+        cloud reference model."""
+        return self.all_cloud_estimate(reference_model) - self.cloud_cost
+
 
 class UsageTracker(BaseCallbackHandler):
     """Callback handler accumulating token usage per model, per turn.
@@ -173,7 +185,8 @@ class UsageTracker(BaseCallbackHandler):
 
     def receipt(self, turn: bool = True) -> str:
         """One-line receipt, e.g.
-        ``$0.031 cloud (10.2k in / 1.4k out) + 84.0k local (free) · all-cloud est. $0.29 · session $0.14``
+        ``$0.031 cloud (10.2k in / 1.4k out) + 84.0k local tokens (free) ·
+        89% local, saved ~$0.26 vs all-cloud · session $0.14 (saved ~$1.02)``
         """
         u = self.turn if turn else self.session
         ci, co = u.tokens(u.cloud)
@@ -187,8 +200,11 @@ class UsageTracker(BaseCallbackHandler):
             return ""
         line = " + ".join(parts)
         if li or lo:
-            est = u.all_cloud_estimate(self.config.orchestrator)
-            line += f" · all-cloud est. ${est:.3f}"
+            saved = u.savings(self.config.orchestrator)
+            line += f" · {u.local_share():.0%} local, saved ~${saved:.3f} vs all-cloud"
         if turn:
             line += f" · session ${self.session.cloud_cost:.3f}"
+            session_saved = self.session.savings(self.config.orchestrator)
+            if session_saved > 0:
+                line += f" (saved ~${session_saved:.2f})"
         return line

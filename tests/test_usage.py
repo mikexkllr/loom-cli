@@ -42,7 +42,31 @@ def test_tracker_classifies_and_prices():
     est = t.turn.all_cloud_estimate("claude-sonnet-4-6")
     assert est > t.turn.cloud_cost
     receipt = t.receipt()
-    assert "cloud" in receipt and "local" in receipt and "all-cloud est." in receipt
+    assert "cloud" in receipt and "local" in receipt and "vs all-cloud" in receipt
+
+
+def test_local_share_and_savings():
+    t = UsageTracker(_config())
+    t.start_turn()
+    t.turn.add("claude-sonnet-4-6", False, 8_000, 2_000)
+    t.turn.add("qwen3:14b", True, 72_000, 18_000)
+    # 90k of 100k tokens ran locally.
+    assert t.turn.local_share() == pytest.approx(0.9)
+    # Savings = what the local tokens would have cost on the reference model.
+    expected = (72_000 * 3 + 18_000 * 15) / 1e6
+    assert t.turn.savings("claude-sonnet-4-6") == pytest.approx(expected)
+    receipt = t.receipt()
+    assert "90% local" in receipt
+    assert f"saved ~${expected:.3f}" in receipt
+
+
+def test_all_cloud_turn_reports_no_savings():
+    t = UsageTracker(_config())
+    t.start_turn()
+    t.turn.add("claude-sonnet-4-6", False, 1_000, 500)
+    assert t.turn.local_share() == 0.0
+    assert t.turn.savings("claude-sonnet-4-6") == 0.0
+    assert "saved" not in t.receipt()
 
 
 def test_is_local_by_name_and_shape():

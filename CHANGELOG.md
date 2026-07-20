@@ -46,7 +46,31 @@
   Existing `~/.loom/config.yaml` files are untouched — run `/setup`,
   `/model`, or `loom config set` to adopt the new defaults.
 
+### Fixed
+- **Approval prompts sometimes never appeared — tools were silently
+  auto-denied.** The confirm callback (and the /yolo, accept-edits, and
+  /undo turn-id state) lived in ``contextvars``, but LangGraph executes
+  tool calls in worker threads where a fresh context reverts to the
+  default: headless deny. The model saw "User declined" without any prompt
+  ever being shown. These are now process-global slots visible from every
+  thread, and concurrent prompts are serialized behind a lock so parallel
+  tool calls can't interleave on the terminal.
+
 ### Added
+- **Every tool call names its caller.** Tool-call lines now always end
+  with who issued them — `[orchestrator]` or
+  `[editor · qwen3.6:27b (⌂ local)]` (from the message's model metadata,
+  falling back to `[subagent]` for nested-graph messages that don't say) —
+  so orchestrator and subagent activity are no longer indistinguishable.
+- **Explicit end-of-turn marker.** Every turn now closes with a
+  `✔ turn complete · <receipt>` (or `⏹ turn interrupted`) line — while
+  it's absent, Loom is still streaming, so an intermediate message can't
+  be mistaken for the final answer.
+- **Receipts show % local and money saved.** The per-turn/session receipt
+  now reads e.g. `$0.060 cloud + 89.0k local tokens (free) · 88% local,
+  saved ~$0.375 vs all-cloud · session $0.060 (saved ~$0.38)`, and
+  `/status` gains a "savings" row with the session's local-token share and
+  the dollars avoided versus running everything on the cloud orchestrator.
 - **Claude Code-style approval selector.** Tool approvals are no longer a
   bare yes/no: pick `1` yes, `2` yes — don't ask again for this tool this
   session, or `3` no — and tell Loom what to do differently. Decline
@@ -68,6 +92,13 @@
   render their unified diff under the call line whenever the approval
   prompt isn't about to show the same diff itself (yolo, accept-edits,
   allow-listed, or session-approved tools).
+- **Selected local models show in the welcome banner, toolbar, and
+  `/status`.** They power the subagent roles, so they were invisible next
+  to the cloud orchestrator/advisor: the banner now reads
+  `model: ☁ claude-sonnet-5 · local: ⌂ qwen3.6:27b, … · advisor: ☁ …`, the
+  bottom toolbar lists the same `⌂` tags, and `/status` gains a
+  "local models" row. Fallback-aware: tags whose role is live-fallen-back
+  to the cloud drop out instead of claiming to run locally.
 - **Cloud vs local is visible everywhere a model acts.** The banner,
   bottom toolbar, and `/status` badge models with `⌂ local` / `☁ cloud`;
   `task`/`consult` tool-call lines show which model the work is delegated
