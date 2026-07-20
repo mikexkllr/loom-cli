@@ -87,6 +87,8 @@ def main(
     if ctx.invoked_subcommand is not None:
         return
 
+    _maybe_offer_update()
+
     sandbox.set_root(root)
     settings = settings_mod.load_settings(root)
 
@@ -116,6 +118,45 @@ def chat(
     from loom.ui import repl
 
     repl.run(settings_mod.load_settings(root), cwd=root, plan=plan, local_only=local_only, yolo=yolo, airgap=airgap)
+
+
+def _maybe_offer_update() -> None:
+    """Startup-only, throttled update check for binary installs (see
+    loom/core/update.py). Only reached for the REPL / one-shot task paths —
+    subcommands like `doctor` or `config show` return before this runs, so
+    they stay fast and offline-safe. A broken network never blocks startup:
+    check_for_startup() swallows its own errors and returns None."""
+    import sys as _sys
+
+    from loom.core import update as update_mod
+
+    result = update_mod.check_for_startup()
+    if result is None:
+        return
+
+    if not _sys.stdin.isatty():
+        console.print(f"[yellow]update available[/yellow] ({result.asset}) — run [bold]loom update[/bold]")
+        return
+
+    console.print(f"[yellow]a newer loom build is available[/yellow] for {result.asset}.")
+    from rich.prompt import Confirm
+
+    try:
+        want_update = Confirm.ask("Update now before continuing?", default=False)
+    except (KeyboardInterrupt, EOFError):
+        console.print()
+        want_update = False
+
+    if not want_update:
+        console.print("[loom.dim]continuing with the current version — run `loom update` anytime[/loom.dim]")
+        return
+
+    try:
+        update_mod.apply_and_relaunch(result, console=console, argv=_sys.argv[1:])
+    except SystemExit:
+        raise
+    except Exception as exc:
+        console.print(f"[red]update failed:[/red] {exc} — continuing with the current version")
 
 
 def _run_task(
@@ -398,6 +439,38 @@ def doctor(root: str = typer.Option(".", "--root")) -> None:
         ok = True if r["state"] == "connected" else (None if r["state"] in ("not connected", "disabled") else False)
         lines.append(row(ok, f"mcp:{r['name']}", r["state"]))
     console.print(Panel("\n".join(lines), title="loom doctor", border_style="blue"))
+
+
+@app.command("update")
+def update() -> None:
+    """Check for and install a newer build (frozen binary installs only —
+    source installs get a `git pull && uv sync` hint instead)."""
+    from loom.core import update as update_mod
+
+    if not update_mod.is_frozen():
+        console.print(
+            "[yellow]running from source[/yellow] — update with:\n"
+            "  [bold]git pull && uv sync[/bold]"
+        )
+        raise typer.Exit()
+
+    console.print(f"[cyan]checking[/cyan] latest release of {update_mod.REPO} …")
+    try:
+        result = update_mod.check()
+    except Exception as exc:
+        console.print(f"[red]update check failed:[/red] {exc}")
+        raise typer.Exit(1)
+
+    if result.up_to_date:
+        console.print(f"[green]✓ up to date[/green] ({result.asset}, sha256 {result.current_sha256[:12]}…)")
+        raise typer.Exit()
+
+    console.print(f"[yellow]update available[/yellow] for {result.asset}")
+    try:
+        update_mod.apply(result, console=console)
+    except Exception as exc:
+        console.print(f"[red]update failed:[/red] {exc}")
+        raise typer.Exit(1)
 
 
 @app.command("setup")

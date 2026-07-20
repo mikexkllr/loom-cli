@@ -67,6 +67,11 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
 ]
+# Only needed to freeze standalone binaries (`uv sync --group build`); see
+# packaging/. Not installed by a plain `uv sync`.
+build = [
+    "pyinstaller>=6.11",
+]
 
 [project.scripts]
 loom = "loom.cli.main:app"

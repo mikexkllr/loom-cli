@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Added
+- **Standalone binaries + curl installer + self-update.** Every push to
+  `main` now freezes a `loom` binary (PyInstaller, see
+  [`packaging/loom.spec`](packaging/loom.spec)) for macOS (arm64/x64), Linux
+  (x64/arm64), and Windows (x64) via
+  [`.github/workflows/release.yml`](.github/workflows/release.yml), and
+  publishes them as the repo's latest GitHub release with a
+  `checksums.txt`. [`scripts/install.sh`](scripts/install.sh) (curl | sh)
+  and [`scripts/install.ps1`](scripts/install.ps1) (irm | iex) detect
+  OS/arch, verify the checksum, and install to `~/.local/bin` (or
+  `%LOCALAPPDATA%\loom\bin` on Windows). The new `loom update` command
+  compares the running binary's checksum against the latest release and
+  swaps itself in place if it's stale (Windows swap happens via a detached
+  helper since it can't replace its own locked `.exe`); source installs get
+  a `git pull && uv sync` hint instead. Binary installs also self-check on
+  every REPL/one-shot launch (throttled to ≤once/6h, 3s network timeout,
+  cached in `~/.loom/update_check.json`, never blocks startup on failure)
+  and, on a real terminal, ask **update now or continue with the current
+  version** — accepting resumes the same session on the new build
+  (`os.execv` on Unix; a child-process relaunch + deferred swap on
+  Windows). Piped/non-interactive stdin only ever prints a notice.
+
 ### Changed
 - **The project is uv-native now.** `uv.lock` is committed; `uv sync`
   replaces `pip install -e .` (dev tools moved to a `[dependency-groups]`

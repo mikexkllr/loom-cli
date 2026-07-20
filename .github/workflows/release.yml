@@ -1,0 +1,115 @@
+name: Release
+
+# Every push to main freezes a standalone `loom` binary for each OS/arch via
+# PyInstaller (see packaging/loom.spec) and publishes them as a new GitHub
+# Release, marked as the "latest" release. scripts/install.sh,
+# scripts/install.ps1, and the in-app `loom update` command all pull from
+# .../releases/latest/download/..., so publishing here is what makes both
+# the curl installer and self-update work.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14 # Apple Silicon
+            asset: loom-macos-arm64
+          - os: macos-13 # Intel
+            asset: loom-macos-x64
+          - os: ubuntu-latest
+            asset: loom-linux-x64
+          - os: ubuntu-24.04-arm
+            asset: loom-linux-arm64
+          - os: windows-latest
+            asset: loom-windows-x64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install deps (incl. pyinstaller)
+        run: uv sync --locked --group build
+
+      - name: Freeze binary
+        run: uv run pyinstaller packaging/loom.spec --noconfirm --clean
+
+      - name: Stage asset + checksum (macOS/Linux)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p out
+          cp dist/loom "out/${{ matrix.asset }}"
+          chmod +x "out/${{ matrix.asset }}"
+          cd out && shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+
+      - name: Stage asset + checksum (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item dist/loom.exe "out/${{ matrix.asset }}"
+          $hash = (Get-FileHash "out/${{ matrix.asset }}" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.asset }}" | Out-File -Encoding ascii -NoNewline "out/${{ matrix.asset }}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Assemble release assets
+        id: assemble
+        run: |
+          mkdir -p release
+          find artifacts -type f ! -name '*.sha256' -exec cp {} release/ \;
+          cat artifacts/*/*.sha256 > release/checksums.txt
+          version=$(grep -m1 '^version = ' pyproject.toml | cut -d '"' -f2)
+          sha=$(git rev-parse --short HEAD)
+          echo "tag=v${version}-${sha}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          ls -la release
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.assemble.outputs.tag }}
+          name: "Loom ${{ steps.assemble.outputs.version }} (${{ github.sha }})"
+          make_latest: true
+          files: release/*
+          body: |
+            Automated build from `${{ github.sha }}` on `${{ github.ref_name }}`.
+
+            Install / reinstall latest:
+
+            ```
+            curl -LsSf https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | sh
+            ```
+
+            Windows:
+
+            ```
+            irm https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.ps1 | iex
+            ```
+
+            Already installed? Run `loom update`.

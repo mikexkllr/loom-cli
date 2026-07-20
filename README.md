@@ -49,8 +49,33 @@ is rarely needed.
 
 ## Install
 
-Loom uses [uv](https://docs.astral.sh/uv/) for everything — env, lockfile,
-tools:
+**Quickest — standalone binary, no Python required.** Every push to `main`
+freezes a `loom` binary for macOS (arm64/x64), Linux (x64/arm64), and
+Windows (x64) and publishes it as a [GitHub release](https://github.com/mikexkllr/loom-cli/releases/latest):
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/mikexkllr/loom-cli/main/scripts/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/mikexkllr/loom-cli/main/scripts/install.ps1 | iex
+```
+
+Both scripts verify a SHA-256 checksum before installing and print a PATH
+hint if needed. Once installed, `loom update` checks the latest release and
+swaps itself in place — re-run the install script any time to force a
+reinstall. Binary installs also self-check on every `loom` launch (REPL or
+one-shot task, not subcommands like `doctor`/`config`): a throttled
+background check (≤once/6h, 3s timeout, never blocks if you're offline)
+flags a stale build and, on a real terminal, asks **update now or continue
+with the current version** — accepting downloads, verifies, and resumes
+your session on the new build in place; declining just continues. Piped/
+non-interactive runs (scripts, CI) only ever print a notice, never prompt.
+
+**From source, with [uv](https://docs.astral.sh/uv/)** — env, lockfile,
+tools, all in one:
 
 ```bash
 # no uv yet?  brew install uv   ·   or: curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -60,7 +85,9 @@ uv run loom                 # or: source .venv/bin/activate && loom
 
 Optional extras: `uv sync --extra bedrock` (AWS Bedrock), `--extra vertexai`
 (Google Vertex AI), `--extra mlx` (native MLX on Apple Silicon).
-(`pip install -e .` still works if you must.)
+(`pip install -e .` still works if you must.) Source installs update with
+`git pull && uv sync` — `loom update` detects this and tells you so instead
+of trying to replace a binary that doesn't exist.
 
 Then run `loom` — on a true first run (no `settings.json` anywhere yet) it
 launches the **setup wizard** automatically; run it again any time with
@@ -340,6 +367,7 @@ loom config set orchestrator gpt-4o                   # reconfigure model routin
 loom settings set ui.theme light                      # reconfigure UI/permissions/…
 loom agents list                                      # subagents + assigned models
 loom doctor                                           # health-check: ollama, keys, npx, MCP
+loom update                                           # binary installs: fetch + swap in the latest build
 ```
 
 **No Ollama? Loom still works.** If the daemon isn't running (or a model
