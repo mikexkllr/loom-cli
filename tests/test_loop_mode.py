@@ -134,3 +134,22 @@ def test_loop_stops_when_interrupted(tmp_path):
     s.run_turn = fake_turn
     s.run_loop("task", max_iters=10)
     assert len(calls) == 1
+
+
+def test_run_turn_survives_model_connection_error(tmp_path, monkeypatch, capsys):
+    """If both streaming and the synchronous model call fail, run_turn returns
+    None and prints an error instead of crashing the REPL."""
+    s = _session(tmp_path)
+
+    class BrokenAgent:
+        def stream(self, *a, **k):
+            raise RuntimeError("Connection refused")
+
+        def invoke(self, *a, **k):
+            raise RuntimeError("API connection failed")
+
+    s.bundle = SimpleNamespace(agent=BrokenAgent(), persistent=False, mode="normal", fallbacks={})
+    result = s.run_turn("do something")
+    assert result is None
+    out = capsys.readouterr().out
+    assert "model call failed" in out

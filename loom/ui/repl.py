@@ -238,7 +238,11 @@ class Session:
             self.console.print("\n[loom.warn]⏹ interrupted — partial work may have landed; /undo rolls back this turn's file writes[/loom.warn]")
         except Exception as exc:
             self.console.print(f"[loom.warn]streaming unavailable ({exc}); running synchronously…[/loom.warn]")
-            result = bundle.agent.invoke(inputs, config=run_config)
+            try:
+                result = bundle.agent.invoke(inputs, config=run_config)
+            except Exception as exc2:
+                self.console.print(f"[loom.err]model call failed: {exc2}[/loom.err]")
+                return None
             final_text = self._absorb_result(result)
         finally:
             undo.current_turn_id.set("")
