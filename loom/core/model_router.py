@@ -184,8 +184,8 @@ def _build_cached(provider: str, name: str, ollama_endpoint: str, num_ctx: int) 
         except ImportError as exc:
             raise ImportError(
                 "LOOM_USE_BEDROCK / ANTHROPIC_BEDROCK_BASE_URL is set, but "
-                "langchain-aws isn't installed. Run `pip install -e '.[bedrock]'` "
-                "(or `pip install langchain-aws`)."
+                "langchain-aws isn't installed. Run `uv sync --extra bedrock` "
+                "(or `uv pip install langchain-aws`)."
             ) from exc
 
         # ChatAnthropicBedrock wraps anthropic's AnthropicBedrock client, which
@@ -201,7 +201,7 @@ def _build_cached(provider: str, name: str, ollama_endpoint: str, num_ctx: int) 
         except ImportError as exc:
             raise ImportError(
                 "Google Vertex AI needs langchain-google-vertexai. Run "
-                "`pip install -e '.[vertexai]'` (or `pip install langchain-google-vertexai`)."
+                "`uv sync --extra vertexai` (or `uv pip install langchain-google-vertexai`)."
             ) from exc
 
     from langchain.chat_models import init_chat_model

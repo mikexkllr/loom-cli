@@ -474,6 +474,10 @@ def _graphify(session: "Session", args: str) -> bool:
     rest = parts[1] if len(parts) > 1 else ""
 
     def _set_server(enabled: bool) -> None:
+        if enabled:
+            # Pin the resolved binary path — a fresh `uv tool install` lands in
+            # ~/.local/bin, which may not be on the PATH the MCP spawn inherits.
+            st.set_value("mcp_servers.graphify.command", graphify.binary() or "graphify")
         st.set_value("mcp_servers.graphify.enabled", "true" if enabled else "false")
         session.reload_settings()
         # MCP sessions are a process-wide singleton — restart so the next turn
@@ -481,21 +485,45 @@ def _graphify(session: "Session", args: str) -> bool:
         mcp_mod.shutdown_mcp()
         session.rebuild()
 
-    if verb in ("build", "update"):
-        if not graphify.installed():
-            session.console.print(f"[loom.err]graphify CLI not found.[/loom.err] [loom.dim]{graphify.INSTALL_HINT}[/loom.dim]")
+    def _ensure_installed() -> bool:
+        """Offer to install the graphify CLI on the spot; True when usable."""
+        if graphify.installed():
             return True
-        session.console.print(f"[loom.accent]⏺ graphify {'--update' if verb == 'update' else ''} — indexing {session.cwd}[/loom.accent]")
-        code = graphify.build(session.cwd, update=verb == "update")
+        from rich.prompt import Confirm
+
+        session.console.print(
+            "[loom.warn]graphify isn't installed[/loom.warn] [loom.dim]— free, MIT, runs fully "
+            "locally (tree-sitter); powers graph-RAG structure queries[/loom.dim]"
+        )
+        try:
+            if not Confirm.ask(f"  install it now via `uv tool install {graphify.PYPI_NAME}`?", default=True):
+                session.console.print(f"[loom.dim]{graphify.INSTALL_HINT}[/loom.dim]")
+                return False
+        except (EOFError, KeyboardInterrupt):
+            return False
+        ok, how = graphify.install()
+        if ok:
+            session.console.print(f"[loom.subagent]✓ graphify installed[/loom.subagent] [loom.dim]({how})[/loom.dim]")
+        else:
+            session.console.print(f"[loom.err]install failed ({how})[/loom.err] [loom.dim]{graphify.INSTALL_HINT}[/loom.dim]")
+        return ok
+
+    def _build(update: bool) -> None:
+        session.console.print(f"[loom.accent]⏺ graphify {'--update' if update else ''} — indexing {session.cwd}[/loom.accent]")
+        code = graphify.build(session.cwd, update=update)
         if code != 0:
             session.console.print(f"[loom.err]graphify exited with code {code}[/loom.err]")
-            return True
+            return
         detail = graphify.format_stats(graphify.graph_stats(session.cwd))
         session.console.print(f"[loom.subagent]✓ graph ready[/loom.subagent] [loom.dim]({detail or 'graphify-out/graph.json'})[/loom.dim]")
         srv = session.settings.mcp_servers.get("graphify")
         if srv is None or not srv.enabled:
             _set_server(True)
             session.console.print("[loom.dim]graphify MCP server enabled — graph tools connect on the next task[/loom.dim]")
+
+    if verb in ("build", "update"):
+        if _ensure_installed():
+            _build(update=verb == "update")
         return True
 
     if verb in ("on", "off"):
@@ -507,8 +535,7 @@ def _graphify(session: "Session", args: str) -> bool:
         return True
 
     if verb in ("query", "path", "explain"):
-        if not graphify.installed():
-            session.console.print(f"[loom.err]graphify CLI not found.[/loom.err] [loom.dim]{graphify.INSTALL_HINT}[/loom.dim]")
+        if not _ensure_installed():
             return True
         if not graphify.graph_exists(session.cwd):
             session.console.print("[loom.warn]no graph yet — run /graphify build first[/loom.warn]")
@@ -533,6 +560,42 @@ def _graphify(session: "Session", args: str) -> bool:
         "instead of glob/grep/read sweeps — fewer tokens, real file:line citations[/loom.dim]"
     )
     session.console.print(Panel("\n".join(lines), title="graphify — code knowledge graph", border_style="loom.accent", expand=False))
+    # First run: walk through install + build right here instead of making the
+    # user retype the verbs — Loom is a coding assistant, it sets itself up.
+    if stats is None:
+        from rich.prompt import Confirm
+
+        if not _ensure_installed():
+            return True
+        try:
+            if Confirm.ask("  build the knowledge graph for this repo now?", default=True):
+                _build(update=False)
+        except (EOFError, KeyboardInterrupt):
+            pass
+    return True
+
+
+@command("skills", "List agent skills (SKILL.md folders: packaged, ~/.loom/skills, .loom/skills)")
+def _skills(session: "Session", args: str) -> bool:
+    from loom.core import skills as skills_mod
+
+    found = skills_mod.list_skills(session.cwd)
+    if not found:
+        session.console.print(
+            "[loom.dim]no skills found — add one at .loom/skills/<name>/SKILL.md (project) "
+            "or ~/.loom/skills/<name>/SKILL.md (all projects)[/loom.dim]"
+        )
+        return True
+    table = Table(show_header=True, header_style="loom.accent")
+    for col in ("Skill", "Source", "Description"):
+        table.add_column(col)
+    for s in found:
+        table.add_row(s["name"], s["source"], s["description"][:100])
+    session.console.print(table)
+    session.console.print(
+        "[loom.dim]skills load via deepagents (progressive disclosure): only name+description "
+        "enter the prompt; the agent reads the full SKILL.md when a task matches[/loom.dim]"
+    )
     return True
 
 

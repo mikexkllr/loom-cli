@@ -45,7 +45,7 @@ class ProviderInfo:
     light_model: str = ""
     docs_url: str = ""
     notes: str = ""
-    pip_extra: str | None = None  # `pip install -e ".[<pip_extra>]"` if not a base dep
+    pip_extra: str | None = None  # `uv sync --extra <pip_extra>` if not a base dep
 
     def model_string(self, model_id: str) -> str:
         """Build a config model string ``model_router.resolve()`` understands."""

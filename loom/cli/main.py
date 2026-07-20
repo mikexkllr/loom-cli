@@ -146,7 +146,7 @@ def _run_task(
     try:
         bundle = session.ensure_bundle()
     except ModuleNotFoundError as exc:
-        console.print(f"[red]Missing dependency:[/red] {exc}. Install with [bold]pip install -e .[/bold]")
+        console.print(f"[red]Missing dependency:[/red] {exc}. Install with [bold]uv sync[/bold]")
         raise typer.Exit(1)
     except RuntimeError as exc:  # e.g. local-only without Ollama
         console.print(f"[red]{exc}[/red]")

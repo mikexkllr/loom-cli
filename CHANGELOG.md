@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Changed
+- **The project is uv-native now.** `uv.lock` is committed; `uv sync`
+  replaces `pip install -e .` (dev tools moved to a `[dependency-groups]`
+  dev group installed by default); CI runs `uv sync --locked` + `uv run`;
+  all in-app hints (missing extras, wizard notes, error messages) point at
+  `uv sync --extra …`. `pip install -e .` still works.
 - **Setup wizard now starts from your existing config.** Re-running
   `/setup` (or `loom setup`) shows the current role → model table and which
   credentials are already on file (masked), and every pre-existing API
@@ -57,6 +62,20 @@
   tool calls can't interleave on the terminal.
 
 ### Added
+- **Agent skills (SKILL.md folders) via deepagents (`/skills`).** Three
+  layered sources — packaged `loom/skills/`, user `~/.loom/skills/`,
+  project `.loom/skills/` (later wins on name collisions) — mount into the
+  agent's virtual filesystem and load with progressive disclosure: only
+  name + description enter the prompt; the full SKILL.md is read when a
+  task matches. Ships a `graphify-graph-rag` skill teaching agents to
+  prefer graph queries and how to refresh a stale graph. `/skills` lists
+  everything discovered.
+- **`/graphify` installs its own tooling.** First run offers to install
+  the CLI on the spot (`uv tool install graphifyy`, pipx fallback) and
+  build the graph in one flow; the MCP server entry gets pinned to the
+  resolved binary path so fresh `~/.local/bin` installs work even when
+  that directory isn't on PATH.
+
 - **Graphify knowledge graph / GraphRAG integration (`/graphify`).**
   [Graphify](https://github.com/safishamsi/graphify) (`uv tool install
   graphifyy`) builds a tree-sitter knowledge graph of the repo

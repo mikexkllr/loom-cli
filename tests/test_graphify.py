@@ -59,6 +59,38 @@ def test_graph_tools_from_filters_by_name():
     assert [t.name for t in graphify.graph_tools_from(tools)] == ["query_graph", "get_node"]
 
 
+# ------------------------------------------------------------ install helpers
+
+
+def test_binary_falls_back_to_local_bin(monkeypatch, tmp_path):
+    monkeypatch.setattr(graphify.shutil, "which", lambda _: None)
+    monkeypatch.setattr(graphify.Path, "home", classmethod(lambda cls: tmp_path))
+    assert graphify.binary() is None
+    target = tmp_path / ".local" / "bin" / "graphify"
+    target.parent.mkdir(parents=True)
+    target.write_text("#!/bin/sh\n")
+    assert graphify.binary() == str(target)
+
+
+def test_install_prefers_uv(monkeypatch):
+    calls = []
+    monkeypatch.setattr(graphify.shutil, "which", lambda name: f"/bin/{name}" if name in ("uv", "pipx", "graphify") else None)
+    monkeypatch.setattr(
+        graphify.subprocess, "run", lambda cmd, **k: calls.append(cmd) or SimpleNamespace(returncode=0)
+    )
+    ok, how = graphify.install()
+    assert ok is True
+    assert calls == [["uv", "tool", "install", graphify.PYPI_NAME]]
+    assert "uv tool install" in how
+
+
+def test_install_reports_missing_installers(monkeypatch):
+    monkeypatch.setattr(graphify.shutil, "which", lambda _: None)
+    ok, how = graphify.install()
+    assert ok is False
+    assert "uv" in how
+
+
 # ------------------------------------------------------------ settings & permissions
 
 
@@ -92,13 +124,40 @@ def test_graph_suffix_mentions_the_tools():
 # ------------------------------------------------------------ slash command
 
 
-def test_graphify_status_when_not_installed(tmp_path, capsys, monkeypatch):
+def test_graphify_status_offers_install_on_first_run(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(graphify.shutil, "which", lambda _: None)
+    monkeypatch.setattr(graphify.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr("rich.prompt.Confirm.ask", staticmethod(lambda *a, **k: False))  # decline
     s = _session(tmp_path)
     assert slash.dispatch(s, "/graphify") is True
     out = capsys.readouterr().out
     assert "not installed" in out
     assert "not built" in out
+    assert "uv tool install" in out  # the decline path still shows how
+
+
+def test_graphify_status_installs_and_builds_on_accept(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(st, "USER_SETTINGS_PATH", tmp_path / "user-settings.json")
+    installed = {"yes": False}
+    monkeypatch.setattr(graphify, "binary", lambda: "/usr/bin/graphify" if installed["yes"] else None)
+
+    def fake_install():
+        installed["yes"] = True
+        return True, "uv tool install graphifyy"
+
+    def fake_build(cwd, update=False):
+        _write_graph(tmp_path)
+        return 0
+
+    monkeypatch.setattr(graphify, "install", fake_install)
+    monkeypatch.setattr(graphify, "build", fake_build)
+    monkeypatch.setattr("rich.prompt.Confirm.ask", staticmethod(lambda *a, **k: True))  # accept both
+    s = _session(tmp_path)
+    slash.dispatch(s, "/graphify")
+    out = capsys.readouterr().out
+    assert "graphify installed" in out
+    assert "graph ready" in out
+    assert s.settings.mcp_servers["graphify"].enabled is True
 
 
 def test_graphify_on_requires_a_graph(tmp_path, capsys, monkeypatch):

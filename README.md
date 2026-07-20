@@ -49,9 +49,18 @@ is rarely needed.
 
 ## Install
 
+Loom uses [uv](https://docs.astral.sh/uv/) for everything — env, lockfile,
+tools:
+
 ```bash
-pip install -e .            # or: pip install -e ".[dev]"
+# no uv yet?  brew install uv   ·   or: curl -LsSf https://astral.sh/uv/install.sh | sh
+uv sync                     # creates .venv from uv.lock (dev tools included)
+uv run loom                 # or: source .venv/bin/activate && loom
 ```
+
+Optional extras: `uv sync --extra bedrock` (AWS Bedrock), `--extra vertexai`
+(Google Vertex AI), `--extra mlx` (native MLX on Apple Silicon).
+(`pip install -e .` still works if you must.)
 
 Then run `loom` — on a true first run (no `settings.json` anywhere yet) it
 launches the **setup wizard** automatically; run it again any time with
@@ -113,13 +122,13 @@ editing required.
 |---|---|
 | **Local (Ollama)** | Free, private. Metal (macOS), CUDA (NVIDIA), or ROCm (AMD) — Ollama picks the right backend automatically. |
 | **Anthropic** | Direct API — `ANTHROPIC_API_KEY`. |
-| **Anthropic via AWS Bedrock** | `AWS_BEARER_TOKEN_BEDROCK` (or real AWS credentials) + optional `ANTHROPIC_BEDROCK_BASE_URL` for a corporate proxy. Needs `pip install -e ".[bedrock]"`. |
+| **Anthropic via AWS Bedrock** | `AWS_BEARER_TOKEN_BEDROCK` (or real AWS credentials) + optional `ANTHROPIC_BEDROCK_BASE_URL` for a corporate proxy. Needs `uv sync --extra bedrock`. |
 | **OpenAI** | `OPENAI_API_KEY`. |
 | **OpenAI-compatible (custom endpoint)** | Any server speaking the OpenAI Chat Completions API — vLLM, LM Studio, Together, Groq, etc. `LOOM_CUSTOM_BASE_URL` + `LOOM_CUSTOM_API_KEY`. |
 | **OpenCode Zen** | Curated pay-per-use model gateway (several free models). `OPENCODE_ZEN_API_KEY`. Only OpenAI-shaped Zen models are wired up so far. |
 | **OpenCode Go** | $5 first month / $10-mo subscription to curated open models (GLM, Kimi, DeepSeek, MiMo). `OPENCODE_GO_API_KEY`. |
 | **Google AI Studio** (Gemini API) | Personal API key, no GCP project — `GOOGLE_API_KEY`. |
-| **Google Vertex AI** | GCP project + Application Default Credentials (`gcloud auth application-default login`). Needs `pip install -e ".[vertexai]"`. |
+| **Google Vertex AI** | GCP project + Application Default Credentials (`gcloud auth application-default login`). Needs `uv sync --extra vertexai`. |
 
 Each provider maps to a config model-string prefix — see
 [`loom/core/providers.py`](loom/core/providers.py) for the full catalog (also
@@ -273,9 +282,8 @@ questions — "where is X defined", "what connects A to B", "what depends on Y"
 costing a subgraph's worth of tokens instead of a glob+grep+read sweep.
 
 ```
-uv tool install graphifyy    # or: pipx install graphifyy
+/graphify                    # first run: offers to install (uv tool install graphifyy) + build
 /graphify build              # index the repo → graphify-out/, enables the MCP server
-/graphify                    # status: cli / graph / server
 /graphify update             # re-index only changed files
 /graphify query "what connects auth to the database?"   # one-off human query
 ```
@@ -285,6 +293,23 @@ read-only graph tools (`query_graph` / `get_node` / `shortest_path`) and are
 prompted to prefer them for structure questions. Everything runs locally;
 `/graphify off` disconnects the server. In airgap mode the graph tools stay
 subagent-only (graph nodes carry code identifiers).
+
+### Skills (`/skills`)
+
+Loom loads [Anthropic-style agent skills](https://docs.langchain.com/oss/python/deepagents)
+(SKILL.md folders) through deepagents, layered so later sources override
+earlier ones on name collisions:
+
+```
+loom/skills/              # packaged with Loom (e.g. graphify-graph-rag)
+~/.loom/skills/           # yours, every project
+<project>/.loom/skills/   # commit these for your team
+```
+
+A skill is a directory with a `SKILL.md` — YAML frontmatter (`name`,
+`description`) plus markdown instructions. Progressive disclosure keeps them
+cheap: only name + description enter the system prompt; the agent reads the
+full file when a task matches. `/skills` lists everything discovered.
 
 ### Airgap mode (`--airgap` / `/airgap`)
 
@@ -297,7 +322,7 @@ variant: no cloud calls at all.)
 
 ### Evals
 
-`python scripts/eval.py` runs the task suite in [evals/tasks.yaml](evals/tasks.yaml)
+`uv run scripts/eval.py` runs the task suite in [evals/tasks.yaml](evals/tasks.yaml)
 against fixture projects — each task runs headless, its `check` command
 decides pass/fail, and the report records wall time, local/cloud token split,
 actual cloud spend, and the all-cloud estimate. Use it to validate model
@@ -494,8 +519,8 @@ LangChain. The orchestrator gets `write_todos` + `task` (delegation) +
 ## Tests
 
 ```bash
-pytest                    # unit tests
-python scripts/smoke.py   # wiring smoke test — no API calls, no Ollama
+uv run pytest                    # unit tests
+uv run scripts/smoke.py          # wiring smoke test — no API calls, no Ollama
 ```
 
 Tests that don't need the heavy LLM stack (config, model routing, worktree) run
@@ -506,7 +531,7 @@ so the suite degrades gracefully.
 agent** — permission gating in `PolicyMiddleware.wrap_tool_call`, the
 prompt-size escalation decision, hook blocking, and the REPL turn/stream loop —
 so you can confirm the deepagents wiring is sound right after
-`pip install -e .`, without spending tokens or standing up local models.
+`uv sync`, without spending tokens or standing up local models.
 
 ## deepagents compatibility
 

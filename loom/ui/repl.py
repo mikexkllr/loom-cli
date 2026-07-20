@@ -216,7 +216,7 @@ class Session:
         try:
             bundle = self.ensure_bundle()
         except ModuleNotFoundError as exc:
-            self.console.print(f"[loom.err]missing dependency:[/loom.err] {exc} — run `pip install -e .`")
+            self.console.print(f"[loom.err]missing dependency:[/loom.err] {exc} — run `uv sync`")
             return None
         except Exception as exc:
             self.console.print(f"[loom.err]could not start orchestrator:[/loom.err] {exc}")

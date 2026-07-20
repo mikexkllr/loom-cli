@@ -30,14 +30,40 @@ from typing import Any
 GRAPH_TOOL_NAMES = frozenset({"query_graph", "get_node", "shortest_path", "list_prs"})
 
 OUT_DIR = "graphify-out"
+PYPI_NAME = "graphifyy"  # yes, double-y — the CLI it installs is `graphify`
 INSTALL_HINT = (
-    "install: `uv tool install graphifyy` (or `pipx install graphifyy`) — "
+    f"install: `uv tool install {PYPI_NAME}` (or `pipx install {PYPI_NAME}`) — "
     "https://github.com/safishamsi/graphify"
 )
 
 
+def binary() -> str | None:
+    """Path to the graphify CLI: PATH first, then the uv/pipx tool-bin dir
+    (~/.local/bin), which may not be on PATH right after a fresh install."""
+    found = shutil.which("graphify")
+    if found:
+        return found
+    local = Path.home() / ".local" / "bin" / "graphify"
+    return str(local) if local.exists() else None
+
+
 def installed() -> bool:
-    return shutil.which("graphify") is not None
+    return binary() is not None
+
+
+def install() -> tuple[bool, str]:
+    """Install the graphify CLI via `uv tool install` (pipx as fallback),
+    streaming installer output to the terminal. Returns (ok, how)."""
+    for runner, cmd in (
+        ("uv", ["uv", "tool", "install", PYPI_NAME]),
+        ("pipx", ["pipx", "install", PYPI_NAME]),
+    ):
+        if shutil.which(runner) is None:
+            continue
+        if subprocess.run(cmd).returncode == 0 and installed():
+            return True, " ".join(cmd)
+        return False, " ".join(cmd)
+    return False, "neither `uv` nor `pipx` found"
 
 
 def graph_file(cwd: str | Path = ".") -> Path:
@@ -91,7 +117,7 @@ def graph_tools_from(tools: list[Any]) -> list[Any]:
 
 def build_command(update: bool = False) -> list[str]:
     """The CLI invocation that (re)builds the graph for the current repo."""
-    cmd = ["graphify", "."]
+    cmd = [binary() or "graphify", "."]
     if update:
         cmd.append("--update")
     return cmd
@@ -105,6 +131,6 @@ def build(cwd: str | Path, update: bool = False) -> int:
 def run_cli(cwd: str | Path, *args: str, timeout: int = 120) -> tuple[int, str]:
     """Run a one-off `graphify <args>` query; returns (exit code, output)."""
     proc = subprocess.run(
-        ["graphify", *args], cwd=str(cwd), capture_output=True, text=True, timeout=timeout
+        [binary() or "graphify", *args], cwd=str(cwd), capture_output=True, text=True, timeout=timeout
     )
     return proc.returncode, (proc.stdout + proc.stderr).strip()

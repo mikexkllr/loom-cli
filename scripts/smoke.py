@@ -4,7 +4,7 @@
 Exercises the parts that touch the deepagents/LangChain runtime surfaces
 (PolicyMiddleware.wrap_tool_call, PromptSizeGuard escalation decision, the REPL
 stream/turn loop, permission + hook enforcement) using a STUB agent, so you can
-confirm the integration is sound right after `pip install -e .` without spending
+confirm the integration is sound right after `uv sync` without spending
 tokens or standing up local models.
 
     python scripts/smoke.py

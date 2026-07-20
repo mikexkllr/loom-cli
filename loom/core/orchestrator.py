@@ -404,16 +404,25 @@ def build_orchestrator(
 
     sessions_dir = Path(cwd) / ".loom" / "sessions"
     artifacts_dir = Path(cwd) / ".loom" / "artifacts"
+    routes = {
+        "/conversation_history/": FilesystemBackend(
+            root_dir=sessions_dir / "conversation_history", virtual_mode=True
+        ),
+        "/large_tool_results/": FilesystemBackend(
+            root_dir=artifacts_dir / "large_tool_results", virtual_mode=True
+        ),
+    }
+    # Agent skills (Anthropic SKILL.md pattern via deepagents): packaged →
+    # user (~/.loom/skills) → project (.loom/skills), later wins. Each layer
+    # mounts read-only into the virtual filesystem under /skills/.
+    from loom.core.skills import skill_sources
+
+    sources = skill_sources(cwd)
+    for route, real_dir in sources:
+        routes[route] = FilesystemBackend(root_dir=real_dir, virtual_mode=True)
     backend = CompositeBackend(
         default=LocalShellBackend(root_dir=get_root(), virtual_mode=True, inherit_env=True),
-        routes={
-            "/conversation_history/": FilesystemBackend(
-                root_dir=sessions_dir / "conversation_history", virtual_mode=True
-            ),
-            "/large_tool_results/": FilesystemBackend(
-                root_dir=artifacts_dir / "large_tool_results", virtual_mode=True
-            ),
-        },
+        routes=routes,
     )
 
     # Strip dangerous/file tools from the orchestrator request. The middleware
@@ -435,6 +444,10 @@ def build_orchestrator(
         middleware=middleware,
         backend=backend,
     )
+    if sources:
+        # Progressive disclosure: only name+description hit the prompt; the
+        # agent reads a skill's full SKILL.md when the task matches.
+        kwargs["skills"] = [route for route, _ in sources]
 
     # LangGraph persistence: the REPL keeps thread state and can resume across
     # runs (checkpointer is a stable create_deep_agent parameter in >=0.6).

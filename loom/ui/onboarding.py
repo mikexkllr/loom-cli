@@ -246,7 +246,7 @@ def prompt_credentials(
         elif v.required:
             console.print(f"[yellow]{v.key} left blank — {provider.label} won't work until it's set.[/yellow]")
     if provider.pip_extra:
-        console.print(f"[dim]note: needs `pip install -e '.[{provider.pip_extra}]'`[/dim]")
+        console.print(f"[dim]note: needs `uv sync --extra {provider.pip_extra}`[/dim]")
     if provider.docs_url:
         console.print(f"[dim]get a key: {provider.docs_url}[/dim]")
     return collected
