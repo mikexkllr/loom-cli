@@ -10,12 +10,12 @@
 
 # The strong cloud model that plans, decomposes, and routes. Never touches raw
 # tool output directly — subagents quarantine that.
-orchestrator: claude-sonnet-4-6
+orchestrator: claude-sonnet-5
 
 # Per-subagent model assignments. Anything not cloud-prefixed runs locally.
 subagents:
   explorer: ollama/qwen3:4b
-  editor: ollama/deepseek-coder:14b
+  editor: ollama/qwen3.6:27b
   bash: ollama/qwen3:14b
   searcher: ollama/qwen3:4b
   reviewer: claude-haiku-4-5
@@ -30,7 +30,7 @@ ollama_endpoint: http://localhost:11434
 
 # When a subagent's estimated prompt size approaches its local model's context
 # window, escalate that single call to this cloud model instead of failing.
-escalation_model: claude-sonnet-4-6
+escalation_model: claude-sonnet-5
 
 # When Ollama is unavailable (daemon not running, or a model isn't pulled),
 # local roles run on this cheap cloud model for the session instead of
@@ -43,7 +43,7 @@ cloud_fallback: claude-haiku-4-5
 context_windows:
   ollama/qwen3:4b: 32768
   ollama/qwen3:14b: 40960
-  ollama/deepseek-coder:14b: 16384
+  ollama/qwen3.6:27b: 65536
   ollama/llama3.2:3b: 131072
 
 # Fraction of a model's context window at which the orchestrator auto-compacts

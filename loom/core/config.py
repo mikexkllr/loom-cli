@@ -34,12 +34,12 @@ USER_CONFIG_PATH = USER_CONFIG_DIR / "config.yaml"
 class LoomConfig(BaseModel):
     """Validated Loom configuration."""
 
-    orchestrator: str = "claude-sonnet-4-6"
+    orchestrator: str = "claude-sonnet-5"
     subagents: dict[str, str] = Field(default_factory=dict)
     advisor: str = "claude-opus-4-8"
     ollama_endpoint: str = "http://localhost:11434"
 
-    escalation_model: str = "claude-sonnet-4-6"
+    escalation_model: str = "claude-sonnet-5"
     # When Ollama is unavailable (daemon down / model not pulled), local roles
     # temporarily run on this cheap cloud model instead of failing mid-run.
     cloud_fallback: str = "claude-haiku-4-5"

@@ -37,11 +37,12 @@ _LOCAL_TIERS: tuple[LocalModelRec, ...] = (
     LocalModelRec("qwen2.5-coder:1.5b", 4, "tiny — CPU-only laptops, fast but weak"),
     LocalModelRec("qwen3:4b", 8, "small — good autocomplete/chat on 8GB machines"),
     LocalModelRec("qwen2.5-coder:7b", 12, "solid single-file edits and chat on 12-16GB"),
-    LocalModelRec("qwen2.5-coder:14b", 16, "the reliable mid-tier workhorse"),
-    LocalModelRec("devstral:24b", 24, "agentic multi-file edits — pairs well with a coding harness"),
-    LocalModelRec("qwen2.5-coder:32b", 24, "current sweet spot for serious local coding on 24GB+"),
-    LocalModelRec("qwen3-coder:30b-a3b", 24, "MoE — 3B active params, punches above its size"),
-    LocalModelRec("llama3.3:70b", 48, "GPT-4-class local coding, needs a big Mac or multi-GPU box"),
+    LocalModelRec("qwen3:14b", 16, "the reliable mid-tier workhorse"),
+    LocalModelRec("devstral:24b", 24, "agent-first Mistral coder — strong SWE-Bench at 14GB"),
+    LocalModelRec("qwen3-coder:30b-a3b", 24, "MoE — 3B active params, fast agentic coding"),
+    LocalModelRec("qwen3.6:27b", 24, "current best dense local coder — 256K context"),
+    LocalModelRec("qwen3.6:35b", 32, "bigger qwen3.6 — top dense quality on 32GB+"),
+    LocalModelRec("qwen3-coder-next", 64, "80B-A3B MoE, RL-trained for agents — strongest local coding, needs a big Mac/multi-GPU"),
 )
 
 # Short, dated pointer — cloud model rankings move fast; treat as a snapshot,

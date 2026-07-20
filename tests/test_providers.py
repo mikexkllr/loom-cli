@@ -60,7 +60,7 @@ def test_model_for_tier_falls_back_to_main_when_tier_unset():
 
 def test_model_for_tier_returns_specific_tier_when_set():
     p = prov.get("anthropic")
-    assert p.model_for_tier("main") == "claude-sonnet-4-6"
+    assert p.model_for_tier("main") == "claude-sonnet-5"
     assert p.model_for_tier("flagship") == "claude-opus-4-8"
     assert p.model_for_tier("light") == "claude-haiku-4-5"
 

@@ -130,7 +130,7 @@ def test_run_quick_setup_with_cloud_provider(monkeypatch, tmp_path):
     monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([True]))}))
 
     settings = ob.run(_console(), root=tmp_path)
-    assert settings.models.orchestrator == "anthropic:claude-sonnet-4-6"
+    assert settings.models.orchestrator == "anthropic:claude-sonnet-5"
     assert settings.models.advisor == "anthropic:claude-opus-4-8"
     assert settings.models.subagents["reviewer"] == "anthropic:claude-haiku-4-5"
     assert settings.models.subagents["editor"] == "ollama/qwen3:14b"

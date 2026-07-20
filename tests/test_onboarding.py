@@ -33,10 +33,10 @@ def test_default_role_plan_mixes_local_and_cloud():
     plan = ob.default_role_plan(HW, "qwen2.5-coder:32b", prov.get("anthropic"))
     for role in ob._DEFAULT_LOCAL_ROLES:
         assert plan[role] == "ollama/qwen2.5-coder:32b"
-    assert plan["orchestrator"] == "anthropic:claude-sonnet-4-6"
+    assert plan["orchestrator"] == "anthropic:claude-sonnet-5"
     assert plan["advisor"] == "anthropic:claude-opus-4-8"  # flagship tier
     assert plan["reviewer"] == "anthropic:claude-haiku-4-5"  # light tier
-    assert plan["escalation"] == "anthropic:claude-sonnet-4-6"  # main tier
+    assert plan["escalation"] == "anthropic:claude-sonnet-5"  # main tier
 
 
 def test_apply_plan_user_scope_writes_and_reloads(tmp_path):

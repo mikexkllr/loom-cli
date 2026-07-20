@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Changed
+- **Refreshed default models (July 2026).** Orchestrator and escalation move
+  from `claude-sonnet-4-6` to `claude-sonnet-5` (current Sonnet — near-Opus
+  agentic quality, same $3/$15 pricing, intro pricing through Aug 2026); the
+  Anthropic provider "main" tier follows. The editor's ancient
+  `deepseek-coder:14b` becomes `qwen3.6:27b` (current dense local coder,
+  256K context). The hardware-recommendation table gains `qwen3.6:27b/35b`
+  and `qwen3-coder-next` (80B-A3B) and drops the stale
+  `qwen2.5-coder:14b/32b` and `llama3.3:70b` tiers. Advisor
+  (`claude-opus-4-8`) and cloud fallback (`claude-haiku-4-5`) were already
+  current. Existing `~/.loom/config.yaml` files are untouched — run
+  `loom config set` or `/model` to adopt the new defaults.
+
 ### Added
 - **Claude Code-style plan mode.** Plan mode is now a first-class mode in the
   Shift+Tab cycle (`default → accept-edits → plan → yolo`) and `/mode plan`.
