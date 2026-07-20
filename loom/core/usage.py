@@ -22,7 +22,7 @@ except Exception:  # pragma: no cover - allows import without langchain
         pass
 
 # USD per million tokens (input, output). Cloud models only — local is free.
-# Prices per Anthropic pricing (2026-06); unknown cloud models fall back to
+# Prices per provider pricing pages (2026-07); unknown cloud models fall back to
 # Sonnet-tier so receipts stay conservative rather than absent.
 CLOUD_PRICES: dict[str, tuple[float, float]] = {
     "claude-fable-5": (10.0, 50.0),
@@ -37,6 +37,10 @@ CLOUD_PRICES: dict[str, tuple[float, float]] = {
     "claude-sonnet": (3.0, 15.0),
     "claude-haiku-4-5": (1.0, 5.0),
     "claude-haiku": (1.0, 5.0),
+    "gpt-5.6-sol": (5.0, 30.0),
+    "gpt-5.6-terra": (2.5, 15.0),
+    "gpt-5.6-luna": (1.0, 6.0),
+    "gpt-5.6": (5.0, 30.0),  # bare alias routes to Sol
     "gpt-4o": (2.5, 10.0),
     "gpt-4.1": (2.0, 8.0),
 }

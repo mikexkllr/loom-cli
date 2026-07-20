@@ -178,7 +178,7 @@ def prompt_local_model(console: Console, hw: rec.Hardware, config: "cfg.LoomConf
     else:
         tag = choice.strip()
     if not tag:
-        tag = options[0] if options else "qwen3:14b"
+        tag = options[0] if options else "qwen3.5:9b"
     if not ollama_mod.is_served(tag, st.models):
         if not st.running:
             hint = ollama_mod.daemon_hint(st.endpoint) if st.installed else ollama_mod.INSTALL_HINT

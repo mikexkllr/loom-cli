@@ -3,17 +3,26 @@
 ## Unreleased
 
 ### Changed
-- **Refreshed default models (July 2026).** Orchestrator and escalation move
-  from `claude-sonnet-4-6` to `claude-sonnet-5` (current Sonnet — near-Opus
-  agentic quality, same $3/$15 pricing, intro pricing through Aug 2026); the
-  Anthropic provider "main" tier follows. The editor's ancient
-  `deepseek-coder:14b` becomes `qwen3.6:27b` (current dense local coder,
-  256K context). The hardware-recommendation table gains `qwen3.6:27b/35b`
-  and `qwen3-coder-next` (80B-A3B) and drops the stale
-  `qwen2.5-coder:14b/32b` and `llama3.3:70b` tiers. Advisor
-  (`claude-opus-4-8`) and cloud fallback (`claude-haiku-4-5`) were already
-  current. Existing `~/.loom/config.yaml` files are untouched — run
-  `loom config set` or `/model` to adopt the new defaults.
+- **Refreshed default models to the July 2026 lineup**, verified against
+  provider docs and the Ollama library:
+  - *Anthropic:* orchestrator/escalation `claude-sonnet-4-6` →
+    `claude-sonnet-5` (current Sonnet; same $3/$15, intro pricing through
+    Aug 2026). Advisor (`claude-opus-4-8`) and cloud fallback
+    (`claude-haiku-4-5`) were already current.
+  - *OpenAI:* `gpt-5.2` / `gpt-5.2-codex` / `gpt-5-nano` → the GPT-5.6
+    family (`gpt-5.6-terra` main, `gpt-5.6-sol` flagship, `gpt-5.6-luna`
+    light), with pricing added to the cost receipts.
+  - *Google:* `gemini-3-pro` / `gemini-3-flash` → `gemini-3.5-flash`
+    (stable agentic mainline) + `gemini-3.1-pro-preview` (flagship).
+  - *Local:* editor `deepseek-coder:14b` → `qwen3.6:27b` (best current
+    dense local coder, 256K ctx); small roles `qwen3:4b`/`qwen3:14b` →
+    `qwen3.5:4b`/`qwen3.5:9b`. The hardware-recommendation table now spans
+    `qwen3.5:2b` → `qwen3-coder-next` (80B-A3B) and adds
+    `devstral-small-2:24b` (68% SWE-bench Verified); stale `qwen2.5-coder`,
+    `devstral:24b`, and `llama3.3:70b` tiers dropped.
+
+  Existing `~/.loom/config.yaml` files are untouched — run `/setup`,
+  `/model`, or `loom config set` to adopt the new defaults.
 
 ### Added
 - **Claude Code-style plan mode.** Plan mode is now a first-class mode in the

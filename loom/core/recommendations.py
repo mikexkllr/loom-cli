@@ -34,11 +34,10 @@ class LocalModelRec:
 # Ordered smallest -> largest. min_gb is the "runs comfortably at 4-bit quant"
 # threshold; pick the largest entry whose min_gb fits the detected hardware.
 _LOCAL_TIERS: tuple[LocalModelRec, ...] = (
-    LocalModelRec("qwen2.5-coder:1.5b", 4, "tiny — CPU-only laptops, fast but weak"),
-    LocalModelRec("qwen3:4b", 8, "small — good autocomplete/chat on 8GB machines"),
-    LocalModelRec("qwen2.5-coder:7b", 12, "solid single-file edits and chat on 12-16GB"),
-    LocalModelRec("qwen3:14b", 16, "the reliable mid-tier workhorse"),
-    LocalModelRec("devstral:24b", 24, "agent-first Mistral coder — strong SWE-Bench at 14GB"),
+    LocalModelRec("qwen3.5:2b", 4, "tiny — CPU-only laptops, fast but weak"),
+    LocalModelRec("qwen3.5:4b", 8, "small — good recon/chat on 8GB machines"),
+    LocalModelRec("qwen3.5:9b", 12, "current small-model sweet spot on 12-16GB"),
+    LocalModelRec("devstral-small-2:24b", 24, "agent-first Mistral coder — 68% SWE-bench Verified, 384K ctx"),
     LocalModelRec("qwen3-coder:30b-a3b", 24, "MoE — 3B active params, fast agentic coding"),
     LocalModelRec("qwen3.6:27b", 24, "current best dense local coder — 256K context"),
     LocalModelRec("qwen3.6:35b", 32, "bigger qwen3.6 — top dense quality on 32GB+"),
@@ -48,9 +47,10 @@ _LOCAL_TIERS: tuple[LocalModelRec, ...] = (
 # Short, dated pointer — cloud model rankings move fast; treat as a snapshot,
 # not gospel. Loom's own default_config.yaml already ships sane defaults.
 CLOUD_RECOMMENDATION = (
-    "For the orchestrator/advisor roles, current strong picks are Claude Sonnet/Opus "
-    "(great agentic tool use), GPT-5.x (esp. *-codex variants), and Gemini 3 Pro (huge "
-    "context). Loom defaults to Claude Sonnet + Opus; swap freely, this isn't a lock-in."
+    "For the orchestrator/advisor roles, current strong picks are Claude Sonnet 5 / "
+    "Opus 4.8 (great agentic tool use), the GPT-5.6 family (Sol/Terra), and Gemini "
+    "3.5 Flash / 3.1 Pro. Loom defaults to Claude Sonnet + Opus; swap freely, this "
+    "isn't a lock-in."
 )
 
 

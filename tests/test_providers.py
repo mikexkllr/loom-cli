@@ -53,9 +53,9 @@ def test_cloud_provider_has_a_main_model(provider_id):
 
 
 def test_model_for_tier_falls_back_to_main_when_tier_unset():
-    p = prov.get("google_ai_studio")  # has no flagship_model
-    assert p.flagship_model == ""
-    assert p.model_for_tier("flagship") == p.main_model
+    p = prov.get("google_ai_studio")  # has no light_model
+    assert p.light_model == ""
+    assert p.model_for_tier("light") == p.main_model
 
 
 def test_model_for_tier_returns_specific_tier_when_set():

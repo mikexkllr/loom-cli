@@ -14,13 +14,13 @@ orchestrator: claude-sonnet-5
 
 # Per-subagent model assignments. Anything not cloud-prefixed runs locally.
 subagents:
-  explorer: ollama/qwen3:4b
+  explorer: ollama/qwen3.5:4b
   editor: ollama/qwen3.6:27b
-  bash: ollama/qwen3:14b
-  searcher: ollama/qwen3:4b
+  bash: ollama/qwen3.5:9b
+  searcher: ollama/qwen3.5:4b
   reviewer: claude-haiku-4-5
-  general-purpose: ollama/qwen3:14b
-  tester: ollama/qwen3:14b
+  general-purpose: ollama/qwen3.5:9b
+  tester: ollama/qwen3.5:9b
 
 # The strongest available model. Called on-demand only, via the `consult` tool.
 advisor: claude-opus-4-8
@@ -41,10 +41,12 @@ cloud_fallback: claude-haiku-4-5
 # Context-window sizes (in tokens) used by the prompt-size guard to decide when
 # to escalate. Override per-model as needed.
 context_windows:
+  ollama/qwen3.5:4b: 32768
+  ollama/qwen3.5:9b: 40960
+  ollama/qwen3.6:27b: 65536
+  # Legacy tags kept for configs created by earlier Loom versions.
   ollama/qwen3:4b: 32768
   ollama/qwen3:14b: 40960
-  ollama/qwen3.6:27b: 65536
-  ollama/llama3.2:3b: 131072
 
 # Fraction of a model's context window at which the orchestrator auto-compacts
 # and the prompt-size guard escalates a subagent call.
