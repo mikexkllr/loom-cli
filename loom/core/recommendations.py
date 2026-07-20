@@ -43,6 +43,7 @@ _LOCAL_TIERS: tuple[LocalModelRec, ...] = (
     LocalModelRec("qwen3-coder:30b-a3b", 24, "MoE — 3B active params, fast agentic coding"),
     LocalModelRec("glm-4.7-flash", 24, "30B-A3B MoE — strongest 30B class, fast agentic tool use, 200K ctx"),
     LocalModelRec("qwen3.6:27b", 24, "current best dense local coder — 256K context"),
+    LocalModelRec("gemma4:31b", 32, "Gemma 4 dense flagship — top-tier general + coding on 32GB+"),
     LocalModelRec("qwen3.6:35b", 32, "bigger qwen3.6 — top dense quality on 32GB+"),
     LocalModelRec("qwen3-coder-next", 64, "80B-A3B MoE, RL-trained for agents — strongest local coding, needs a big Mac/multi-GPU"),
 )
