@@ -60,13 +60,16 @@ def test_cloud_models_never_escalate():
     "env,expected",
     [
         ({}, False),
-        ({"CLAUDE_CODE_USE_BEDROCK": "1"}, True),
-        ({"CLAUDE_CODE_USE_BEDROCK": "true"}, True),
-        ({"CLAUDE_CODE_USE_BEDROCK": "0"}, False),
+        ({"LOOM_USE_BEDROCK": "1"}, True),
+        ({"LOOM_USE_BEDROCK": "true"}, True),
+        ({"LOOM_USE_BEDROCK": "0"}, False),
+        # Claude Code's own flag must NOT flip Loom's routing.
+        ({"CLAUDE_CODE_USE_BEDROCK": "1"}, False),
         ({"ANTHROPIC_BEDROCK_BASE_URL": "https://example.com"}, True),
     ],
 )
 def test_use_bedrock_flag(monkeypatch, env, expected):
+    monkeypatch.delenv("LOOM_USE_BEDROCK", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
     monkeypatch.delenv("ANTHROPIC_BEDROCK_BASE_URL", raising=False)
     for k, v in env.items():
@@ -76,7 +79,7 @@ def test_use_bedrock_flag(monkeypatch, env, expected):
 
 def test_anthropic_routes_through_bedrock_when_flagged(monkeypatch):
     pytest.importorskip("langchain_aws")
-    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("LOOM_USE_BEDROCK", "1")
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-token")
     monkeypatch.setenv("ANTHROPIC_BEDROCK_BASE_URL", "https://example.com")
     mr._build_cached.cache_clear()

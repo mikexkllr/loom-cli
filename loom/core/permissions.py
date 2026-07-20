@@ -35,6 +35,15 @@ _SPECIFIER_FIELD = {
 }
 
 
+# Coordination tools that never stall on an approval prompt: spawning
+# subagents (task), tracking the plan (write_todos), consulting the advisor.
+# They only orchestrate — the real side effects (file writes, shell) are
+# gated per-call by these same rules. A user settings.json that overrides
+# `permissions.allow` replaces the packaged list wholesale (lists don't
+# merge), which used to silently re-gate these; an explicit deny still wins.
+ALWAYS_ALLOWED = frozenset({"task", "write_todos", "consult"})
+
+
 class Decision(str, Enum):
     allow = "allow"
     ask = "ask"
@@ -91,6 +100,8 @@ def check(tool_name: str, tool_input: dict | None, permissions: Permissions) -> 
     tool_input = tool_input or {}
     if _any(permissions.deny, tool_name, tool_input):
         return Decision.deny
+    if tool_name in ALWAYS_ALLOWED:
+        return Decision.allow
     if _any(permissions.allow, tool_name, tool_input):
         return Decision.allow
     if _any(permissions.ask, tool_name, tool_input):

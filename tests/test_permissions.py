@@ -40,3 +40,20 @@ def test_wildcard():
 def test_default_mode_fallback():
     p = Permissions(default_mode="deny")
     assert check("write_file", {"path": "x"}, p) is Decision.deny
+
+
+def test_coordination_tools_always_allowed():
+    """task/write_todos/consult never prompt, even when a user settings.json
+    replaces the packaged allow list (lists override, they don't merge) or
+    flips the default mode."""
+    p = Permissions(allow=["read_file"], default_mode="ask")
+    for tool in ("task", "write_todos", "consult"):
+        assert check(tool, {}, p) is Decision.allow
+    p = Permissions(default_mode="deny")
+    for tool in ("task", "write_todos", "consult"):
+        assert check(tool, {}, p) is Decision.allow
+
+
+def test_explicit_deny_beats_always_allowed():
+    p = Permissions(deny=["task"], default_mode="allow")
+    assert check("task", {}, p) is Decision.deny

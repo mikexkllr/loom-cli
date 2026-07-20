@@ -104,7 +104,7 @@ def test_missing_credentials_flags_unset_required_vars():
 
 def test_missing_credentials_ignores_optional_vars():
     p = prov.get("anthropic_bedrock")
-    missing = ob.missing_credentials(p, {"AWS_BEARER_TOKEN_BEDROCK": "x", "CLAUDE_CODE_USE_BEDROCK": "1"})
+    missing = ob.missing_credentials(p, {"AWS_BEARER_TOKEN_BEDROCK": "x", "LOOM_USE_BEDROCK": "1"})
     assert missing == []  # ANTHROPIC_BEDROCK_BASE_URL is optional
 
 

@@ -3,6 +3,25 @@
 ## Unreleased
 
 ### Changed
+- **Setup wizard now starts from your existing config.** Re-running
+  `/setup` (or `loom setup`) shows the current role → model table and which
+  credentials are already on file (masked), and every pre-existing API
+  key/endpoint gets an explicit "already set (…abcd) — keep it?" prompt
+  instead of being silently reused, so keys can finally be rotated from the
+  wizard. Values entered earlier in the same run are still reused without
+  re-prompting.
+- **Bedrock routing flag renamed `CLAUDE_CODE_USE_BEDROCK` →
+  `LOOM_USE_BEDROCK`.** Loom's env block is applied to the process
+  environment (and inherited by `execute` subshells), so reusing Claude
+  Code's own variable could silently reconfigure a Claude Code running
+  inside a Loom session — and vice versa. Legacy settings.json env blocks
+  are translated on the fly and the Claude Code name is never exported.
+  `ANTHROPIC_BEDROCK_BASE_URL` (an Anthropic SDK variable) still opts in.
+- **`task`, `write_todos`, and `consult` can no longer be re-gated by
+  accident.** These coordination tools are now always allowed (deny rules
+  still win): a user `permissions.allow` list replaces the packaged one
+  wholesale, which used to put "approve task?" prompts in front of every
+  subagent spawn and todo update.
 - **Refreshed default models to the July 2026 lineup**, verified against
   provider docs and the Ollama library:
   - *Anthropic:* orchestrator/escalation `claude-sonnet-4-6` →
@@ -28,6 +47,12 @@
   `/model`, or `loom config set` to adopt the new defaults.
 
 ### Added
+- **Cloud vs local is visible everywhere a model acts.** The banner,
+  bottom toolbar, and `/status` badge models with `⌂ local` / `☁ cloud`;
+  `task`/`consult` tool-call lines show which model the work is delegated
+  to (`task(…) → ollama/qwen3.6:27b (⌂ local)`), and subagent output labels
+  carry the same badge. Badges are fallback-aware: when Ollama is down and
+  a role runs on the billed cloud fallback, it shows as `☁ cloud`.
 - **Claude Code-style plan mode.** Plan mode is now a first-class mode in the
   Shift+Tab cycle (`default → accept-edits → plan → yolo`) and `/mode plan`.
   After a planning turn, Loom presents the plan with an approve-&-execute

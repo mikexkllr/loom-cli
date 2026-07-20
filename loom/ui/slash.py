@@ -428,8 +428,13 @@ def _status(session: "Session", args: str) -> bool:
     table = Table.grid(padding=(0, 2))
     table.add_row("[loom.dim]version[/loom.dim]", f"loom v{__version__}")
     table.add_row("[loom.dim]cwd[/loom.dim]", str(session.cwd))
-    table.add_row("[loom.dim]orchestrator[/loom.dim]", cfg.orchestrator)
-    table.add_row("[loom.dim]advisor[/loom.dim]", cfg.advisor)
+    def _with_badge(role: str, model: str) -> str:
+        origin = session.model_origin(role)
+        model, is_local = origin if origin else (model, cfg.is_local(model))
+        return f"{'⌂' if is_local else '☁'} {model} ({'local' if is_local else 'cloud'})"
+
+    table.add_row("[loom.dim]orchestrator[/loom.dim]", _with_badge("orchestrator", cfg.orchestrator))
+    table.add_row("[loom.dim]advisor[/loom.dim]", _with_badge("advisor", cfg.advisor))
     table.add_row("[loom.dim]mode[/loom.dim]", ", ".join(modes) or "normal")
     table.add_row("[loom.dim]permissions[/loom.dim]", f"default: {session.settings.permissions.default_mode}")
     table.add_row("[loom.dim]mcp[/loom.dim]", mcp_line)

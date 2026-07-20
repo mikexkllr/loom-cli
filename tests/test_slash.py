@@ -45,6 +45,30 @@ def test_status_and_mcp_and_cost_render(tmp_path, capsys):
     assert "0" in out  # /cost shows zeroed usage
 
 
+def test_model_origin_badges(tmp_path):
+    """The UI can tell cloud from local per role, following live fallbacks."""
+    s = _session(tmp_path)
+    cfg = s.settings.models
+    model, is_local = s.model_origin("orchestrator")
+    assert model == cfg.orchestrator
+    assert is_local == cfg.is_local(cfg.orchestrator)
+    # Stream-node aliases resolve to the orchestrator.
+    assert s.model_origin("agent") == s.model_origin("model") == s.model_origin("orchestrator")
+    assert s.model_origin("no-such-role") is None
+    # A role on Ollama fallback reports the billed cloud model, not the config one.
+    local_role = next((r for r, m in cfg.subagents.items() if cfg.is_local(m)), None)
+    if local_role:
+        s.bundle = type("B", (), {"fallbacks": {local_role: cfg.subagents[local_role]}, "persistent": False})()
+        assert s.model_origin(local_role) == (cfg.cloud_fallback, False)
+
+
+def test_status_shows_cloud_or_local(tmp_path, capsys):
+    s = _session(tmp_path)
+    slash.dispatch(s, "/status")
+    out = capsys.readouterr().out
+    assert "cloud" in out or "local" in out
+
+
 def test_memory_missing_then_present(tmp_path, capsys):
     s = _session(tmp_path)
     slash.dispatch(s, "/memory")
