@@ -35,10 +35,13 @@ class LocalModelRec:
 # threshold; pick the largest entry whose min_gb fits the detected hardware.
 _LOCAL_TIERS: tuple[LocalModelRec, ...] = (
     LocalModelRec("qwen3.5:2b", 4, "tiny — CPU-only laptops, fast but weak"),
+    LocalModelRec("gemma4:e4b", 8, "Gemma 4 effective-4B — non-Qwen small option for ~8GB devices"),
     LocalModelRec("qwen3.5:4b", 8, "small — good recon/chat on 8GB machines"),
+    LocalModelRec("gemma4:12b", 12, "Gemma 4 mid — strong all-rounder, big coding jump over Gemma 3"),
     LocalModelRec("qwen3.5:9b", 12, "current small-model sweet spot on 12-16GB"),
     LocalModelRec("devstral-small-2:24b", 24, "agent-first Mistral coder — 68% SWE-bench Verified, 384K ctx"),
     LocalModelRec("qwen3-coder:30b-a3b", 24, "MoE — 3B active params, fast agentic coding"),
+    LocalModelRec("glm-4.7-flash", 24, "30B-A3B MoE — strongest 30B class, fast agentic tool use, 200K ctx"),
     LocalModelRec("qwen3.6:27b", 24, "current best dense local coder — 256K context"),
     LocalModelRec("qwen3.6:35b", 32, "bigger qwen3.6 — top dense quality on 32GB+"),
     LocalModelRec("qwen3-coder-next", 64, "80B-A3B MoE, RL-trained for agents — strongest local coding, needs a big Mac/multi-GPU"),
@@ -123,7 +126,7 @@ def detect_hardware() -> Hardware:
     return Hardware(os_name, ram_gb, None, None)
 
 
-def recommend_local_models(hw: Hardware, *, top_n: int = 3) -> list[LocalModelRec]:
+def recommend_local_models(hw: Hardware, *, top_n: int = 4) -> list[LocalModelRec]:
     """Best-fit local models for ``hw``, largest-that-fits first.
 
     Falls back to the smallest tier if hardware couldn't be detected, so the

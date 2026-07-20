@@ -19,7 +19,10 @@
     `qwen3.5:4b`/`qwen3.5:9b`. The hardware-recommendation table now spans
     `qwen3.5:2b` → `qwen3-coder-next` (80B-A3B) and adds
     `devstral-small-2:24b` (68% SWE-bench Verified); stale `qwen2.5-coder`,
-    `devstral:24b`, and `llama3.3:70b` tiers dropped.
+    `devstral:24b`, and `llama3.3:70b` tiers dropped. Non-Qwen alternatives
+    `gemma4:e4b`, `gemma4:12b`, and `glm-4.7-flash` (strongest 30B-class
+    MoE) are listed alongside the Qwen picks in `/model` and onboarding,
+    with the recommendation list widened from 3 to 4 entries.
 
   Existing `~/.loom/config.yaml` files are untouched — run `/setup`,
   `/model`, or `loom config set` to adopt the new defaults.
