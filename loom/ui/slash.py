@@ -463,6 +463,79 @@ def _status(session: "Session", args: str) -> bool:
     return True
 
 
+@command("graphify", "Code knowledge graph (GraphRAG): /graphify [build|update|on|off|query <q>|path <a> <b>|explain <c>]")
+def _graphify(session: "Session", args: str) -> bool:
+    from loom.core import graphify
+    from loom.core import mcp as mcp_mod
+    from loom.core import settings as st
+
+    parts = args.split(maxsplit=1)
+    verb = parts[0] if parts else ""
+    rest = parts[1] if len(parts) > 1 else ""
+
+    def _set_server(enabled: bool) -> None:
+        st.set_value("mcp_servers.graphify.enabled", "true" if enabled else "false")
+        session.reload_settings()
+        # MCP sessions are a process-wide singleton — restart so the next turn
+        # (re)connects with the new server set.
+        mcp_mod.shutdown_mcp()
+        session.rebuild()
+
+    if verb in ("build", "update"):
+        if not graphify.installed():
+            session.console.print(f"[loom.err]graphify CLI not found.[/loom.err] [loom.dim]{graphify.INSTALL_HINT}[/loom.dim]")
+            return True
+        session.console.print(f"[loom.accent]⏺ graphify {'--update' if verb == 'update' else ''} — indexing {session.cwd}[/loom.accent]")
+        code = graphify.build(session.cwd, update=verb == "update")
+        if code != 0:
+            session.console.print(f"[loom.err]graphify exited with code {code}[/loom.err]")
+            return True
+        detail = graphify.format_stats(graphify.graph_stats(session.cwd))
+        session.console.print(f"[loom.subagent]✓ graph ready[/loom.subagent] [loom.dim]({detail or 'graphify-out/graph.json'})[/loom.dim]")
+        srv = session.settings.mcp_servers.get("graphify")
+        if srv is None or not srv.enabled:
+            _set_server(True)
+            session.console.print("[loom.dim]graphify MCP server enabled — graph tools connect on the next task[/loom.dim]")
+        return True
+
+    if verb in ("on", "off"):
+        if verb == "on" and not graphify.graph_exists(session.cwd):
+            session.console.print("[loom.warn]no graph yet — run /graphify build first[/loom.warn]")
+            return True
+        _set_server(verb == "on")
+        session.console.print(f"graphify MCP server: [loom.accent]{verb}[/loom.accent]")
+        return True
+
+    if verb in ("query", "path", "explain"):
+        if not graphify.installed():
+            session.console.print(f"[loom.err]graphify CLI not found.[/loom.err] [loom.dim]{graphify.INSTALL_HINT}[/loom.dim]")
+            return True
+        if not graphify.graph_exists(session.cwd):
+            session.console.print("[loom.warn]no graph yet — run /graphify build first[/loom.warn]")
+            return True
+        cli_args = [verb, *([rest] if verb != "path" else rest.split(maxsplit=1))]
+        code, out = graphify.run_cli(session.cwd, *[a for a in cli_args if a])
+        style = "loom.err" if code != 0 else None
+        session.console.print(out or "(no output)", style=style)
+        return True
+
+    # No/unknown verb: status.
+    stats = graphify.graph_stats(session.cwd)
+    server = session.settings.mcp_servers.get("graphify")
+    state = next((r["state"] for r in mcp_mod.mcp_status(session.settings) if r["name"] == "graphify"), "not configured")
+    lines = [
+        f"cli:    {'installed' if graphify.installed() else 'not installed — ' + graphify.INSTALL_HINT}",
+        f"graph:  {graphify.format_stats(stats) or 'not built — /graphify build'}",
+        f"server: {state if server is not None and server.enabled else 'disabled — /graphify on'}",
+    ]
+    lines.append(
+        "[loom.dim]the orchestrator + explorer/searcher answer structure questions from the graph\n"
+        "instead of glob/grep/read sweeps — fewer tokens, real file:line citations[/loom.dim]"
+    )
+    session.console.print(Panel("\n".join(lines), title="graphify — code knowledge graph", border_style="loom.accent", expand=False))
+    return True
+
+
 @command("mcp", "List MCP servers, connection state, and their tools")
 def _mcp(session: "Session", args: str) -> bool:
     from loom.core.mcp import mcp_status

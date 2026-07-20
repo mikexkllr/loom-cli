@@ -57,6 +57,19 @@
   tool calls can't interleave on the terminal.
 
 ### Added
+- **Graphify knowledge graph / GraphRAG integration (`/graphify`).**
+  [Graphify](https://github.com/safishamsi/graphify) (`uv tool install
+  graphifyy`) builds a tree-sitter knowledge graph of the repo
+  (`graphify-out/graph.json`); Loom mounts it as a stdio MCP server
+  (`graphify . --mcp`, packaged entry disabled until a graph exists).
+  `/graphify build|update` indexes the repo and auto-enables the server;
+  `/graphify` shows cli/graph/server status; `/graphify query|path|explain`
+  runs one-off CLI queries. Once connected, the orchestrator and the
+  explorer/searcher subagents get the read-only `query_graph` / `get_node` /
+  `shortest_path` tools (always-allowed, never prompt) plus a system-prompt
+  nudge to answer structure questions from the graph instead of
+  glob/grep/read sweeps — a subgraph's worth of tokens with file:line
+  citations. In airgap mode the tools stay subagent-only.
 - **Every tool call names its caller.** Tool-call lines now always end
   with who issued them — `[orchestrator]` or
   `[editor · qwen3.6:27b (⌂ local)]` (from the message's model metadata,

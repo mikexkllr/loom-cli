@@ -95,6 +95,17 @@ NOTE: The tester subagent is unavailable in this run (no browser/MCP tools
 connected). Skip rule 4's browser verification, state that end-to-end testing
 was skipped, and tell the user how to verify manually."""
 
+GRAPH_SUFFIX = """
+
+KNOWLEDGE GRAPH: A Graphify code knowledge graph of this repo is connected
+(query_graph / get_node / shortest_path). For structure questions — "where is X
+defined", "what connects A to B", "what depends on Y", "what would break if I
+change Z" — query the graph FIRST: it answers from the pre-built index with
+file:line citations in a fraction of the tokens of a glob/grep/read sweep.
+Explorer and searcher have the same tools; tell them to prefer the graph too.
+Fall back to grep/read_file only when you need exact code bodies or the graph
+lacks the detail."""
+
 # Subagents permitted in plan mode. general-purpose stays (built read-only in
 # plan mode) because dropping it would let deepagents auto-add its own
 # write-capable default under that reserved name.
@@ -307,6 +318,17 @@ def build_orchestrator(
         else:
             subagents.remove(sub)
 
+    # Graphify's read-only graph-query tools also go to the recon subagents —
+    # explorer/searcher answer "where/how" questions from the graph instead of
+    # grep-and-read sweeps.
+    from loom.core.graphify import graph_tools_from
+
+    graph_tools = graph_tools_from(mcp_tools)
+    if graph_tools:
+        for sub in subagents:
+            if sub["name"] in ("explorer", "searcher"):
+                sub["tools"] = list(sub["tools"]) + graph_tools
+
     # Any other MCP tools (non-browser servers the user added) go to
     # general-purpose.
     other_mcp = [t for t in mcp_tools if not t.name.startswith("browser_")]
@@ -327,6 +349,11 @@ def build_orchestrator(
         # consult sends the question+context to a cloud advisor; in airgap and
         # local-only modes no orchestrator-originated data may leave the machine.
         tools.append(make_consult_tool(config))
+    # The orchestrator queries the knowledge graph directly — structure answers
+    # without spawning a subagent or reading files. Not in airgap: graph nodes
+    # carry code identifiers/snippets, which must not reach a cloud orchestrator.
+    if graph_tools and not airgap:
+        tools.extend(graph_tools)
 
     # ----- system prompt (kept prefix-stable for prompt caching) -----
     system = ORCHESTRATOR_SYSTEM
@@ -338,6 +365,10 @@ def build_orchestrator(
         system += AIRGAP_SUFFIX
     if not has_tester and not plan:
         system += NO_TESTER_SUFFIX
+    # Airgap: the orchestrator has no graph tools (nodes carry code
+    # identifiers) — explorer/searcher still hold them, no prompt needed.
+    if graph_tools and not airgap:
+        system += GRAPH_SUFFIX
 
     # ----- middleware: deepagents defaults (incl. SummarizationMiddleware) -----
     middleware: list[Any] = []

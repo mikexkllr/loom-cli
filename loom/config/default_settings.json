@@ -10,7 +10,11 @@
       "browser_*",
       "task",
       "write_todos",
-      "consult"
+      "consult",
+      "query_graph",
+      "get_node",
+      "shortest_path",
+      "list_prs"
     ],
     "ask": [
       "write_file",
@@ -31,6 +35,12 @@
       "command": "npx",
       "args": ["@playwright/mcp@latest"],
       "enabled": true
+    },
+    "graphify": {
+      "transport": "stdio",
+      "command": "graphify",
+      "args": [".", "--mcp"],
+      "enabled": false
     }
   },
   "hooks": {

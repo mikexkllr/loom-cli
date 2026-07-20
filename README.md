@@ -256,12 +256,35 @@ After every turn Loom prints a receipt — the measurable version of the hybrid
 pitch:
 
 ```
-✻ $0.052 cloud (10.0k in / 1.5k out) + 98.0k local tokens (free) · all-cloud est. $0.443 · session $0.052
+✔ turn complete · $0.052 cloud (10.0k in / 1.5k out) + 98.0k local tokens (free) · 89% local, saved ~$0.391 vs all-cloud · session $0.052 (saved ~$0.39)
 ```
 
-The `all-cloud est.` prices the free local tokens at the cloud orchestrator's
-rates: what this task would have cost on an all-cloud agent. `/cost` breaks
-the session down per model.
+"Saved" prices the free local tokens at the cloud orchestrator's rates: what
+this task would have cost on an all-cloud agent. `/cost` breaks the session
+down per model; `/status` shows the session's local-token share and savings.
+
+### Knowledge graph — GraphRAG (`/graphify`)
+
+Loom integrates [Graphify](https://github.com/safishamsi/graphify) as an
+optional third context source next to glob/grep: a tree-sitter-built knowledge
+graph of the codebase (`graphify-out/graph.json`) served over MCP. Structure
+questions — "where is X defined", "what connects A to B", "what depends on Y"
+— are answered by traversing the pre-built graph with file:line citations,
+costing a subgraph's worth of tokens instead of a glob+grep+read sweep.
+
+```
+uv tool install graphifyy    # or: pipx install graphifyy
+/graphify build              # index the repo → graphify-out/, enables the MCP server
+/graphify                    # status: cli / graph / server
+/graphify update             # re-index only changed files
+/graphify query "what connects auth to the database?"   # one-off human query
+```
+
+Once built, the orchestrator and the explorer/searcher subagents get the
+read-only graph tools (`query_graph` / `get_node` / `shortest_path`) and are
+prompted to prefer them for structure questions. Everything runs locally;
+`/graphify off` disconnects the server. In airgap mode the graph tools stay
+subagent-only (graph nodes carry code identifiers).
 
 ### Airgap mode (`--airgap` / `/airgap`)
 
