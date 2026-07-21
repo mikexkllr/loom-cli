@@ -74,6 +74,28 @@ with the current version** — accepting downloads, verifies, and resumes
 your session on the new build in place; declining just continues. Piped/
 non-interactive runs (scripts, CI) only ever print a notice, never prompt.
 
+Prefer to grab a specific binary yourself instead of running a script? Every
+asset lives at a fixed URL under the
+[latest release](https://github.com/mikexkllr/loom-cli/releases/latest), so
+`curl -LO` works directly:
+
+| Platform | Command |
+|---|---|
+| macOS (Apple Silicon) | `curl -LO https://github.com/mikexkllr/loom-cli/releases/latest/download/loom-macos-arm64` |
+| macOS (Intel) | `curl -LO https://github.com/mikexkllr/loom-cli/releases/latest/download/loom-macos-x64` |
+| Linux (x86_64) | `curl -LO https://github.com/mikexkllr/loom-cli/releases/latest/download/loom-linux-x64` |
+| Linux (arm64) | `curl -LO https://github.com/mikexkllr/loom-cli/releases/latest/download/loom-linux-arm64` |
+| Windows (x64) | `curl -LO https://github.com/mikexkllr/loom-cli/releases/latest/download/loom-windows-x64.exe` |
+
+Then `chmod +x loom-*` (macOS/Linux) and move it onto your `PATH`. Verify
+against [`checksums.txt`](https://github.com/mikexkllr/loom-cli/releases/latest/download/checksums.txt)
+first if you want the same integrity check the install scripts do:
+
+```bash
+curl -LsSf https://github.com/mikexkllr/loom-cli/releases/latest/download/checksums.txt | grep loom-macos-arm64
+shasum -a 256 loom-macos-arm64   # compare against the line above
+```
+
 **From source, with [uv](https://docs.astral.sh/uv/)** — env, lockfile,
 tools, all in one:
 
