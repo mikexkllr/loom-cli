@@ -85,6 +85,30 @@ def test_read_only_build_strips_write_tools_everywhere():
 
 
 # ---------------------------------------------------------------------------
+# Orchestrator cannot re-do a subagent's broad search itself
+# ---------------------------------------------------------------------------
+
+
+def test_orchestrator_loses_broad_search_tools():
+    """glob/grep must be quarantined to explorer/searcher. Previously this was
+    prompt-only guidance ("delegate, don't investigate yourself"), which the
+    orchestrator model could ignore — re-running searches itself, in a cloud
+    context, after a local subagent had already done the recon."""
+    from loom.core.orchestrator import _orchestrator_excluded_tools
+
+    normal = _orchestrator_excluded_tools(airgap=False)
+    assert {"glob", "grep", "write_file", "edit_file", "delete", "execute"} <= normal
+    assert "read_file" not in normal  # targeted single-file confirmations stay allowed
+    assert "ls" not in normal
+
+
+def test_orchestrator_airgap_loses_every_filesystem_tool():
+    from loom.core.orchestrator import _ALL_FS_TOOLS, _orchestrator_excluded_tools
+
+    assert _orchestrator_excluded_tools(airgap=True) == set(_ALL_FS_TOOLS)
+
+
+# ---------------------------------------------------------------------------
 # delete-tool coverage
 # ---------------------------------------------------------------------------
 

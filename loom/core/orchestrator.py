@@ -121,6 +121,24 @@ _ALL_FS_TOOLS = frozenset(
 )
 
 
+def _orchestrator_excluded_tools(*, airgap: bool) -> set[str]:
+    """Tools stripped from the orchestrator's own request (subagents are
+    unaffected — they get their own middleware stack).
+
+    write/edit/delete/execute always: those belong to subagents. glob/grep too
+    — broad search stays quarantined in explorer/searcher. That quarantine
+    used to be prompt-only ("delegate, don't investigate yourself"), which the
+    orchestrator model can and did ignore, re-running searches itself (in a
+    cloud context, by default) after a local subagent had already done the
+    recon. Removing the tools makes the split structural instead of advisory.
+    read_file stays available for the small targeted confirmations the system
+    prompt calls for. Airgap strips every filesystem tool — no exception.
+    """
+    if airgap:
+        return set(_ALL_FS_TOOLS)
+    return {"write_file", "edit_file", "delete", "execute", "glob", "grep"}
+
+
 def _ensure_general_purpose(
     subagents: list[dict[str, Any]],
     config: LoomConfig,
@@ -434,10 +452,7 @@ def build_orchestrator(
     # delegate; writes and shell execution belong to subagents.
     from loom.middleware.tool_exclusion import ToolExclusionMiddleware
 
-    excluded_tools = {"write_file", "edit_file", "delete", "execute"}
-    if airgap:
-        # Airgap: no orchestrator tool may touch the filesystem or run a process.
-        excluded_tools = set(_ALL_FS_TOOLS)
+    excluded_tools = _orchestrator_excluded_tools(airgap=airgap)
     middleware.append(ToolExclusionMiddleware(excluded_tools))
 
     kwargs: dict[str, Any] = dict(
