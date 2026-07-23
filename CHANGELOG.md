@@ -3,6 +3,29 @@
 ## Unreleased
 
 ### Added
+- **Model picker now shows every model it can, live.** New
+  [`loom/core/model_catalog.py`](loom/core/model_catalog.py) queries each
+  cloud provider's own "list models" endpoint (Anthropic's Models API,
+  OpenAI's, Google AI Studio's ListModels, and OpenCode Zen/Go's — the last
+  two need no API key, so they're always queried) and feeds the numbered
+  picker in `/setup` and `/model <role>` from the live result, falling back
+  to the provider's hardcoded example models when there's no listing
+  endpoint (Bedrock, Vertex AI — both need SDK-level credential machinery),
+  no credentials yet, or the request fails. Zen/Go model families that are
+  Anthropic-shaped rather than OpenAI-shaped on those gateways (MiniMax,
+  Qwen — see the existing provider notes) are filtered out so the picker
+  never offers a model id that would silently break. The local side of the
+  picker (`/setup`'s local-model prompt and `/model <role>`) now lists
+  Loom's *entire* curated Ollama catalog — not just the top hardware-fit
+  picks — each annotated installed / fits-your-hardware / may-not-fit
+  (there's still no stable public API for "every model in the Ollama
+  library", so this stays a hand-maintained snapshot, not a live query).
+  Quick setup can now optionally pick a specific model per tier
+  (main/flagship/light) from the same live-or-example catalog instead of
+  always taking the provider's built-in defaults. Every pick — quick,
+  advanced, or `/model` — still lands in the same layered `settings.json`
+  (`~/.loom` or `<project>/.loom`) it already did, so it's remembered across
+  restarts and new sessions with no separate storage to add.
 - **Standalone binaries + curl installer + self-update.** Every push to
   `main` now freezes a `loom` binary (PyInstaller, see
   [`packaging/loom.spec`](packaging/loom.spec)) for macOS (arm64/x64), Linux

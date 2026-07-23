@@ -31,6 +31,28 @@ def test_recommend_local_models_tiny_hardware_gets_smallest_tier():
     assert recs == [rec._LOCAL_TIERS[0]]
 
 
+def test_all_local_models_returns_the_full_catalog():
+    assert rec.all_local_models() == rec._LOCAL_TIERS
+
+
+def test_fits_hardware_true_within_budget():
+    hw = rec.Hardware(os_name="Darwin", ram_gb=32, gpu_vendor="apple", vram_gb=32)
+    small = next(m for m in rec._LOCAL_TIERS if m.min_gb <= 8)
+    assert rec.fits_hardware(hw, small) is True
+
+
+def test_fits_hardware_false_over_budget():
+    hw = rec.Hardware(os_name="Darwin", ram_gb=8, gpu_vendor="apple", vram_gb=8)
+    huge = rec._LOCAL_TIERS[-1]
+    assert huge.min_gb > 8
+    assert rec.fits_hardware(hw, huge) is False
+
+
+def test_fits_hardware_false_when_hardware_undetected():
+    hw = rec.Hardware(os_name="Linux", ram_gb=None, gpu_vendor=None, vram_gb=None)
+    assert rec.fits_hardware(hw, rec._LOCAL_TIERS[0]) is False
+
+
 @pytest.mark.parametrize(
     "hw,expected_substr",
     [

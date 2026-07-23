@@ -223,10 +223,15 @@ def _offer_pull_if_missing(session: "Session", model: str) -> None:
 
 
 def _model_candidates(session: "Session") -> list[tuple[str, str]]:
-    """(model string, where-label) pairs: installed local Ollama models first,
-    then hardware-fitting recommendations that just need a pull, then each
-    cloud provider's example models. For full provider/credential control,
-    use /setup."""
+    """(model string, where-label) pairs: installed local Ollama models
+    first, then Loom's full curated local catalog (needs a pull — see
+    recommendations.py; there's no stable public API to list every Ollama
+    library model, so this is a hand-maintained snapshot), then each cloud
+    provider's models — a live catalog fetch when the provider has one and
+    either needs no credential or already has one on file (see
+    model_catalog.py), else its hardcoded example models. For full
+    provider/credential control, use /setup."""
+    from loom.core import model_catalog as catalog
     from loom.core import ollama
     from loom.core import providers as prov
     from loom.core import recommendations as rec
@@ -234,18 +239,24 @@ def _model_candidates(session: "Session") -> list[tuple[str, str]]:
     st = ollama.status(session.settings.models)
     out: list[tuple[str, str]] = [(f"ollama/{tag}", "local · installed") for tag in st.models]
     seen = {m for m, _ in out}
-    for r in rec.recommend_local_models(rec.detect_hardware()):
+    hw = rec.detect_hardware()
+    for r in rec.all_local_models():
         model = f"ollama/{r.tag}"
-        if model not in seen and not ollama.is_served(r.tag, st.models):
-            out.append((model, "local · pulls on select"))
-            seen.add(model)
+        if model in seen or ollama.is_served(r.tag, st.models):
+            continue
+        fit = "fits your hardware" if rec.fits_hardware(hw, r) else "may not fit your hardware"
+        out.append((model, f"local · needs pull, {fit}"))
+        seen.add(model)
     # Use the full prefixed string (not the bare model id) — some providers
     # (zen/go/custom/vertexai) need it to resolve to the right provider at all.
+    env = dict(session.settings.env)
     for p in prov.cloud_providers():
-        for m in p.example_models:
+        models, is_live = catalog.available_models(p, env)
+        label = "cloud · live" if is_live else "cloud · example"
+        for m in models:
             model = p.model_string(m)
             if model not in seen:
-                out.append((model, "cloud"))
+                out.append((model, label))
                 seen.add(model)
     return out
 
@@ -266,9 +277,13 @@ def _model(session: "Session", args: str) -> bool:
         for name, model in cfg.subagents.items():
             table.add_row(name, model, "local" if cfg.is_local(model) else "cloud")
         session.console.print(table)
-        local = [m for m, where in _model_candidates(session) if where == "local · installed"]
-        if local:
-            session.console.print(f"[loom.dim]installed local models: {', '.join(m[7:] for m in local)}[/loom.dim]")
+        # Cheap local-only status line — no cloud network calls, unlike the
+        # full _model_candidates() picker used below for interactive selection.
+        from loom.core import ollama
+
+        installed = ollama.status(session.settings.models).models
+        if installed:
+            session.console.print(f"[loom.dim]installed local models: {', '.join(installed)}[/loom.dim]")
         session.console.print("[loom.dim]set: /model <role> <model> · pick interactively: /model <role>[/loom.dim]")
         return True
 

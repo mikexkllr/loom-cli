@@ -39,6 +39,24 @@ def test_default_role_plan_mixes_local_and_cloud():
     assert plan["escalation"] == "anthropic:claude-sonnet-5"  # main tier
 
 
+def test_default_role_plan_tier_models_overrides_provider_defaults():
+    tier_models = {"main": "claude-haiku-4-5", "light": "claude-sonnet-5"}
+    plan = ob.default_role_plan(HW, "qwen2.5-coder:32b", prov.get("anthropic"), tier_models)
+    assert plan["orchestrator"] == "anthropic:claude-haiku-4-5"  # main tier, overridden
+    assert plan["escalation"] == "anthropic:claude-haiku-4-5"  # main tier, overridden
+    assert plan["reviewer"] == "anthropic:claude-sonnet-5"  # light tier, overridden
+    assert plan["advisor"] == "anthropic:claude-opus-4-8"  # flagship tier, untouched
+
+
+def test_default_role_plan_tier_models_partial_falls_back_per_tier():
+    """A tier missing from tier_models still gets the provider's own default
+    for that tier, not a crash or an empty string."""
+    plan = ob.default_role_plan(HW, "qwen2.5-coder:32b", prov.get("anthropic"), {"main": "claude-sonnet-4-6"})
+    assert plan["orchestrator"] == "anthropic:claude-sonnet-4-6"  # main — overridden
+    assert plan["advisor"] == "anthropic:claude-opus-4-8"  # flagship — provider default, no override given
+    assert plan["reviewer"] == "anthropic:claude-haiku-4-5"  # light — provider default, no override given
+
+
 def test_apply_plan_user_scope_writes_and_reloads(tmp_path):
     plan = {"orchestrator": "anthropic:claude-sonnet-4-6", "editor": "ollama/qwen3:14b"}
     settings = ob.apply_plan(tmp_path, "user", plan, {"ANTHROPIC_API_KEY": "test-key"})

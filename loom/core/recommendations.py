@@ -142,6 +142,21 @@ def recommend_local_models(hw: Hardware, *, top_n: int = 4) -> list[LocalModelRe
     return list(reversed(fits))[:top_n]
 
 
+def all_local_models() -> tuple[LocalModelRec, ...]:
+    """The full hand-curated catalog, smallest first, with no hardware
+    filtering — for pickers that want to show everything Loom knows about
+    rather than just what fits the current machine. There's no stable public
+    API for "every model in the Ollama library" (see module docstring), so
+    this is the complete list this snapshot ships, not a live query."""
+    return _LOCAL_TIERS
+
+
+def fits_hardware(hw: Hardware, model: LocalModelRec) -> bool:
+    """True if ``model`` comfortably fits the detected VRAM/RAM budget."""
+    budget = hw.vram_gb or hw.ram_gb
+    return budget is not None and model.min_gb <= budget
+
+
 def hardware_summary(hw: Hardware) -> str:
     mem = f"{hw.vram_gb:.0f}GB VRAM" if hw.vram_gb and hw.gpu_vendor in ("nvidia", "amd") else (
         f"{hw.ram_gb:.0f}GB unified memory" if hw.ram_gb and hw.gpu_vendor == "apple" else

@@ -144,6 +144,65 @@ def test_model_role_set_routes_to_settings(tmp_path, monkeypatch, capsys):
     ]
 
 
+def test_model_no_args_never_hits_the_network(tmp_path, monkeypatch, capsys):
+    """The bare /model summary only needs local Ollama status — it must not
+    call the (network-touching) full candidate picker."""
+    from loom.ui import slash as slash_mod
+
+    def _boom(session):
+        raise AssertionError("bare /model must not call _model_candidates")
+
+    monkeypatch.setattr(slash_mod, "_model_candidates", _boom)
+    s = _session(tmp_path)
+    assert slash.dispatch(s, "/model") is True
+
+
+def test_model_candidates_lists_full_local_catalog_and_cloud_models(tmp_path, monkeypatch):
+    from loom.core import model_catalog as catalog
+    from loom.core import ollama
+    from loom.core import providers as prov
+    from loom.core import recommendations as rec
+
+    monkeypatch.setattr(ollama, "status", lambda cfg: ollama.OllamaStatus(True, True, ["qwen3:14b"], "http://x"))
+    monkeypatch.setattr(rec, "detect_hardware", lambda: rec.Hardware("Darwin", 32, "apple", 32))
+    monkeypatch.setattr(catalog, "available_models", lambda p, env: (list(p.example_models), False))
+
+    s = _session(tmp_path)
+    candidates = slash._model_candidates(s)
+
+    assert ("ollama/qwen3:14b", "local · installed") in candidates
+    # Every curated local tier not already installed shows up, needing a pull.
+    local_tags = {m for m, where in candidates if where.startswith("local ·") and m != "ollama/qwen3:14b"}
+    assert local_tags == {f"ollama/{m.tag}" for m in rec.all_local_models() if m.tag != "qwen3:14b"}
+    # Every cloud provider's (mocked) example models show up, labeled non-live.
+    anthropic = prov.get("anthropic")
+    for m in anthropic.example_models:
+        assert (anthropic.model_string(m), "cloud · example") in candidates
+
+
+def test_model_candidates_labels_live_catalog_results(tmp_path, monkeypatch):
+    from loom.core import model_catalog as catalog
+    from loom.core import ollama
+    from loom.core import providers as prov
+    from loom.core import recommendations as rec
+
+    monkeypatch.setattr(ollama, "status", lambda cfg: ollama.OllamaStatus(True, True, [], "http://x"))
+    monkeypatch.setattr(rec, "detect_hardware", lambda: rec.Hardware("Darwin", 32, "apple", 32))
+
+    def fake_available(p, env):
+        if p.id == "opencode_zen":
+            return (["gpt-5.5", "grok-4.5"], True)
+        return (list(p.example_models), False)
+
+    monkeypatch.setattr(catalog, "available_models", fake_available)
+
+    s = _session(tmp_path)
+    candidates = slash._model_candidates(s)
+    zen = prov.get("opencode_zen")
+    assert (zen.model_string("gpt-5.5"), "cloud · live") in candidates
+    assert (zen.model_string("grok-4.5"), "cloud · live") in candidates
+
+
 def test_setup_dispatches_to_onboarding_and_reloads(tmp_path, monkeypatch):
     from loom.ui import onboarding
 

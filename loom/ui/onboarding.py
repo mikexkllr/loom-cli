@@ -21,6 +21,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from loom.core import config as cfg
+from loom.core import model_catalog as catalog
 from loom.core import ollama as ollama_mod
 from loom.core import providers as prov
 from loom.core import recommendations as rec
@@ -120,11 +121,18 @@ def _mask(value: str) -> str:
     return "…" + value[-4:] if len(value) > 8 else "(set)"
 
 
-def default_role_plan(hw: rec.Hardware, local_tag: str, cloud_provider: prov.ProviderInfo | None) -> dict[str, str]:
+def default_role_plan(
+    hw: rec.Hardware,
+    local_tag: str,
+    cloud_provider: prov.ProviderInfo | None,
+    tier_models: dict[str, str] | None = None,
+) -> dict[str, str]:
     """The "quick setup" assignment: one local tag for local-leaning roles,
     one cloud provider (tiered per role) for cloud-leaning roles — mirrors
     the shape of ``loom/config/default_config.yaml``. ``cloud_provider=None``
-    means local-only: every role gets ``local_tag``."""
+    means local-only: every role gets ``local_tag``. ``tier_models`` lets the
+    caller override a tier's model id (e.g. from the catalog picker) instead
+    of the provider's built-in ``main``/``flagship``/``light`` default."""
     ollama = prov.get("ollama")
     plan: dict[str, str] = {}
     for role in _DEFAULT_LOCAL_ROLES:
@@ -133,7 +141,9 @@ def default_role_plan(hw: rec.Hardware, local_tag: str, cloud_provider: prov.Pro
         if cloud_provider is None:
             plan[role] = ollama.model_string(local_tag)
         else:
-            plan[role] = cloud_provider.model_string(cloud_provider.model_for_tier(_ROLE_TIER[role]))
+            tier = _ROLE_TIER[role]
+            model_id = (tier_models or {}).get(tier) or cloud_provider.model_for_tier(tier)
+            plan[role] = cloud_provider.model_string(model_id)
     return plan
 
 
@@ -151,18 +161,23 @@ def needs_onboarding(root: str | Path = ".") -> bool:
 
 
 def _print_hardware_and_local_recs(console: Console, hw: rec.Hardware, installed: list[str]) -> list[str]:
+    """List every installed Ollama model plus Loom's full curated catalog
+    (see recommendations.py — there's no stable public API for "every model
+    in the Ollama library", so this is a hand-maintained snapshot, not a live
+    query), annotated with whether each fits the detected hardware."""
     console.print(f"[dim]detected hardware: {rec.hardware_summary(hw)}[/dim]")
-    recs = [r.tag for r in rec.recommend_local_models(hw)]
     options: list[str] = list(installed)
-    for tag in recs:
-        if tag not in options:
-            options.append(tag)
     table = Table(show_header=True, header_style="bold cyan")
     for col in ("#", "Model", "Status"):
         table.add_column(col)
     for i, tag in enumerate(options, 1):
-        status = "installed" if tag in installed else "recommended — needs `ollama pull`"
-        table.add_row(str(i), tag, status)
+        table.add_row(str(i), tag, "installed")
+    for m in rec.all_local_models():
+        if m.tag in installed:
+            continue
+        options.append(m.tag)
+        fit = "fits your hardware" if rec.fits_hardware(hw, m) else "may be slow / might not fit"
+        table.add_row(str(len(options)), m.tag, f"needs pull — {fit} — {m.blurb}")
     console.print(table)
     return options
 
@@ -252,10 +267,28 @@ def prompt_credentials(
     return collected
 
 
-def prompt_cloud_model(console: Console, provider: prov.ProviderInfo, tier: str = "main") -> str:
+def prompt_cloud_model(
+    console: Console, provider: prov.ProviderInfo, tier: str = "main", env: dict[str, str] | None = None
+) -> str:
+    """Pick a model id for ``provider``. Shows a numbered picker sourced from
+    the provider's live model-list endpoint when one's reachable (see
+    ``model_catalog``), falling back to its hardcoded example models
+    otherwise — either way you can also just type any model id directly."""
     default = provider.model_for_tier(tier)
-    examples = ", ".join(provider.example_models) or default
-    console.print(f"[dim]examples: {examples}[/dim]")
+    models, is_live = catalog.available_models(provider, env or {})
+    if models:
+        console.print(f"[dim]{'live' if is_live else 'example'} models for {provider.label}:[/dim]")
+        table = Table(show_header=True, header_style="bold cyan")
+        for col in ("#", "Model"):
+            table.add_column(col)
+        for i, m in enumerate(models, 1):
+            table.add_row(str(i), m)
+        console.print(table)
+        default_choice = str(models.index(default) + 1) if default in models else default
+        choice = Prompt.ask("  number, or type any model id", default=default_choice)
+        if choice.isdigit() and 1 <= int(choice) <= len(models):
+            return models[int(choice) - 1]
+        return choice.strip() or default
     return Prompt.ask(f"  model id for {provider.label}", default=default) or default
 
 
@@ -275,7 +308,7 @@ def _configure_one_role(
     provider = prompt_provider(console, prov.cloud_providers())
     env = prompt_credentials(console, provider, known_env, existing_env)
     tier = _ROLE_TIER.get(role, "main")
-    model_id = prompt_cloud_model(console, provider, tier)
+    model_id = prompt_cloud_model(console, provider, tier, {**known_env, **env})
     return provider.model_string(model_id), env
 
 
@@ -352,10 +385,20 @@ def run(
         console.print("\n[bold cyan]── cloud provider (orchestrator/advisor/escalation/reviewer) ──[/bold cyan]")
         use_cloud = Confirm.ask("  use a cloud provider for these roles?", default=True)
         cloud_provider = None
+        tier_models: dict[str, str] | None = None
         if use_cloud:
             cloud_provider = prompt_provider(console, prov.cloud_providers())
             known_env = prompt_credentials(console, cloud_provider, known_env, existing_env)
-        models = default_role_plan(hw, local_tag, cloud_provider)
+            if Confirm.ask(
+                f"  pick specific {cloud_provider.label} models per role (else use recommended defaults)?",
+                default=False,
+            ):
+                tier_models = {}
+                tier_roles = {"main": "orchestrator + escalation", "flagship": "advisor", "light": "reviewer"}
+                for tier, roles_label in tier_roles.items():
+                    console.print(f"\n[dim]{roles_label}:[/dim]")
+                    tier_models[tier] = prompt_cloud_model(console, cloud_provider, tier, known_env)
+        models = default_role_plan(hw, local_tag, cloud_provider, tier_models)
     else:
         models = {}
         for role in roles:
