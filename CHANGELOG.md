@@ -97,6 +97,26 @@
   `/model`, or `loom config set` to adopt the new defaults.
 
 ### Fixed
+- **`/model` changes didn't stick — reverted to the standard model on
+  restart.** `set_value("models.*")` wrote model routing to `config.yaml`,
+  but `settings.json` deep-merges *over* `config.yaml` (see
+  [`load_settings`](loom/core/settings.py)), so once `/setup` had written a
+  `models` block there, every later `/model` pick persisted to `config.yaml`
+  yet was silently shadowed on load — it never took effect in-session and was
+  gone on reopen. `/model` (and any `models.*` set) now writes to the same
+  winning `settings.json` layer the setup wizard uses
+  ([`_set_user_model_value`](loom/core/settings.py)), validated before write,
+  so a pick takes effect immediately and survives restarts — matching what the
+  picker already claimed to do. `loom config set <key> <value>` now writes the
+  same winning `settings.json` layer (it used to write the shadowed
+  `config.yaml`), `loom config show` prints the effective merged routing, and
+  `loom config path` names both files (defaults + overrides).
+- **`/model` vs `/models` was confusing — the plural did something
+  unrelated.** `/model` configures routing while `/models` checked the Ollama
+  daemon, so the config command's apparent plural reported daemon health
+  instead. The status check is now [`/ollama`](loom/ui/slash.py) (which is what
+  it inspects), and `/models` is an alias of `/model`, so the plural just opens
+  the picker.
 - **Subagent output was attributed to the wrong role.** Streamed subagent
   text and tool calls were labelled by reverse-matching the running model name
   against config, which is ambiguous once two roles share a model — most often

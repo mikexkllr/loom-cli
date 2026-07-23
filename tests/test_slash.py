@@ -17,7 +17,7 @@ EXPECTED_COMMANDS = {
     "memory", "model", "permissions", "status", "export", "hooks", "vim",
     "resume", "undo",
     # Loom-specific
-    "plan", "local", "yolo", "agents", "models", "settings", "theme", "cwd",
+    "plan", "local", "yolo", "agents", "ollama", "settings", "theme", "cwd",
     "airgap", "setup",
 }
 
@@ -127,6 +127,21 @@ def test_model_no_args_shows_roles(tmp_path, capsys):
     slash.dispatch(s, "/model")
     out = capsys.readouterr().out
     assert "orchestrator" in out and "tester" in out
+
+
+def test_models_plural_aliases_to_model(tmp_path, capsys):
+    # `/models` (plural) is the config command, not the Ollama status check —
+    # it must render the role table, same as `/model`.
+    s = _session(tmp_path)
+    assert slash.dispatch(s, "/models") is True
+    out = capsys.readouterr().out
+    assert "orchestrator" in out and "tester" in out
+
+
+def test_ollama_status_command_registered(tmp_path):
+    # The Ollama daemon/model health check lives at `/ollama` now.
+    assert "ollama" in slash._REGISTRY
+    assert "models" not in slash._REGISTRY  # freed up; it's an alias
 
 
 def test_model_role_set_routes_to_settings(tmp_path, monkeypatch, capsys):

@@ -222,31 +222,42 @@ def _fleet_panel(config: cfg.LoomConfig, bundle) -> Panel:
 
 
 @config_app.command("show")
-def config_show() -> None:
-    """Print the active configuration."""
-    config = cfg.load_config()
+def config_show(root: str = typer.Option(".", "--root")) -> None:
+    """Print the effective model routing (config.yaml defaults + settings.json overrides)."""
     import yaml
 
-    console.print(Panel(yaml.safe_dump(config.model_dump(), sort_keys=False), title=str(cfg.USER_CONFIG_PATH)))
+    models = settings_mod.load_settings(root).models
+    console.print(
+        Panel(
+            yaml.safe_dump(models.model_dump(), sort_keys=False),
+            title="model routing · effective (config.yaml defaults + settings.json overrides)",
+        )
+    )
 
 
 @config_app.command("set")
-def config_set(key: str, value: str) -> None:
-    """Set a config value, e.g. `loom config set orchestrator gpt-4o`."""
+def config_set(key: str, value: str, root: str = typer.Option(".", "--root")) -> None:
+    """Set a model-routing value, e.g. `loom config set orchestrator claude-opus-4-8`.
+
+    Writes to ``~/.loom/settings.json`` — the layer that overrides
+    ``config.yaml`` — so the change takes effect and isn't shadowed by a
+    ``models`` block a prior ``/setup`` wrote there. Same destination as
+    ``/model`` and ``loom settings set models.<key>``.
+    """
     try:
-        updated = cfg.set_value(key, value)
+        settings_mod.set_value(f"models.{key}", value, root)
     except Exception as exc:
         console.print(f"[red]invalid:[/red] {exc}")
         raise typer.Exit(1)
-    console.print(f"[green]set[/green] {key} = {value}")
-    _ = updated
+    console.print(f"[green]set[/green] {key} = {value} [dim]in {settings_mod.USER_SETTINGS_PATH}[/dim]")
 
 
 @config_app.command("path")
 def config_path() -> None:
-    """Print the path to the user config file."""
+    """Print the config files: config.yaml (defaults) and settings.json (overrides)."""
     cfg.ensure_user_config()
-    console.print(str(cfg.USER_CONFIG_PATH))
+    console.print(f"defaults:  {cfg.USER_CONFIG_PATH}")
+    console.print(f"overrides: {settings_mod.USER_SETTINGS_PATH}")
 
 
 # ----------------------------------------------------------------------------

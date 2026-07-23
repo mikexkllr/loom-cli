@@ -232,7 +232,7 @@ Slash commands (Claude Code-compatible where it makes sense):
 | `/model <role> <model>` | assign any model to any role |
 | `/setup [roles…]` | full setup wizard: providers, credentials, hardware-aware local picks |
 | `/agents` | subagents and their models |
-| `/models` | local Ollama daemon + model status |
+| `/ollama` | local Ollama daemon + model status (`/models` is an alias for `/model`) |
 | `/mcp` | MCP servers, connection state, tools |
 | `/permissions` | active allow/ask/deny rules |
 | `/config`, `/settings` | show or set settings (`/settings ui.theme light`) |

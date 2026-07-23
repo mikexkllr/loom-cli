@@ -95,3 +95,41 @@ def test_project_settings_json_can_set_env(tmp_path):
     )
     s = st.load_settings(root=proj)
     assert s.env["ANTHROPIC_BEDROCK_BASE_URL"] == "https://project.example.com"
+
+
+def test_set_model_value_overrides_prior_setup(tmp_path, monkeypatch):
+    # Regression: /model must win over a models block a prior /setup wrote.
+    # set_value("models.*") used to write config.yaml, but settings.json
+    # deep-merges over config.yaml, so the change persisted-but-never-applied.
+    us = tmp_path / "settings.json"
+    monkeypatch.setattr(st, "USER_SETTINGS_PATH", us)
+    # A prior /setup pinned the orchestrator in the winning layer.
+    us.write_text(json.dumps({"models": {"orchestrator": "claude-sonnet-5"}}))
+
+    st.set_value("models.orchestrator", "ollama/qwen3.6:27b")
+
+    # Effective on a fresh load (== restart) and landed in settings.json.
+    assert st.load_settings().models.orchestrator == "ollama/qwen3.6:27b"
+    assert json.loads(us.read_text())["models"]["orchestrator"] == "ollama/qwen3.6:27b"
+
+
+def test_set_model_value_nested_subagent_key(tmp_path, monkeypatch):
+    # Nested keys (models.subagents.<role>) must merge, not clobber siblings.
+    us = tmp_path / "settings.json"
+    monkeypatch.setattr(st, "USER_SETTINGS_PATH", us)
+    st.set_value("models.subagents.editor", "ollama/qwen3.5:9b")
+    st.set_value("models.subagents.tester", "ollama/qwen3.5:4b")
+    s = st.load_settings()
+    assert s.models.subagents["editor"] == "ollama/qwen3.5:9b"
+    assert s.models.subagents["tester"] == "ollama/qwen3.5:4b"
+
+
+def test_set_model_value_invalid_leaves_file_intact(tmp_path, monkeypatch):
+    # A value the schema rejects must not corrupt settings.json.
+    us = tmp_path / "settings.json"
+    monkeypatch.setattr(st, "USER_SETTINGS_PATH", us)
+    st.set_value("models.orchestrator", "ollama/qwen3.6:27b")
+    before = us.read_text()
+    with pytest.raises(Exception):
+        st.set_value("models.compaction_threshold", "5.0")  # must be in (0, 1]
+    assert us.read_text() == before

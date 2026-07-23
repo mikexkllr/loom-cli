@@ -33,7 +33,9 @@ def dispatch(session: "Session", line: str) -> bool:
     parts = line[1:].split(maxsplit=1)
     name = parts[0] if parts else ""
     args = parts[1] if len(parts) > 1 else ""
-    aliases = {"quit": "exit", "q": "exit", "?": "help", "h": "help", "config": "settings"}
+    # `/models` (plural) reads as the config command's plural, so route it
+    # there — the Ollama daemon/model health check is `/ollama`, not `/models`.
+    aliases = {"quit": "exit", "q": "exit", "?": "help", "h": "help", "config": "settings", "models": "model"}
     name = aliases.get(name, name)
     entry = _REGISTRY.get(name)
     if entry is None:
@@ -357,8 +359,8 @@ def _agents(session: "Session", args: str) -> bool:
     return True
 
 
-@command("models", "Check local Ollama models (status)")
-def _models(session: "Session", args: str) -> bool:
+@command("ollama", "Check the Ollama daemon and local model status")
+def _ollama(session: "Session", args: str) -> bool:
     from loom.core import ollama
 
     st = ollama.status(session.settings.models)

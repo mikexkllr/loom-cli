@@ -194,12 +194,46 @@ def save_user_settings(settings: Settings) -> Path:
     return USER_SETTINGS_PATH
 
 
+def _set_user_model_value(model_key: str, value: str) -> None:
+    """Write a ``models.*`` override into ``~/.loom/settings.json`` — the same
+    layer the setup wizard writes (see :func:`loom.ui.onboarding.apply_plan`)
+    and the one that actually wins on load.
+
+    Model routing used to be written to ``config.yaml`` here, but settings.json
+    deep-merges *over* config.yaml (see :func:`load_settings`), so a ``models``
+    block written by ``/setup`` silently shadowed every later ``/model`` change
+    — the change persisted to config.yaml but never took effect. Writing both
+    to the winning layer keeps ``/model`` and ``/setup`` in agreement.
+    """
+    USER_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    data = _read_json(USER_SETTINGS_PATH)
+    models: dict[str, Any] = dict(data.get("models") or {})
+
+    parts = model_key.split(".")
+    cursor: Any = models
+    for part in parts[:-1]:
+        nxt = dict(cursor.get(part) or {})
+        cursor[part] = nxt
+        cursor = nxt
+    # Model ids are strings; other model keys (thresholds, depths, flags) coerce.
+    cursor[parts[-1]] = cfg._coerce(value)
+
+    # Validate the merged result before writing so a bad value never corrupts
+    # the file — mirrors onboarding.apply_plan's pre-write check.
+    cfg.LoomConfig(**cfg._deep_merge(cfg._read_yaml(cfg.DEFAULT_CONFIG_PATH), models))
+
+    data["models"] = models
+    with USER_SETTINGS_PATH.open("w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+
+
 def set_value(dotted_key: str, value: str, root: str | Path = ".") -> Settings:
     """Set a settings value by dotted path, e.g.
     ``permissions.default_mode`` or ``ui.theme``. Model keys (``models.*``)
-    are delegated to the config.yaml writer for back-compat."""
+    are written into the user settings.json ``models`` block — the layer that
+    wins over config.yaml, so ``/model`` and ``/setup`` never disagree."""
     if dotted_key.startswith("models."):
-        cfg.set_value(dotted_key[len("models.") :], value)
+        _set_user_model_value(dotted_key[len("models.") :], value)
         return load_settings(root)
 
     settings = load_settings(root)

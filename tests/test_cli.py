@@ -30,6 +30,24 @@ def test_nested_subcommands_resolve():
     assert "config.yaml" in result.output
 
 
+def test_config_set_writes_winning_settings_layer(tmp_path, monkeypatch):
+    # `loom config set` must land in settings.json (the layer that overrides
+    # config.yaml), not the shadowed config.yaml — same trap /model had.
+    import json
+
+    from loom.core import settings as st
+
+    us = tmp_path / "settings.json"
+    monkeypatch.setattr(st, "USER_SETTINGS_PATH", us)
+    proj = tmp_path / "proj"
+    (proj / ".loom").mkdir(parents=True)
+
+    result = runner.invoke(app, ["config", "set", "orchestrator", "gpt-4o", "--root", str(proj)])
+    assert result.exit_code == 0
+    assert json.loads(us.read_text())["models"]["orchestrator"] == "gpt-4o"
+    assert st.load_settings(root=proj).models.orchestrator == "gpt-4o"
+
+
 def test_models_subcommand_resolves():
     result = runner.invoke(app, ["models", "status"])
     # Exit code depends on whether ollama is installed; either way it must hit
