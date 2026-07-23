@@ -97,6 +97,17 @@
   `/model`, or `loom config set` to adopt the new defaults.
 
 ### Fixed
+- **Subagent output was attributed to the wrong role.** Streamed subagent
+  text and tool calls were labelled by reverse-matching the running model name
+  against config, which is ambiguous once two roles share a model — most often
+  when a local role falls back to the cloud `cloud_fallback`/`reviewer` model:
+  an `explorer` on the fallback would render as `[reviewer]`, and its tool
+  calls as a bare `[subagent]`. Attribution now binds the nested delegation
+  namespace (`tools:<id>`) to the `subagent_type` from the originating `task`
+  call, in delegation order (`_attribute_ns` in
+  [`loom/ui/repl.py`](loom/ui/repl.py)), so a subagent is labelled by the role
+  it actually is — `[explorer · … ]` — even when its model collides with
+  another role's. Model-name matching stays as the fallback.
 - **The orchestrator did its own recon instead of delegating.** `ls` is now
   stripped from the orchestrator alongside `glob`/`grep` in
   [`_orchestrator_excluded_tools`](loom/core/orchestrator.py). A strong cloud

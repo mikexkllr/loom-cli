@@ -163,6 +163,50 @@ def test_msg_source_attribution(tmp_path):
     assert ("⌂ local" in label) == cfg.is_local(model_string)
 
 
+def test_subagent_attributed_by_delegation_not_model_name(tmp_path):
+    """A local role that fell back to the cloud model another role uses must
+    still be attributed to the role actually delegated to — model-name matching
+    would mislabel it (e.g. explorer-on-fallback shown as reviewer, when both
+    run claude-haiku-4-5)."""
+    s = _session(tmp_path)
+    s._pending_subagents = []
+    s._ns_role = {}
+    s._note_task({"name": "task", "args": {"subagent_type": "explorer"}})
+    ns = ("tools:abc123",)
+    assert s._attribute_ns(ns) == "explorer"
+    label = s._role_label("explorer", "claude-haiku-4-5", "anthropic")
+    assert label.startswith("explorer · ")
+    assert "reviewer" not in label
+    assert "☁ cloud" in label
+    # Namespace stays bound; the delegation isn't re-consumed on later chunks.
+    assert s._attribute_ns(ns) == "explorer"
+    assert s._pending_subagents == []
+
+
+def test_attribute_ns_binds_in_delegation_order(tmp_path):
+    s = _session(tmp_path)
+    s._pending_subagents = []
+    s._ns_role = {}
+    s._note_task({"name": "task", "args": {"subagent_type": "explorer"}})
+    s._note_task({"name": "task", "args": {"subagent_type": "searcher"}})
+    assert s._attribute_ns(("tools:1",)) == "explorer"
+    assert s._attribute_ns(("tools:2",)) == "searcher"
+    # The orchestrator's own (top-level) namespace is never a subagent.
+    assert s._attribute_ns(()) is None
+    # A non-task call doesn't consume a delegation slot.
+    s._note_task({"name": "execute", "args": {"command": "ls"}})
+    assert s._pending_subagents == []
+
+
+def test_role_label_locality(tmp_path):
+    s = _session(tmp_path)
+    assert "⌂ local" in s._role_label("explorer", "qwen3.5:4b", "ollama")
+    assert "☁ cloud" in s._role_label("reviewer", "claude-haiku-4-5", "anthropic")
+    # No provider → infer local/cloud from the model-name shape.
+    assert "⌂ local" in s._role_label("explorer", "qwen3.5:4b")
+    assert "☁ cloud" in s._role_label("reviewer", "claude-haiku-4-5")
+
+
 def test_tool_calls_are_always_attributed(tmp_path, capsys):
     s = _session(tmp_path)
     s._print_tool_call({"name": "read_file", "args": {"path": "x"}}, "model")

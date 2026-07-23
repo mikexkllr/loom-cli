@@ -68,6 +68,14 @@ class Session:
         self.console = make_console(settings.ui)
         self.messages: list = []
         self.bundle = None
+        # Subagent attribution: a nested graph streams under a "tools:<id>"
+        # namespace whose id is LangGraph's internal task id, not the `task`
+        # tool-call id — so it can't be matched back to the call directly.
+        # Instead we bind namespaces to the subagent_types seen in `task` calls,
+        # in delegation order (see _attribute_ns). Reset per turn in
+        # _stream_multi.
+        self._pending_subagents: list[str] = []
+        self._ns_role: dict[str, str] = {}
         self.thread_id = sessions_mod.new_thread_id()
         self.checkpointer, self.durable = sessions_mod.make_checkpointer(self.cwd)
         self.tracker = UsageTracker(settings.models)
@@ -604,6 +612,56 @@ class Session:
         where = "⌂ local" if is_local else "☁ cloud"
         return f"{role} · {model} ({where})" if role else f"{model} ({where})"
 
+    def _note_task(self, call) -> None:
+        """Record a ``task`` delegation so the subagent it spawns can be
+        attributed to its declared ``subagent_type`` when it streams."""
+        name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
+        if name != "task":
+            return
+        args = call.get("args") if isinstance(call, dict) else getattr(call, "args", {})
+        self._pending_subagents.append((args or {}).get("subagent_type") or "general-purpose")
+
+    def _attribute_ns(self, ns: tuple) -> str | None:
+        """Map a nested delegation namespace to the subagent that owns it.
+
+        A subagent streams under namespace ``("tools:<id>", ...)``; ``<id>`` is
+        LangGraph's internal task id, not the ``task`` tool-call id, so it can't
+        be matched back to the call directly. Instead we bind each namespace, on
+        first sight, to the next un-bound ``subagent_type`` from ``_note_task``,
+        in delegation order. This is authoritative even when the running model
+        is ambiguous — e.g. a local role that fell back to the same cloud model
+        another role (``reviewer``) already uses, which model-name matching
+        would mislabel."""
+        if not ns:
+            return None
+        key = ns[-1]
+        if key not in self._ns_role and self._pending_subagents:
+            self._ns_role[key] = self._pending_subagents.pop(0)
+        return self._ns_role.get(key)
+
+    def _role_label(self, role: str, model: str = "", provider: str = "") -> str:
+        """``role · model (⌂ local / ☁ cloud)`` for a subagent identified by its
+        namespace. Prefers the actually-running model name from the stream;
+        falls back to the role's configured model (fallback-aware) when the
+        update carries none."""
+        from loom.core.model_router import resolve
+
+        is_local: bool | None = None
+        provider = (provider or "").lower()
+        if provider:
+            is_local = provider in ("ollama", "chatollama")
+        if not model:
+            origin = self.model_origin(role)
+            if origin:
+                model = resolve(origin[0]).name
+                if is_local is None:
+                    is_local = origin[1]
+        if is_local is None:
+            # Ollama tags look like "qwen3:14b"; cloud names never carry a colon.
+            is_local = ":" in model and not model.startswith("claude")
+        where = "⌂ local" if is_local else "☁ cloud"
+        return f"{role} · {model or '?'} ({where})"
+
     def _stream_source(self, meta: dict | None) -> str | None:
         """Source label for a token chunk, from its callback metadata."""
         meta = meta or {}
@@ -640,6 +698,8 @@ class Session:
 
     def _stream_multi(self, stream) -> str | None:
         ui = self.settings.ui
+        self._pending_subagents = []  # per-turn subagent attribution state
+        self._ns_role = {}
         streamed: set[str] = set()  # finalized token-streamed texts (dedup vs updates)
         buf: list[str] = []
         open_key: tuple[str, str | None] | None = None  # (kind, source) of the open token block
@@ -696,7 +756,12 @@ class Session:
                 text, thinking = self._chunk_parts(chunk)
                 if not text and not thinking:
                     continue
-                source = self._stream_source(meta)
+                role = self._attribute_ns(ns)
+                source = (
+                    self._role_label(role, str(meta.get("ls_model_name") or ""), str(meta.get("ls_provider") or ""))
+                    if role
+                    else self._stream_source(meta)
+                )
                 if thinking and ui.show_thinking:
                     emit("thinking", source, thinking)
                 if text:
@@ -714,8 +779,18 @@ class Session:
                     if ui.show_tool_calls:
                         self._print_tool_result(msg)
                     continue
-                source = self._msg_source(msg, nested)
-                for call in getattr(msg, "tool_calls", []) or []:
+                calls = getattr(msg, "tool_calls", []) or []
+                # Learn delegations before attributing, so a subagent's own
+                # nested output binds to the right task in order.
+                for call in calls:
+                    self._note_task(call)
+                role = self._attribute_ns(ns)
+                if role:
+                    rmeta = getattr(msg, "response_metadata", None) or {}
+                    source = self._role_label(role, str(rmeta.get("model_name") or rmeta.get("model") or ""))
+                else:
+                    source = self._msg_source(msg, nested)
+                for call in calls:
                     if ui.show_tool_calls:
                         self._print_tool_call(call, node, source=source)
                 text = getattr(msg, "content", "")
