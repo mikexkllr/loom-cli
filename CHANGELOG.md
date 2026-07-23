@@ -97,6 +97,17 @@
   `/model`, or `loom config set` to adopt the new defaults.
 
 ### Fixed
+- **The orchestrator did its own recon instead of delegating.** `ls` is now
+  stripped from the orchestrator alongside `glob`/`grep` in
+  [`_orchestrator_excluded_tools`](loom/core/orchestrator.py). A strong cloud
+  orchestrator (e.g. `gpt-5.5`) would map the tree with `ls` and sweep files
+  itself for "what is this codebase about"–style questions, never routing to
+  the local `explorer` and defeating the context-quarantine design — the
+  "delegate, don't investigate yourself" rule was prompt-only and got ignored.
+  Removing the tool makes it structural. `read_file` deliberately stays: the
+  orchestrator still needs targeted single-file reads to confirm a path a
+  subagent named or review a reported change (browsing/searching need a
+  directory walk; a confirmation needs a path).
 - **Approval prompts sometimes never appeared — tools were silently
   auto-denied.** The confirm callback (and the /yolo, accept-edits, and
   /undo turn-id state) lived in ``contextvars``, but LangGraph executes

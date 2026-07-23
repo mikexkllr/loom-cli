@@ -45,8 +45,12 @@ How to work:
    - tester    : drive a real browser (Playwright) through a user journey and
                  report PASS/FAIL per step
    - general-purpose : multi-step work that mixes the above
-3. Never read large files or run noisy commands yourself — delegate. You may use
-   read_file only for small, targeted confirmations.
+3. You have no ls/glob/grep or shell/write tools — browsing, searching, and
+   mutating the tree live in subagents by design, not by suggestion. Route every
+   "what's in this codebase / where is X / how does Y work" question to explorer
+   or searcher; do not try to map or hunt the tree yourself. Use read_file only
+   for targeted confirmations: a specific path a subagent named, or reviewing a
+   change it reported — never to explore.
 4. MANDATORY end-to-end verification: whenever the work changes anything a user
    can see or interact with through a frontend (a web page, UI component, form,
    route, or an API a visible screen depends on), you MUST verify it from the
@@ -125,18 +129,21 @@ def _orchestrator_excluded_tools(*, airgap: bool) -> set[str]:
     """Tools stripped from the orchestrator's own request (subagents are
     unaffected — they get their own middleware stack).
 
-    write/edit/delete/execute always: those belong to subagents. glob/grep too
-    — broad search stays quarantined in explorer/searcher. That quarantine
-    used to be prompt-only ("delegate, don't investigate yourself"), which the
-    orchestrator model can and did ignore, re-running searches itself (in a
-    cloud context, by default) after a local subagent had already done the
-    recon. Removing the tools makes the split structural instead of advisory.
-    read_file stays available for the small targeted confirmations the system
-    prompt calls for. Airgap strips every filesystem tool — no exception.
+    write/edit/delete/execute always: those belong to subagents. glob/grep/ls
+    too — browsing and broad search are recon, which stays quarantined in
+    explorer/searcher. That quarantine used to be prompt-only ("delegate, don't
+    investigate yourself"), which the orchestrator model can and did ignore:
+    strong cloud models (e.g. gpt-5.5) map the tree with ls and sweep files
+    themselves instead of routing recon to a local explorer, defeating the
+    context-quarantine design. Removing the tools makes the split structural
+    instead of advisory. read_file stays available for the small targeted
+    confirmations the system prompt calls for — reading the specific paths a
+    subagent named, reviewing a reported change — which need a path, not a
+    directory walk. Airgap strips every filesystem tool — no exception.
     """
     if airgap:
         return set(_ALL_FS_TOOLS)
-    return {"write_file", "edit_file", "delete", "execute", "glob", "grep"}
+    return {"write_file", "edit_file", "delete", "execute", "glob", "grep", "ls"}
 
 
 def _ensure_general_purpose(
