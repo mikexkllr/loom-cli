@@ -65,6 +65,10 @@ How to work:
 6. After the reviewer flags HIGH risk or withholds approval, STOP and surface it
    to the human before continuing.
 
+Default to local subagents for exploration, search, and analysis; only call
+cloud models (Advisor/consult) when the task explicitly requires external
+knowledge or you are stuck after local investigation.
+
 Keep your messages tight. Synthesize subagent summaries; do not echo their raw
 output back."""
 
