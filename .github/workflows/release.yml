@@ -23,7 +23,7 @@ jobs:
         include:
           - os: macos-14 # Apple Silicon
             asset: loom-macos-arm64
-          - os: macos-13 # Intel
+          - os: macos-15-intel # Intel
             asset: loom-macos-x64
           - os: ubuntu-latest
             asset: loom-linux-x64
