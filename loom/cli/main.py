@@ -56,10 +56,12 @@ config_app = typer.Typer(help="View and edit model-routing configuration.")
 settings_app = typer.Typer(help="View and edit settings.json (permissions/hooks/env/ui).")
 agents_app = typer.Typer(help="Inspect registered subagents.")
 models_app = typer.Typer(help="Manage local Ollama models.")
+playwright_app = typer.Typer(help="Set up the Playwright MCP browser (used by the tester subagent).")
 app.add_typer(config_app, name="config")
 app.add_typer(settings_app, name="settings")
 app.add_typer(agents_app, name="agents")
 app.add_typer(models_app, name="models")
+app.add_typer(playwright_app, name="playwright")
 
 
 # ----------------------------------------------------------------------------
@@ -405,11 +407,45 @@ def models_pull(
     console.print("[green]✓ done[/green]")
 
 
+@playwright_app.command("status")
+def playwright_status() -> None:
+    """Check for npx and whether Playwright's browser binaries are installed."""
+    from loom.core import playwright_setup
+
+    st = playwright_setup.status()
+    if not st.npx_available:
+        console.print(f"[red]✗[/red] {playwright_setup.INSTALL_HINT}")
+        raise typer.Exit(1)
+    if st.browsers_installed:
+        console.print(f"[green]✓ playwright browser installed[/green] ({st.browsers_dir})")
+    else:
+        console.print(
+            f"[yellow]✗ no browser installed[/yellow] at {st.browsers_dir} — "
+            "run [bold]loom playwright install[/bold]"
+        )
+        raise typer.Exit(1)
+
+
+@playwright_app.command("install")
+def playwright_install(
+    browser: str = typer.Argument("chromium", help="Browser to install: chromium, firefox, or webkit.")
+) -> None:
+    """Download the browser binary the Playwright MCP server (and `tester`
+    subagent) drives — a one-time step `npx @playwright/mcp` doesn't do for
+    you."""
+    from loom.core import playwright_setup
+
+    code = playwright_setup.install_browsers(console, browser)
+    if code != 0:
+        console.print("[red]✗ install failed[/red]")
+        raise typer.Exit(code)
+    console.print(f"[green]✓ {browser} installed[/green]")
+
+
 @app.command("doctor")
 def doctor(root: str = typer.Option(".", "--root")) -> None:
     """Health-check the Loom setup: python, ollama, API keys, npx, MCP."""
     import os
-    import shutil as _shutil
     import sys as _sys
 
     from loom.core import ollama
@@ -445,7 +481,18 @@ def doctor(root: str = typer.Option(".", "--root")) -> None:
         or effective_env("AWS_BEARER_TOKEN_BEDROCK")
     )
     lines.append(row(key_set, "anthropic_api_key", "set" if key_set else "not set"))
-    lines.append(row(bool(_shutil.which("npx")), "npx", "found" if _shutil.which("npx") else "not found (Playwright MCP needs Node)"))
+    from loom.core import playwright_setup
+
+    pw = playwright_setup.status()
+    lines.append(row(pw.npx_available, "npx", "found" if pw.npx_available else "not found (Playwright MCP needs Node)"))
+    if pw.npx_available:
+        lines.append(
+            row(
+                pw.browsers_installed,
+                "playwright browsers",
+                "installed" if pw.browsers_installed else "missing — run `loom playwright install`",
+            )
+        )
     for r in mcp_status(settings):
         ok = True if r["state"] == "connected" else (None if r["state"] in ("not connected", "disabled") else False)
         lines.append(row(ok, f"mcp:{r['name']}", r["state"]))
@@ -493,7 +540,8 @@ def setup(
     from loom.ui import onboarding
 
     try:
-        onboarding.run(console, root=root, scope=scope)
+        settings = onboarding.run(console, root=root, scope=scope)
+        onboarding.maybe_setup_playwright(console, settings)
     except (KeyboardInterrupt, EOFError):
         console.print("\n[loom.dim]setup cancelled[/loom.dim]")
         raise typer.Exit(1)

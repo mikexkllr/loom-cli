@@ -337,7 +337,8 @@ def _setup(session: "Session", args: str) -> bool:
         if requested:
             roles = requested
     try:
-        onboarding.run(session.console, root=session.cwd, roles=roles)
+        settings = onboarding.run(session.console, root=session.cwd, roles=roles)
+        onboarding.maybe_setup_playwright(session.console, settings)
     except (KeyboardInterrupt, EOFError):
         session.console.print("\n[loom.dim]setup cancelled[/loom.dim]")
         return True
@@ -375,6 +376,31 @@ def _ollama(session: "Session", args: str) -> bool:
         if missing
         else "[loom.subagent]all models present[/loom.subagent]"
     )
+    return True
+
+
+@command("playwright", "Check/install the Playwright MCP browser (`/playwright install`)")
+def _playwright(session: "Session", args: str) -> bool:
+    from loom.core import playwright_setup
+
+    if args.strip() == "install":
+        browser = "chromium"
+        code = playwright_setup.install_browsers(session.console, browser)
+        if code == 0:
+            session.console.print(f"[loom.subagent]✓ {browser} installed[/loom.subagent]")
+        return True
+
+    st = playwright_setup.status()
+    if not st.npx_available:
+        session.console.print(f"[loom.err]{playwright_setup.INSTALL_HINT}[/loom.err]")
+        return True
+    if st.browsers_installed:
+        session.console.print(f"playwright browser: [loom.subagent]installed[/loom.subagent] ({st.browsers_dir})")
+    else:
+        session.console.print(
+            f"[loom.warn]no browser installed[/loom.warn] at {st.browsers_dir} — "
+            "run `/playwright install` or `loom playwright install`"
+        )
     return True
 
 
@@ -765,7 +791,6 @@ def _compact(session: "Session", args: str) -> bool:
 @command("doctor", "Check the health of your Loom setup")
 def _doctor(session: "Session", args: str) -> bool:
     import os
-    import shutil
     import sys
 
     from loom.core import ollama
@@ -800,7 +825,18 @@ def _doctor(session: "Session", args: str) -> bool:
     )
     out.append(row(key_set, "anthropic_api_key", "set" if key_set else "not set"))
 
-    out.append(row(bool(shutil.which("npx")), "npx", "found" if shutil.which("npx") else "not found (Playwright MCP needs Node)"))
+    from loom.core import playwright_setup
+
+    pw = playwright_setup.status()
+    out.append(row(pw.npx_available, "npx", "found" if pw.npx_available else "not found (Playwright MCP needs Node)"))
+    if pw.npx_available:
+        out.append(
+            row(
+                pw.browsers_installed,
+                "playwright browsers",
+                "installed" if pw.browsers_installed else "missing — run `loom playwright install` or `/playwright install`",
+            )
+        )
     for r in mcp_status(session.settings):
         ok: bool | None = True if r["state"] == "connected" else (None if r["state"] in ("not connected", "disabled") else False)
         out.append(row(ok, f"mcp:{r['name']}", r["state"]))

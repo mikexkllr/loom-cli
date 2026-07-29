@@ -17,7 +17,7 @@ EXPECTED_COMMANDS = {
     "memory", "model", "permissions", "status", "export", "hooks", "vim",
     "resume", "undo",
     # Loom-specific
-    "plan", "local", "yolo", "agents", "ollama", "settings", "theme", "cwd",
+    "plan", "local", "yolo", "agents", "ollama", "playwright", "settings", "theme", "cwd",
     "airgap", "setup",
 }
 
@@ -144,6 +144,25 @@ def test_ollama_status_command_registered(tmp_path):
     assert "models" not in slash._REGISTRY  # freed up; it's an alias
 
 
+def test_playwright_command_reports_missing_browser(tmp_path, monkeypatch, capsys):
+    from loom.core import playwright_setup as pw_mod
+
+    monkeypatch.setattr(pw_mod, "status", lambda: pw_mod.PlaywrightStatus(True, False, tmp_path / "ms-playwright"))
+    s = _session(tmp_path)
+    assert slash.dispatch(s, "/playwright") is True
+    assert "no browser installed" in capsys.readouterr().out
+
+
+def test_playwright_install_arg_invokes_installer(tmp_path, monkeypatch):
+    from loom.core import playwright_setup as pw_mod
+
+    calls = []
+    monkeypatch.setattr(pw_mod, "install_browsers", lambda console, browser="chromium": calls.append(browser) or 0)
+    s = _session(tmp_path)
+    assert slash.dispatch(s, "/playwright install") is True
+    assert calls == ["chromium"]
+
+
 def test_model_role_set_routes_to_settings(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(st, "set_value", lambda key, value, *a, **k: calls.append((key, value)))
@@ -222,8 +241,9 @@ def test_setup_dispatches_to_onboarding_and_reloads(tmp_path, monkeypatch):
     from loom.ui import onboarding
 
     calls = []
-    monkeypatch.setattr(onboarding, "run", lambda console, **kw: calls.append(kw) or None)
     s = _session(tmp_path)
+    monkeypatch.setattr(onboarding, "run", lambda console, **kw: calls.append(kw) or s.settings)
+    monkeypatch.setattr(onboarding, "maybe_setup_playwright", lambda console, settings: None)
     reloaded = []
     monkeypatch.setattr(s, "reload_settings", lambda: reloaded.append(True))
     monkeypatch.setattr(s, "rebuild", lambda: reloaded.append(True))
@@ -237,8 +257,9 @@ def test_setup_with_role_args_filters_roles(tmp_path, monkeypatch):
     from loom.ui import onboarding
 
     calls = []
-    monkeypatch.setattr(onboarding, "run", lambda console, **kw: calls.append(kw) or None)
     s = _session(tmp_path)
+    monkeypatch.setattr(onboarding, "run", lambda console, **kw: calls.append(kw) or s.settings)
+    monkeypatch.setattr(onboarding, "maybe_setup_playwright", lambda console, settings: None)
     monkeypatch.setattr(s, "reload_settings", lambda: None)
     monkeypatch.setattr(s, "rebuild", lambda: None)
 

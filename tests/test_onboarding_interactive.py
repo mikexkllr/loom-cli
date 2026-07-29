@@ -290,3 +290,74 @@ def test_run_advanced_setup_per_role(monkeypatch, tmp_path):
     assert settings.models.orchestrator == "anthropic:claude-sonnet-4-6"
     assert settings.models.subagents["editor"] == "ollama/qwen3:14b"
     assert settings.env["ANTHROPIC_API_KEY"] == "test-key"
+
+
+# --------------------------------------------------------------------------
+# maybe_setup_playwright — kept out of run() itself (see its docstring) so it
+# has its own scripted-prompt tests rather than threading through every
+# run() answer sequence above.
+# --------------------------------------------------------------------------
+
+
+def test_maybe_setup_playwright_skips_when_server_disabled(tmp_path, monkeypatch):
+    from loom.core import playwright_setup as pw_mod
+
+    def boom(*a, **k):
+        raise AssertionError("must not check status when the server is disabled")
+
+    monkeypatch.setattr(pw_mod, "status", boom)
+    settings = settings_mod.load_settings(tmp_path)
+    settings.mcp_servers["playwright"].enabled = False
+    ob.maybe_setup_playwright(_console(), settings)  # no-op, no exception
+
+
+def test_maybe_setup_playwright_hints_when_npx_missing(monkeypatch, tmp_path):
+    from loom.core import playwright_setup as pw_mod
+
+    monkeypatch.setattr(pw_mod, "status", lambda: pw_mod.PlaywrightStatus(False, False, tmp_path))
+
+    def boom(*a, **k):
+        raise AssertionError("must not prompt Confirm when npx is missing")
+
+    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(boom)}))
+    settings = settings_mod.load_settings(tmp_path)
+    ob.maybe_setup_playwright(_console(), settings)
+
+
+def test_maybe_setup_playwright_noop_when_already_installed(monkeypatch, tmp_path):
+    from loom.core import playwright_setup as pw_mod
+
+    monkeypatch.setattr(pw_mod, "status", lambda: pw_mod.PlaywrightStatus(True, True, tmp_path))
+
+    def boom(*a, **k):
+        raise AssertionError("must not prompt Confirm when browsers are already installed")
+
+    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(boom)}))
+    settings = settings_mod.load_settings(tmp_path)
+    ob.maybe_setup_playwright(_console(), settings)
+
+
+def test_maybe_setup_playwright_installs_on_confirm(monkeypatch, tmp_path):
+    from loom.core import playwright_setup as pw_mod
+
+    monkeypatch.setattr(pw_mod, "status", lambda: pw_mod.PlaywrightStatus(True, False, tmp_path))
+    installed = []
+    monkeypatch.setattr(pw_mod, "install_browsers", lambda console: installed.append(True) or 0)
+    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([True]))}))
+    settings = settings_mod.load_settings(tmp_path)
+    ob.maybe_setup_playwright(_console(), settings)
+    assert installed == [True]
+
+
+def test_maybe_setup_playwright_declines_confirm(monkeypatch, tmp_path):
+    from loom.core import playwright_setup as pw_mod
+
+    monkeypatch.setattr(pw_mod, "status", lambda: pw_mod.PlaywrightStatus(True, False, tmp_path))
+
+    def boom(console):
+        raise AssertionError("must not install when declined")
+
+    monkeypatch.setattr(pw_mod, "install_browsers", boom)
+    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([False]))}))
+    settings = settings_mod.load_settings(tmp_path)
+    ob.maybe_setup_playwright(_console(), settings)

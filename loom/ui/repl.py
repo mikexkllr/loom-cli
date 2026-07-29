@@ -932,7 +932,8 @@ def _maybe_run_onboarding(session: Session) -> None:
         return
     session.console.print("[loom.dim]No settings.json found yet — let's configure your models (/setup to redo this later).[/loom.dim]")
     try:
-        onboarding.run(session.console, root=session.cwd)
+        settings = onboarding.run(session.console, root=session.cwd)
+        onboarding.maybe_setup_playwright(session.console, settings)
     except (KeyboardInterrupt, EOFError):
         session.console.print("\n[loom.dim]setup skipped — run /setup any time to configure models[/loom.dim]")
         return

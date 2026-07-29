@@ -423,3 +423,34 @@ def run(
     console.print(table)
     console.print(f"[bold cyan]saved to {scope} settings.json — reload complete.[/bold cyan]")
     return settings
+
+
+def maybe_setup_playwright(console: Console, settings: Settings) -> None:
+    """After the model wizard, finish Playwright MCP setup if it's needed.
+
+    The bundled ``playwright`` MCP server ships enabled, but `npx
+    @playwright/mcp` alone doesn't download the browser binaries it drives —
+    without them the ``tester`` subagent connects yet fails at the first
+    ``browser_*`` call. Kept out of :func:`run` itself so it doesn't disturb
+    that function's scripted prompt sequence; called separately by the CLI
+    and REPL ``setup`` commands once role assignment is done.
+    """
+    server = settings.mcp_servers.get("playwright")
+    if server is None or not server.enabled:
+        return
+
+    from loom.core import playwright_setup
+
+    st = playwright_setup.status()
+    if not st.npx_available:
+        console.print(f"\n[dim]{playwright_setup.INSTALL_HINT}[/dim]")
+        return
+    if st.browsers_installed:
+        return
+
+    console.print("\n[bold cyan]── Playwright browser (powers the `tester` subagent) ──[/bold cyan]")
+    if Confirm.ask("  install it now so end-to-end browser testing works?", default=True):
+        if playwright_setup.install_browsers(console) != 0:
+            console.print("[yellow]install failed — retry any time with `loom playwright install`.[/yellow]")
+    else:
+        console.print("[dim]skipped — run `loom playwright install` any time.[/dim]")

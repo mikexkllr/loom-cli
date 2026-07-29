@@ -19,8 +19,9 @@ def _session(tmp_path):
 def test_runs_wizard_on_true_first_run(tmp_path, monkeypatch):
     monkeypatch.setattr(onboarding, "needs_onboarding", lambda root: True)
     calls = []
-    monkeypatch.setattr(onboarding, "run", lambda console, **kw: calls.append(kw) or None)
     s = _session(tmp_path)
+    monkeypatch.setattr(onboarding, "run", lambda console, **kw: calls.append(kw) or s.settings)
+    monkeypatch.setattr(onboarding, "maybe_setup_playwright", lambda console, settings: None)
     reloaded = []
     monkeypatch.setattr(s, "reload_settings", lambda: reloaded.append("settings"))
     monkeypatch.setattr(s, "rebuild", lambda: reloaded.append("rebuild"))

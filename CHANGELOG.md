@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- **Playwright browser setup, one command.** New
+  [`loom/core/playwright_setup.py`](loom/core/playwright_setup.py) detects
+  whether Playwright's browser binaries are downloaded (the step
+  `npx @playwright/mcp` doesn't do for you — without it the `tester` subagent
+  connects fine but fails at the first `browser_*` call) and installs them
+  with `loom playwright install` / `loom playwright status`, mirroring
+  `loom models pull`'s streamed-output pattern. `doctor` (CLI and `/doctor`)
+  now reports browser-install state alongside the existing `npx` check, and
+  the setup wizard (`loom setup`, `/setup`, and the true-first-run
+  auto-launch) offers to install the browser right after model roles are
+  assigned. New `/playwright` REPL command (`/playwright install` to fix).
 - **Model picker now shows every model it can, live.** New
   [`loom/core/model_catalog.py`](loom/core/model_catalog.py) queries each
   cloud provider's own "list models" endpoint (Anthropic's Models API,

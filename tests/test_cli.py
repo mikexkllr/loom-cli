@@ -56,6 +56,24 @@ def test_models_subcommand_resolves():
     assert "Missing dependency" not in result.output
 
 
+def test_playwright_subcommand_resolves(monkeypatch, tmp_path):
+    from loom.core import playwright_setup as pw_mod
+
+    monkeypatch.setattr(pw_mod, "status", lambda: pw_mod.PlaywrightStatus(True, True, tmp_path))
+    result = runner.invoke(app, ["playwright", "status"])
+    assert result.exit_code == 0
+    assert "installed" in result.output.lower()
+
+
+def test_playwright_install_subcommand_resolves(monkeypatch):
+    from loom.core import playwright_setup as pw_mod
+
+    monkeypatch.setattr(pw_mod, "install_browsers", lambda console, browser="chromium": 0)
+    result = runner.invoke(app, ["playwright", "install"])
+    assert result.exit_code == 0
+    assert "installed" in result.output.lower()
+
+
 def test_free_form_prompt_still_reaches_task_runner():
     result = runner.invoke(app, ["explain this codebase"])
     # In a minimal env this fails on the heavy deps — but it must reach the

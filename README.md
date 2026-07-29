@@ -166,6 +166,14 @@ editing required.
 - **Scope**: save to your user settings (`~/.loom/settings.json`) or this
   project's (`.loom/settings.json`) — pass `--scope user|project` to `loom
   setup` to skip that prompt.
+- **Playwright browser**: once roles are assigned, if the bundled
+  [Playwright MCP](https://github.com/microsoft/playwright-mcp) server is
+  enabled but its browser binaries aren't installed yet, the wizard offers to
+  download them on the spot — the one step `npx @playwright/mcp` doesn't do
+  for you, and the reason a fresh install's `tester` subagent otherwise fails
+  on its first `browser_*` call. Skip or redo any time with `loom playwright
+  install` (`loom playwright status` / `/playwright` in the REPL to check
+  first; `/playwright install` to fix from the REPL).
 
 ### Supported providers
 
@@ -477,7 +485,8 @@ wins:
   process on a background event loop, so stateful servers — the bundled
   [Playwright MCP](https://github.com/microsoft/playwright-mcp) browser above
   all — keep their state across tool calls. Playwright ships enabled by
-  default (needs `npx`); disable with
+  default (needs `npx`, plus its browser binaries — see
+  [Setup wizard](#setup-wizard) and `loom playwright install`); disable with
   `{"mcp_servers": {"playwright": {"enabled": false}}}`. Its `browser_*`
   tools power the `tester` subagent and are allowed by default; other
   servers' tools go to `general-purpose` and follow normal permission rules.
