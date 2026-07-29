@@ -36,17 +36,20 @@ def build_all_subagents(
     cwd: str = ".",
     *,
     read_only: bool = False,
+    ladder: tuple[tuple[str, int], ...] = (),
 ) -> list[dict[str, Any]]:
     """Resolve every registered subagent into a deepagents subagent dict.
 
     ``settings`` attaches the per-subagent policy gate (permissions, hooks,
     /undo snapshots). ``read_only=True`` (plan mode) strips the write/execute
-    tools from every subagent, not just the read-only ones.
+    tools from every subagent, not just the read-only ones. ``ladder`` is the
+    served-local-model ladder each local subagent's prompt-size guard climbs
+    before escalating to the cloud.
     """
     extra = WRITE_TOOLS if read_only else frozenset()
     out: list[dict[str, Any]] = []
     for name, spec in SPECS.items():
-        sub = spec.build(config, settings, cwd, extra_excluded=extra)
+        sub = spec.build(config, settings, cwd, extra_excluded=extra, ladder=ladder)
         if name == "reviewer":
             # Reviewer returns a structured verdict the orchestrator can gate on.
             sub["response_format"] = reviewer.RESPONSE_FORMAT
@@ -54,11 +57,20 @@ def build_all_subagents(
     return out
 
 
+def model_for(config: LoomConfig, name: str) -> str:
+    """The model a registered subagent actually runs on, honouring the spec's
+    inheritance (the reviewer trails the advisor) and any explicit config
+    assignment. Use this instead of ``config.subagents[name]`` — an unassigned
+    role has a real model, it just isn't spelled out in the file."""
+    spec = SPECS.get(name)
+    return config.model_for(name, spec.inherits if spec else "general-purpose")
+
+
 def describe_subagents(config: LoomConfig) -> list[dict[str, str]]:
     """Lightweight view for ``loom agents list`` — no model construction."""
     rows = []
     for name, spec in SPECS.items():
-        model = config.subagents.get(name, "(inherit)")
+        model = model_for(config, name)
         rows.append(
             {
                 "name": name,
@@ -72,4 +84,4 @@ def describe_subagents(config: LoomConfig) -> list[dict[str, str]]:
     return rows
 
 
-__all__ = ["SPECS", "WRITE_TOOLS", "build_all_subagents", "describe_subagents"]
+__all__ = ["SPECS", "WRITE_TOOLS", "build_all_subagents", "describe_subagents", "model_for"]

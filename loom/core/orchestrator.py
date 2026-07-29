@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 from loom.core.advisor import make_consult_tool
 from loom.core.config import LoomConfig
+from loom.core.local_pool import LocalPool, RolePlan
 from loom.core.model_router import build_model
 from loom.subagents import build_all_subagents
 from loom.tools.sandbox import get_root
@@ -153,6 +154,7 @@ def _ensure_general_purpose(
     cwd: str,
     *,
     read_only: bool,
+    ladder: tuple[tuple[str, int], ...] = (),
 ) -> list[dict[str, Any]]:
     """Guarantee a subagent named ``general-purpose`` survives every run mode.
 
@@ -182,61 +184,39 @@ def _ensure_general_purpose(
             cwd,
             model_string=local_model,
             extra_excluded=WRITE_TOOLS if read_only else frozenset(),
+            ladder=ladder,
         )
     else:
-        sub = spec.build(config, settings, cwd, extra_excluded=_ALL_FS_TOOLS)
+        sub = spec.build(config, settings, cwd, extra_excluded=_ALL_FS_TOOLS, ladder=ladder)
     return [*subagents, sub]
 
 
-def apply_cloud_fallback(config: LoomConfig) -> tuple[LoomConfig, dict[str, str]]:
-    """Reroute local roles to ``config.cloud_fallback`` when Ollama can't serve them.
+def apply_cloud_fallback(config: LoomConfig, pool: "LocalPool | None" = None) -> RolePlan:
+    """Resolve local roles Ollama can't serve — another local model first.
 
-    Returns the (possibly rewritten) config and a map of role -> original
-    local model for every role that was rerouted. No network is touched when
+    A role whose exact tag isn't pulled used to go straight to the billed
+    ``cloud_fallback``, even on a machine with other local models loaded and
+    idle. Now the cloud is the second choice: see
+    :func:`loom.core.local_pool.plan_local_roles`. No network is touched when
     the config has no local roles at all.
     """
-    from loom.core import ollama
-    from loom.core.model_router import resolve
+    from loom.core.local_pool import build_pool, plan_local_roles
 
-    local_roles = {role: m for role, m in config.subagents.items() if config.is_local(m)}
-    orch_local = config.is_local(config.orchestrator)
-    if not local_roles and not orch_local:
-        return config, {}
-
-    try:
-        status = ollama.status(config)
-        available = set(status.models) if status.running else set()
-    except Exception:
-        available = set()
-
-    def _served(model: str) -> bool:
-        return ollama.is_served(resolve(model).name, available)
-
-    fallbacks: dict[str, str] = {}
-    subagents = dict(config.subagents)
-    for role, model in local_roles.items():
-        if not _served(model):
-            subagents[role] = config.cloud_fallback
-            fallbacks[role] = model
-    update: dict[str, Any] = {"subagents": subagents}
-    if orch_local and not _served(config.orchestrator):
-        update["orchestrator"] = config.cloud_fallback
-        fallbacks["orchestrator"] = config.orchestrator
-    if not fallbacks:
-        return config, {}
-    return config.model_copy(update=update), fallbacks
+    if not any(config.is_local(m) for m in config.all_models().values()):
+        return RolePlan(config, {}, {})
+    return plan_local_roles(config, pool or build_pool(config))
 
 
-def _require_ollama(config: LoomConfig, mode: str) -> None:
+def _require_ollama(config: LoomConfig, mode: str, pool: "LocalPool | None" = None) -> None:
     """local-only / airgap cannot fall back to the cloud — fail fast instead
     of dying mid-run with connection errors."""
     from loom.core import ollama
+    from loom.core.local_pool import build_pool
 
     local_models = [m for m in config.all_models().values() if config.is_local(m)]
     if not local_models:
         return
-    status = ollama.status(config)
-    if not status.running:
+    if not (pool or build_pool(config)).running:
         raise RuntimeError(
             f"{mode} mode needs local models, but the Ollama daemon isn't reachable "
             f"at {config.ollama_endpoint}. {ollama.INSTALL_HINT}"
@@ -255,6 +235,14 @@ class OrchestratorBundle:
     # role -> original local model, for every role rerouted to the cloud
     # because Ollama couldn't serve it this session.
     fallbacks: dict[str, str] = field(default_factory=dict)
+    # role -> original local model, for every role covered by a *different*
+    # local model instead. Still free and private — worth telling the user
+    # (their config asked for something else) but not a warning.
+    substitutions: dict[str, str] = field(default_factory=dict)
+    # The config as actually resolved for this run: detected context windows
+    # filled in and unserved roles reassigned. The UI reads it to report what
+    # each role is really running on, rather than what the file asked for.
+    active_config: LoomConfig | None = None
     # PromptSizeGuard instances, so the UI can report escalation counts.
     guards: list[Any] = field(default_factory=list)
 
@@ -294,13 +282,36 @@ def build_orchestrator(
         config = config.model_copy(update={"escalation_model": ""})
 
     # ----- Ollama availability -----
-    fallbacks: dict[str, str] = {}
+    # One probe of the daemon feeds all three local-first decisions below:
+    # what each model's real context window is, which roles need standing in
+    # for, and what the prompt-size guards can escalate to without going cloud.
+    from loom.core.local_pool import (
+        build_pool,
+        detect_context_windows,
+        escalation_ladder,
+        plan_local_roles,
+    )
+
+    pool = build_pool(config)
+    # Ask Ollama for real context lengths before anything reads a window: the
+    # ladder, the fallback planner, and the num_ctx we hand ChatOllama all
+    # depend on them, and a blind 32K guess sends work to the cloud that the
+    # model could have held.
+    config = detect_context_windows(config, pool)
+
     if local_only or airgap:
-        _require_ollama(config, "local-only" if local_only else "airgap")
+        _require_ollama(config, "local-only" if local_only else "airgap", pool)
+        # Cloud is off the table here, but a missing tag can still be covered
+        # by another local model rather than failing the role outright.
+        role_plan = plan_local_roles(config, pool, allow_cloud=False)
     else:
-        # No Ollama? Run the local roles on a cheap cloud model this session
-        # rather than failing mid-run (the REPL surfaces this loudly).
-        config, fallbacks = apply_cloud_fallback(config)
+        # A model that isn't pulled falls to another *local* model first, and
+        # only then to a cheap cloud model for the session rather than failing
+        # mid-run (the REPL surfaces both, loudly for the billed one).
+        role_plan = apply_cloud_fallback(config, pool)
+    config = role_plan.config
+    fallbacks, substitutions = role_plan.cloud, role_plan.substituted
+    ladder = escalation_ladder(config, pool)
 
     # ----- pick the orchestrator model -----
     if local_only:
@@ -324,16 +335,22 @@ def build_orchestrator(
     # subagent, so nothing from the orchestrator's stack applies down there.
     # In airgap mode subagents keep the NORMAL settings — they must read and
     # edit files locally; only the orchestrator gets the hardened deny policy.
-    subagents = build_all_subagents(config, loom_settings, cwd, read_only=plan)
+    subagents = build_all_subagents(config, loom_settings, cwd, read_only=plan, ladder=ladder)
     if plan:
         subagents = [s for s in subagents if s["name"] in _PLAN_SUBAGENTS]
     if local_only or airgap:
-        # Drop any cloud-backed subagent (e.g. reviewer on Haiku). In airgap
-        # mode only local subagents may touch raw code.
-        subagents = [s for s in subagents if config.is_local(config.subagents.get(s["name"], ""))]
+        # Drop any cloud-backed subagent (e.g. a reviewer trailing a cloud
+        # advisor). In airgap mode only local subagents may touch raw code.
+        # Resolved per spec, not read off config.subagents: an unassigned role
+        # still has a model, and it may well be a local one.
+        from loom.subagents import model_for
+
+        subagents = [s for s in subagents if config.is_local(model_for(config, s["name"]))]
     # deepagents auto-adds an unrestricted general-purpose subagent if the name
     # is absent — never let mode filtering open that hole.
-    subagents = _ensure_general_purpose(subagents, config, loom_settings, cwd, read_only=plan)
+    subagents = _ensure_general_purpose(
+        subagents, config, loom_settings, cwd, read_only=plan, ladder=ladder
+    )
 
     # The tester only exists when browser MCP tools actually connected.
     browser_tools = [t for t in mcp_tools if t.name.startswith("browser_")]
@@ -492,6 +509,8 @@ def build_orchestrator(
         agent=agent,
         persistent=persistent,
         fallbacks=fallbacks,
+        substitutions=substitutions,
+        active_config=config,
         guards=guards,
         model_string=orch_model_string,
         subagent_names=[s["name"] for s in subagents],

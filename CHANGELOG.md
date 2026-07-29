@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+### Changed
+- **The reviewer now runs on the Advisor's model.** It was pinned to a cheap
+  cloud model (`claude-haiku-4-5`), which made the one gate that decides
+  whether a change needs human sign-off the weakest model in the fleet. Roles
+  can now *inherit*: `subagents.reviewer` is unset in the packaged config and
+  falls through to `advisor`, while every other unassigned role still trails
+  `general-purpose`. An explicit `subagents.<role>` entry always wins, so
+  pinning the reviewer to something cheaper or local is a one-line override —
+  and existing `~/.loom/config.yaml` files, which were seeded with an explicit
+  `reviewer:`, keep exactly the model they have until that line is removed.
+  New `LoomConfig.model_for()` / `loom.subagents.model_for()` resolve a role to
+  its effective model; `agents list`, the local-only/airgap subagent filter,
+  and the role planner all use them instead of reading `config.subagents`
+  directly (an unassigned role has a real model, it just isn't in the file).
+  A local `advisor` is now covered by the local-first role planner too, since
+  the reviewer depends on it.
+- **`max_local_context` is sized from the machine instead of a fixed 64K.**
+  Left unset (the new default) it comes from GPU-addressable memory — 8GB →
+  16K, 16GB → 32K, 24GB → 64K, 48GB → 128K, 80GB+ → 256K — so a small laptop
+  stops being handed a KV cache it can't allocate and a big box stops being
+  capped below what it can carry. `detect_hardware()` now recognizes NVIDIA
+  parts with **unified memory** rather than discrete VRAM (Jetson/Tegra —
+  Orin, Thor — and the Grace superchips GH200 / GB10 / DGX Spark), which
+  `nvidia-smi` either can't see or under-reports; those boxes previously
+  looked GPU-less and got the smallest possible budget. Apple Silicon, NVIDIA
+  and AMD discrete VRAM, and NVIDIA unified parts now all size identically.
+  Setting `max_local_context` explicitly still overrides everything.
+
+- **Cloud is now the last resort, not the first, whenever a local model can do
+  the job.** Three paths used to hand work to a billed model on a machine with
+  a perfectly healthy Ollama, and all three now stay local:
+  - *A role whose model isn't pulled.* `apply_cloud_fallback` sent that role
+    straight to `cloud_fallback` — so a user who had pulled the 4B and 9B but
+    not the 27B editor model silently paid for every edit while two local
+    models sat idle. Roles now fall to the closest **local** stand-in first
+    (nearest context window, cheapest-adequate), and reach `cloud_fallback`
+    only when the daemon is down or serving nothing usable. `--local-only` and
+    `--airgap` get the substitution too, so a missing tag no longer breaks a
+    role outright in the modes that can't fall back.
+  - *An oversized prompt.* The prompt-size guard escalated straight to
+    `escalation_model` (cloud). Overflowing a 4B model's window is a capacity
+    problem, not a difficulty one, so it now climbs a two-rung ladder — the
+    roomiest served **local** model first, cloud only when none has the
+    headroom. `/stats` reports the two counts separately
+    (`N local→local (free) · M local→cloud`).
+  - *An unknown context window.* Any local model without a `context_windows`
+    entry was assumed to hold 32K, which both shrank the `num_ctx` handed to
+    Ollama and escalated calls the model could have held. Loom now reads the
+    real context length from the daemon's `/api/show` at startup, capped by the
+    new `max_local_context` (default 64K) so the KV cache still fits in memory.
+    An explicit `context_windows` entry always wins.
+
+  New [`loom/core/local_pool.py`](loom/core/local_pool.py) holds the local-first
+  logic behind one daemon probe per session. `OrchestratorBundle` gained
+  `substitutions` and `active_config`; the REPL badges, `/stats`, and both
+  `doctor` implementations now distinguish "covered locally (free)" from
+  "running on the cloud fallback (billed)" instead of reporting every missing
+  model as a billed fallback.
+
 ### Added
 - **Playwright browser setup, one command.** New
   [`loom/core/playwright_setup.py`](loom/core/playwright_setup.py) detects

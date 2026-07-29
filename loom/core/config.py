@@ -44,6 +44,11 @@ class LoomConfig(BaseModel):
     # temporarily run on this cheap cloud model instead of failing mid-run.
     cloud_fallback: str = "claude-haiku-4-5"
     context_windows: dict[str, int] = Field(default_factory=dict)
+    # Ceiling for context windows auto-detected from Ollama (models routinely
+    # advertise 128K-384K; the KV cache for that has to fit in memory). None
+    # means derive it from this machine's GPU/unified memory. An explicit
+    # context_windows entry always wins over detection and is not capped.
+    max_local_context: int | None = None
 
     compaction_threshold: float = 0.70
     escalation_threshold: float = 0.85
@@ -92,11 +97,36 @@ class LoomConfig(BaseModel):
             raise ValueError("max_nesting_depth must be >= 1")
         return v
 
+    @field_validator("max_local_context")
+    @classmethod
+    def _valid_local_context(cls, v: int | None) -> int | None:
+        if v is not None and v < 2048:
+            raise ValueError(f"max_local_context must be >= 2048 tokens (or unset), got {v}")
+        return v
+
     # ----- helpers -----
 
     def is_local(self, model: str) -> bool:
         """True if ``model`` is served by Ollama (local)."""
         return model.startswith(("ollama/", "ollama:"))
+
+    def model_for(self, role: str, inherit: str = "general-purpose") -> str:
+        """Resolve a subagent role to a model string.
+
+        An explicit ``subagents[role]`` entry always wins — that is the whole
+        point of writing one. Otherwise the role inherits from another role by
+        name: the reviewer trails the ``advisor`` (a critic should be as sharp
+        as the model you'd consult about the same change), while everything
+        else trails ``general-purpose``, then the orchestrator.
+        """
+        explicit = self.subagents.get(role)
+        if explicit:
+            return explicit
+        if inherit == "advisor":
+            return self.advisor
+        if inherit == "orchestrator":
+            return self.orchestrator
+        return self.subagents.get(inherit) or self.orchestrator
 
     def context_window_for(self, model: str, default: int = 32768) -> int:
         return self.context_windows.get(model, default)

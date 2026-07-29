@@ -153,10 +153,20 @@ class Session:
                 cwd=str(self.cwd),
                 checkpointer=self.checkpointer,
             )
+            if self.bundle.substitutions:
+                # Still local, still free — a note, not a warning.
+                roles = ", ".join(
+                    f"{role} → {self._substituted_model(role)}"
+                    for role in sorted(self.bundle.substitutions)
+                )
+                self.console.print(
+                    f"[loom.dim]⌂ model not pulled — {roles} for this session "
+                    f"(still local). `loom models pull` to use your configured models.[/loom.dim]"
+                )
             if self.bundle.fallbacks:
                 roles = ", ".join(sorted(self.bundle.fallbacks))
                 self.console.print(
-                    f"[loom.warn]⚠ Ollama unavailable — {roles} running on "
+                    f"[loom.warn]⚠ No local model available — {roles} running on "
                     f"{self.settings.models.cloud_fallback} this session (billed).[/loom.warn] "
                     f"[loom.dim]Start Ollama and `loom models pull` to go hybrid; /doctor for details.[/loom.dim]"
                 )
@@ -427,8 +437,10 @@ class Session:
 
     def model_origin(self, node: str) -> tuple[str, bool] | None:
         """(model string, is_local) for a role / stream-node name, accounting
-        for live Ollama fallbacks (a role whose local model is unreachable is
-        actually running on the billed cloud fallback). None if unknown."""
+        for what the role is *actually* running on this session: a role whose
+        local model is unreachable may have been covered by another local model
+        (still free) or, failing that, by the billed cloud fallback. None if
+        unknown."""
         cfg = self.settings.models
         role = "orchestrator" if node in ("agent", "model") else node
         if role == "orchestrator":
@@ -443,7 +455,22 @@ class Session:
             return None
         if role in (getattr(self.bundle, "fallbacks", None) or {}):
             return cfg.cloud_fallback, False
+        # The bundle's config carries the substituted local model; the settings
+        # config still holds what the user asked for.
+        stand_in = self._substituted_model(role)
+        if stand_in is not None:
+            return stand_in, True
         return model, cfg.is_local(model)
+
+    def _substituted_model(self, role: str) -> str | None:
+        """The local model actually serving ``role`` when its configured tag
+        wasn't pulled, or None if the role runs as configured."""
+        if role not in (getattr(self.bundle, "substitutions", None) or {}):
+            return None
+        active = getattr(self.bundle, "active_config", None)
+        if active is None:
+            return None
+        return active.orchestrator if role == "orchestrator" else active.subagents.get(role)
 
     @staticmethod
     def _where_badge(is_local: bool) -> str:
@@ -465,7 +492,12 @@ class Session:
         }
         tags: list[str] = []
         for role, model in roles.items():
-            if role in fallbacks or not cfg.is_local(model):
+            if role in fallbacks:
+                continue
+            # A substituted role runs on a local model too — just not the one
+            # the config names, so report the tag that's actually loaded.
+            model = self._substituted_model(role) or model
+            if not cfg.is_local(model):
                 continue
             tag = resolve(model).name
             if tag not in tags:

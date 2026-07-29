@@ -402,11 +402,15 @@ loom doctor                                           # health-check: ollama, ke
 loom update                                           # binary installs: fetch + swap in the latest build
 ```
 
-**No Ollama? Loom still works.** If the daemon isn't running (or a model
-isn't pulled), local roles automatically run on a cheap cloud model
-(`cloud_fallback`, default `claude-haiku-4-5`) for the session — Loom tells
-you loudly, and the cost receipts show the spend. `--local-only` and
-`--airgap` refuse to fall back and fail fast with instructions instead.
+**Missing a model? Loom stays local if it can.** If a role's model isn't
+pulled but the daemon is serving another local model, that role runs on the
+closest local stand-in for the session — free, private, and reported as a
+quiet note. Only when *nothing* local can cover it (daemon down, nothing
+pulled) do local roles fall back to a cheap cloud model (`cloud_fallback`,
+default `claude-haiku-4-5`) — and then Loom tells you loudly and the cost
+receipts show the spend. `--local-only` and `--airgap` never reach for the
+cloud: they substitute locally, and fail fast with instructions if the daemon
+is down.
 
 ## Configuration
 
@@ -502,7 +506,7 @@ REPL (`/settings ui.theme light`), or by hand.
 | `editor`   | local mid   | `read_file`, `write_file`, `edit_file` | write |
 | `bash`     | local mid   | `execute` (sandboxed shell), `write_file` | write |
 | `searcher` | local small | `grep`, `glob`, `web_search` (optional) | read-only |
-| `reviewer` | cloud cheap | `read_file`, `grep` | read-only |
+| `reviewer` | inherits `advisor` | `read_file`, `grep` | read-only |
 | `general-purpose` | local mid | all tools | fallback |
 | `tester`   | local mid   | `browser_*` (Playwright MCP) | write |
 
@@ -512,7 +516,11 @@ decision gates. It only advises — it never acts. Auto-consultation is gated by
 
 **Reviewer**: dispatched after significant writes; returns a structured
 `ReviewVerdict` (risk low/medium/high, approve/flag, issue list). High risk or no
-approval → Loom stops and surfaces it for human sign-off.
+approval → Loom stops and surfaces it for human sign-off. It runs on the
+**Advisor's model** by default — the gate that decides whether a change needs
+human sign-off should be as sharp as the model you'd consult about that same
+change. Pin `subagents.reviewer` to something cheaper (or local) if you'd
+rather trade review quality for cost; an explicit assignment always wins.
 
 **Tester**: whenever a change touches anything a user can see or interact with
 from the frontend, the orchestrator is required to verify it end-to-end from
@@ -527,8 +535,18 @@ manually.
 ## How it stays clean
 
 - **Prompt-size guard** — if a local subagent's prompt nears its context window,
-  that single call auto-escalates to `escalation_model` (cloud) instead of
-  failing. See [`middleware/prompt_size_guard.py`](loom/middleware/prompt_size_guard.py).
+  that single call escalates instead of failing, up a two-rung ladder: first to
+  the roomiest **local** model your daemon is already serving, and only if none
+  has the headroom to `escalation_model` (cloud). Overflowing a 4B window is a
+  capacity problem, not a difficulty one, so a 27B model sitting served and idle
+  should get the call before your credit card does. `/stats` splits the two
+  counts. See [`middleware/prompt_size_guard.py`](loom/middleware/prompt_size_guard.py).
+- **Real context windows** — any local model without a `context_windows` entry
+  has its true context length read from Ollama at startup rather than assumed
+  to be 32K, so local models aren't escalated off work they could have held.
+  The cap is sized from *this machine's* GPU memory — NVIDIA/AMD VRAM, or
+  unified memory on Apple Silicon and NVIDIA Grace/Jetson parts (8GB → 16K,
+  24GB → 64K, 128GB → 256K). Set `max_local_context` to override.
 - **Artifact store** — tool output over `artifact_offload_tokens` is written to
   `.loom/artifacts/` and replaced in-context with a path reference.
 - **Summarization** — the orchestrator auto-compacts at `compaction_threshold`
@@ -546,7 +564,8 @@ loom/
 │   ├── model_router.py     # provider resolution + escalation logic
 │   ├── artifact_store.py   # large-output offload + summarization middleware
 │   ├── worktree.py         # git worktree isolation
-│   ├── ollama.py           # local model status / pull
+│   ├── ollama.py           # local model status / pull / context length
+│   ├── local_pool.py       # what the daemon serves: local-first routing + escalation ladder
 │   ├── config.py           # config.yaml (model routing) loader + validation
 │   ├── settings.py         # layered settings.json loader
 │   ├── permissions.py      # allow/ask/deny rule engine

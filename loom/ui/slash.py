@@ -488,10 +488,13 @@ def _status(session: "Session", args: str) -> bool:
     table.add_row("[loom.dim]mcp[/loom.dim]", mcp_line)
     table.add_row("[loom.dim]memory[/loom.dim]", str(session.memory_path() or "— (create with /init)"))
     table.add_row("[loom.dim]persistence[/loom.dim]", "sqlite (.loom/sessions.db)" if session.durable else "in-memory (no /resume across restarts)")
-    escalations = sum(
-        getattr(g, "escalation_count", 0) for g in getattr(session.bundle, "guards", []) or []
-    ) if session.bundle is not None else 0
-    table.add_row("[loom.dim]escalations[/loom.dim]", f"{escalations} local→cloud (prompt-size guard)")
+    guards = (getattr(session.bundle, "guards", []) or []) if session.bundle is not None else []
+    escalations = sum(getattr(g, "escalation_count", 0) for g in guards)
+    local_escalations = sum(getattr(g, "local_escalation_count", 0) for g in guards)
+    table.add_row(
+        "[loom.dim]escalations[/loom.dim]",
+        f"{local_escalations} local→local (free) · {escalations} local→cloud (prompt-size guard)",
+    )
     table.add_row(
         "[loom.dim]session[/loom.dim]",
         f"{u['turns']} turns · {u['input_tokens']} in / {u['output_tokens']} out tokens · ${u['cloud_cost']:.3f} cloud",
@@ -810,7 +813,14 @@ def _doctor(session: "Session", args: str) -> bool:
         missing = ollama.missing_models(cfg)
         out.append(row(not missing, "local models", ", ".join(missing) + " missing" if missing else "all present"))
         if missing:
-            out.append(row(None, "cloud fallback", f"local roles run on {cfg.cloud_fallback} (billed)"))
+            # A missing tag only costs money if nothing local can cover it.
+            from loom.core.local_pool import build_pool, plan_local_roles
+
+            plan = plan_local_roles(cfg, build_pool(cfg, st))
+            if plan.cloud:
+                out.append(row(None, "cloud fallback", f"{', '.join(sorted(plan.cloud))} run on {cfg.cloud_fallback} (billed)"))
+            if plan.substituted:
+                out.append(row(None, "local fallback", f"{', '.join(sorted(plan.substituted))} run on another local model (free)"))
     else:
         out.append(row(False, "ollama", f"not reachable @ {st.endpoint}" + ("" if st.installed else ", binary not installed")))
         out.append(row(None, "cloud fallback", f"local roles run on {cfg.cloud_fallback} (billed)"))

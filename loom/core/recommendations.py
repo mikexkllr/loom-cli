@@ -10,6 +10,7 @@ long wait, and prefer widely-benchmarked coding-tuned models.
 
 from __future__ import annotations
 
+import functools
 import platform
 import shutil
 import subprocess
@@ -22,6 +23,10 @@ class Hardware:
     ram_gb: float | None
     gpu_vendor: str | None  # "apple" | "nvidia" | "amd" | None
     vram_gb: float | None
+    # True when the GPU has no memory of its own and shares the system pool:
+    # Apple Silicon, and NVIDIA's Grace/Jetson-class parts. ``vram_gb`` is then
+    # the unified pool rather than a discrete card's VRAM.
+    unified: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,15 +117,47 @@ def _detect_amd_vram_gb() -> float | None:
         return None
 
 
+def _is_nvidia_unified() -> bool:
+    """True on NVIDIA parts where the GPU shares system memory rather than
+    carrying its own VRAM — Jetson/Tegra (Orin, Thor) and the Grace-based
+    superchips (GH200, GB10/DGX Spark).
+
+    These are exactly the boxes where ``nvidia-smi`` is missing (Tegra ships
+    ``tegrastats`` instead) or reports only part of the coherent pool, so
+    without this check a 128GB DGX Spark would look like a machine with no GPU
+    at all and get the smallest possible context budget.
+    """
+    from pathlib import Path
+
+    if Path("/etc/nv_tegra_release").exists():
+        return True
+    for path in ("/proc/device-tree/model", "/sys/firmware/devicetree/base/model"):
+        try:
+            model = Path(path).read_bytes().decode("utf-8", "ignore").lower()
+        except OSError:
+            continue
+        if any(k in model for k in ("jetson", "tegra", "orin", "thor", "grace", "dgx spark")):
+            return True
+    return False
+
+
 def detect_hardware() -> Hardware:
     os_name = platform.system()
     ram_gb = _detect_ram_gb()
     if os_name == "Darwin" and platform.machine() == "arm64":
         # Apple Silicon: unified memory *is* the GPU's memory pool.
-        return Hardware(os_name, ram_gb, "apple", ram_gb)
+        return Hardware(os_name, ram_gb, "apple", ram_gb, unified=True)
+    unified = _is_nvidia_unified()
     vram_gb = _detect_nvidia_vram_gb()
     if vram_gb:
-        return Hardware(os_name, ram_gb, "nvidia", vram_gb)
+        # On a Grace-class part nvidia-smi may report less than the coherent
+        # pool; take whichever number is larger so we don't undersize.
+        if unified and ram_gb:
+            vram_gb = max(vram_gb, ram_gb)
+        return Hardware(os_name, ram_gb, "nvidia", vram_gb, unified=unified)
+    if unified and ram_gb:
+        # Tegra: no nvidia-smi, but the GPU can address system memory.
+        return Hardware(os_name, ram_gb, "nvidia", ram_gb, unified=True)
     vram_gb = _detect_amd_vram_gb()
     if vram_gb:
         return Hardware(os_name, ram_gb, "amd", vram_gb)
@@ -157,9 +194,53 @@ def fits_hardware(hw: Hardware, model: LocalModelRec) -> bool:
     return budget is not None and model.min_gb <= budget
 
 
+# GPU-addressable memory (GB) -> how big a context window to let a local model
+# claim, in tokens. A KV cache for these GQA-era coding models runs roughly
+# 100-200 KB per token, so the rungs below hand it about a quarter of the pool
+# and leave the rest for weights: 16GB -> 32K costs ~4GB of cache, 48GB -> 128K
+# costs ~12GB. Ollama degrades by spilling rather than crashing if a specific
+# model is heavier than the estimate, and any explicit `context_windows` entry
+# bypasses this entirely.
+_CONTEXT_TIERS: tuple[tuple[float, int], ...] = (
+    (6, 8_192),
+    (10, 16_384),
+    (20, 32_768),
+    (40, 65_536),
+    (80, 131_072),
+)
+_MAX_CONTEXT = 262_144
+# No GPU and no readable RAM figure: assume a modest laptop rather than
+# guessing high, since guessing high is what allocates memory that isn't there.
+_UNKNOWN_CONTEXT = 16_384
+
+
+def context_budget(hw: Hardware) -> int:
+    """Largest context window this machine should let a local model claim.
+
+    Covers discrete VRAM (NVIDIA, AMD) and unified memory (Apple Silicon,
+    NVIDIA Grace/Jetson) identically — :func:`detect_hardware` has already
+    normalized both into ``vram_gb``.
+    """
+    budget = hw.vram_gb or hw.ram_gb
+    if budget is None:
+        return _UNKNOWN_CONTEXT
+    for ceiling, window in _CONTEXT_TIERS:
+        if budget < ceiling:
+            return window
+    return _MAX_CONTEXT
+
+
+@functools.lru_cache(maxsize=1)
+def auto_context_budget() -> int:
+    """:func:`context_budget` for the current machine, probed once per process
+    (hardware detection shells out to nvidia-smi/rocm-smi)."""
+    return context_budget(detect_hardware())
+
+
 def hardware_summary(hw: Hardware) -> str:
-    mem = f"{hw.vram_gb:.0f}GB VRAM" if hw.vram_gb and hw.gpu_vendor in ("nvidia", "amd") else (
-        f"{hw.ram_gb:.0f}GB unified memory" if hw.ram_gb and hw.gpu_vendor == "apple" else
+    shared = hw.unified or hw.gpu_vendor == "apple"
+    mem = f"{hw.vram_gb:.0f}GB unified memory" if hw.vram_gb and shared else (
+        f"{hw.vram_gb:.0f}GB VRAM" if hw.vram_gb and hw.gpu_vendor in ("nvidia", "amd") else
         (f"{hw.ram_gb:.0f}GB RAM" if hw.ram_gb else "unknown memory")
     )
     gpu = {"apple": "Apple Silicon", "nvidia": "NVIDIA GPU", "amd": "AMD GPU"}.get(hw.gpu_vendor or "", "CPU only")

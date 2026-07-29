@@ -13,12 +13,16 @@
 orchestrator: claude-sonnet-5
 
 # Per-subagent model assignments. Anything not cloud-prefixed runs locally.
+# A role listed here always wins. A role left out inherits: `reviewer` follows
+# `advisor` (the critic that gates human sign-off should be as sharp as the
+# model you'd consult about the same change), everything else follows
+# `general-purpose`. Add `reviewer: <model>` here to pin it to something
+# cheaper or local.
 subagents:
   explorer: ollama/qwen3.5:4b
   editor: ollama/qwen3.6:27b
   bash: ollama/qwen3.5:9b
   searcher: ollama/qwen3.5:4b
-  reviewer: claude-haiku-4-5
   general-purpose: ollama/qwen3.5:9b
   tester: ollama/qwen3.5:9b
 
@@ -29,17 +33,24 @@ advisor: claude-opus-4-8
 ollama_endpoint: http://localhost:11434
 
 # When a subagent's estimated prompt size approaches its local model's context
-# window, escalate that single call to this cloud model instead of failing.
+# window, Loom first moves that single call to the roomiest local model your
+# Ollama daemon is already serving. This cloud model is the second rung — used
+# only when no local model has the headroom.
 escalation_model: claude-sonnet-5
 
-# When Ollama is unavailable (daemon not running, or a model isn't pulled),
-# local roles run on this cheap cloud model for the session instead of
-# failing mid-run. Loom tells you when this happens. Does not apply in
-# --local-only or --airgap modes (those refuse to touch the cloud with code).
+# Last resort when a role's local model can't be served. If the daemon is up,
+# Loom first stands the role up on another local model it IS serving; only a
+# daemon that's down (or serving nothing usable) puts roles on this cheap cloud
+# model for the session instead of failing mid-run. Loom tells you when this
+# happens. Does not apply in --local-only or --airgap modes (those refuse to
+# touch the cloud with code).
 cloud_fallback: claude-haiku-4-5
 
 # Context-window sizes (in tokens) used by the prompt-size guard to decide when
-# to escalate. Override per-model as needed.
+# to escalate. Any local model NOT listed here has its real context length read
+# from the Ollama daemon at startup (capped by max_local_context below), so
+# swapping in a model Loom doesn't ship a number for no longer means it gets
+# assumed to hold only 32K. An entry here always wins over that detection.
 context_windows:
   ollama/qwen3.5:4b: 32768
   ollama/qwen3.5:9b: 40960
@@ -47,6 +58,13 @@ context_windows:
   # Legacy tags kept for configs created by earlier Loom versions.
   ollama/qwen3:4b: 32768
   ollama/qwen3:14b: 40960
+
+# Ceiling for context windows auto-detected from Ollama. Local coders often
+# advertise 128K-384K, but the KV cache for that has to fit in memory. Left
+# unset, Loom sizes it from this machine's GPU memory (NVIDIA/AMD VRAM, or
+# unified memory on Apple Silicon and NVIDIA Grace/Jetson parts). Set a number
+# to override — raise it if you have headroom and want fewer cloud escalations.
+# max_local_context: 65536
 
 # Fraction of a model's context window at which the orchestrator auto-compacts
 # and the prompt-size guard escalates a subagent call.

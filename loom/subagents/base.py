@@ -47,6 +47,9 @@ class SubagentSpec:
     # Extra tools to strip beyond what ``mode`` implies (e.g. the editor
     # writes files but must not run shell commands).
     excluded_tools: frozenset[str] = frozenset()
+    # Role this spec takes its model from when config assigns it none. An
+    # explicit ``subagents[name]`` entry always overrides it.
+    inherits: str = "general-purpose"
 
     def build(
         self,
@@ -56,6 +59,7 @@ class SubagentSpec:
         *,
         model_string: str | None = None,
         extra_excluded: frozenset[str] = frozenset(),
+        ladder: tuple[tuple[str, int], ...] = (),
     ) -> dict[str, Any]:
         """Resolve this spec against config into a deepagents subagent dict.
 
@@ -63,12 +67,12 @@ class SubagentSpec:
         undo snapshots). ``model_string`` overrides the config-assigned model
         (used to pin ``general-purpose`` to a local model in local-only/airgap
         runs). ``extra_excluded`` adds run-mode exclusions (e.g. plan mode
-        strips write tools from every subagent).
+        strips write tools from every subagent). ``ladder`` lists the local
+        models the daemon serves, so an oversized prompt escalates to a roomier
+        *local* model before it reaches for the cloud.
         """
         if model_string is None:
-            model_string = config.subagents.get(
-                self.name, config.subagents.get("general-purpose", config.orchestrator)
-            )
+            model_string = config.model_for(self.name, self.inherits)
         model = build_model(model_string, config)
 
         middleware: list[Any] = []
@@ -82,7 +86,7 @@ class SubagentSpec:
             middleware.append(ToolExclusionMiddleware(frozenset(excluded)))
 
         if config.is_local(model_string):
-            middleware.append(PromptSizeGuard(model_string, config))
+            middleware.append(PromptSizeGuard(model_string, config, ladder))
 
         if settings is not None:
             from loom.middleware.policy import PolicyMiddleware

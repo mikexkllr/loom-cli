@@ -10,6 +10,7 @@ CLI binary at all.
 
 from __future__ import annotations
 
+import functools
 import json
 import shutil
 from dataclasses import dataclass
@@ -46,6 +47,32 @@ def status(config: LoomConfig) -> OllamaStatus:
     except (httpx.HTTPError, KeyError):
         pass
     return OllamaStatus(installed, running, models, config.ollama_endpoint)
+
+
+@functools.lru_cache(maxsize=64)
+def context_length(tag: str, endpoint: str = DEFAULT_ENDPOINT) -> int | None:
+    """The model's real trained context length, per the daemon's ``/api/show``.
+
+    Loom otherwise has to assume a window for any local model missing a
+    ``context_windows`` entry, and that assumption has to be conservative —
+    which makes the prompt-size guard escalate to the cloud on prompts the
+    model could have held comfortably. Ollama already knows the answer.
+
+    The key is architecture-prefixed (``qwen3.context_length``,
+    ``llama.context_length``, ...), so match on the suffix. Returns None if the
+    daemon is unreachable or reports nothing usable — callers keep their
+    default.
+    """
+    try:
+        resp = httpx.post(f"{endpoint}/api/show", json={"model": tag}, timeout=5)
+        resp.raise_for_status()
+        info = resp.json().get("model_info") or {}
+    except (httpx.HTTPError, ValueError, TypeError):
+        return None
+    for key, value in info.items():
+        if key.endswith(".context_length") and isinstance(value, int) and value > 0:
+            return value
+    return None
 
 
 def is_served(tag: str, available: list[str] | set[str]) -> bool:

@@ -116,3 +116,58 @@ def test_pull_handles_unreachable_daemon(monkeypatch):
 
     monkeypatch.setattr(ollama.httpx, "stream", raise_connect)
     assert ollama.pull("qwen3:4b", "http://down:11434", _quiet_console()) == 1
+
+
+# ---------------------------------------------------------------------------
+# context_length: ask the daemon instead of assuming a window
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("boom", request=None, response=None)
+
+    def json(self):
+        return self._payload
+
+
+def _post_returning(payload, monkeypatch, seen=None, status_code=200):
+    def fake_post(url, **kwargs):
+        if seen is not None:
+            seen["url"], seen["json"] = url, kwargs.get("json")
+        return _FakeResponse(payload, status_code)
+
+    monkeypatch.setattr(ollama.httpx, "post", fake_post)
+
+
+def test_context_length_reads_the_architecture_prefixed_key(monkeypatch):
+    seen = {}
+    _post_returning(
+        {"model_info": {"general.architecture": "qwen3", "qwen3.context_length": 262144}},
+        monkeypatch,
+        seen,
+    )
+    ollama.context_length.cache_clear()
+    assert ollama.context_length("qwen3.6:27b", "http://remote-box:11434") == 262144
+    assert seen["url"] == "http://remote-box:11434/api/show"
+    assert seen["json"] == {"model": "qwen3.6:27b"}
+
+
+def test_context_length_is_none_when_the_daemon_reports_nothing_usable(monkeypatch):
+    _post_returning({"model_info": {"general.architecture": "qwen3"}}, monkeypatch)
+    ollama.context_length.cache_clear()
+    assert ollama.context_length("qwen3:4b", "http://x") is None
+
+
+def test_context_length_survives_an_unreachable_daemon(monkeypatch):
+    def raise_connect(*a, **k):
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(ollama.httpx, "post", raise_connect)
+    ollama.context_length.cache_clear()
+    assert ollama.context_length("qwen3:4b", "http://down:11434") is None

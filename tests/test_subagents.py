@@ -68,3 +68,64 @@ def test_reviewer_has_structured_response_format():
 
     subs = {s["name"]: s for s in build_all_subagents(_config())}
     assert subs["reviewer"].get("response_format") is ReviewVerdict
+
+
+# ---------------------------------------------------------------------------
+# Role inheritance: reviewer trails the advisor unless pinned
+# ---------------------------------------------------------------------------
+
+
+def test_reviewer_inherits_the_advisor_model_when_unassigned():
+    from loom.subagents import model_for
+
+    config = cfg.LoomConfig(
+        orchestrator="claude-sonnet-5",
+        advisor="claude-opus-4-8",
+        subagents={"explorer": "ollama/qwen3:4b", "general-purpose": "ollama/qwen3:9b"},
+    )
+    assert model_for(config, "reviewer") == "claude-opus-4-8"
+
+
+def test_an_explicit_reviewer_assignment_wins_over_inheritance():
+    from loom.subagents import model_for
+
+    config = cfg.LoomConfig(
+        orchestrator="claude-sonnet-5",
+        advisor="claude-opus-4-8",
+        subagents={"reviewer": "ollama/qwen3:9b"},
+    )
+    assert model_for(config, "reviewer") == "ollama/qwen3:9b"
+
+
+def test_other_roles_still_inherit_general_purpose_not_the_advisor():
+    from loom.subagents import model_for
+
+    config = cfg.LoomConfig(
+        orchestrator="claude-sonnet-5",
+        advisor="claude-opus-4-8",
+        subagents={"general-purpose": "ollama/qwen3:9b"},
+    )
+    assert model_for(config, "explorer") == "ollama/qwen3:9b"
+    assert model_for(config, "editor") == "ollama/qwen3:9b"
+
+
+def test_packaged_default_leaves_reviewer_to_the_advisor():
+    """The shipped config must not pin reviewer, or inheritance never applies."""
+    from loom.core.config import DEFAULT_CONFIG_PATH, load_config
+    from loom.subagents import model_for
+
+    config = load_config(DEFAULT_CONFIG_PATH)
+    assert "reviewer" not in config.subagents
+    assert model_for(config, "reviewer") == config.advisor
+
+
+def test_reviewer_subagent_is_built_on_the_inherited_model():
+    from loom.subagents import build_all_subagents
+
+    config = cfg.LoomConfig(
+        orchestrator="claude-sonnet-5",
+        advisor="ollama/qwen3:27b",
+        subagents={"general-purpose": "ollama/qwen3:9b"},
+    )
+    reviewer = next(s for s in build_all_subagents(config) if s["name"] == "reviewer")
+    assert getattr(reviewer["model"], "model", None) == "qwen3:27b"

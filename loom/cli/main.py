@@ -471,7 +471,14 @@ def doctor(root: str = typer.Option(".", "--root")) -> None:
         missing = ollama.missing_models(config)
         lines.append(row(not missing, "local models", ", ".join(missing) + " missing" if missing else "all present"))
         if missing:
-            lines.append(row(None, "cloud fallback", f"local roles will run on {config.cloud_fallback} (billed)"))
+            # A missing tag only costs money if nothing local can cover it.
+            from loom.core.local_pool import build_pool, plan_local_roles
+
+            plan = plan_local_roles(config, build_pool(config, st))
+            if plan.cloud:
+                lines.append(row(None, "cloud fallback", f"{', '.join(sorted(plan.cloud))} will run on {config.cloud_fallback} (billed)"))
+            if plan.substituted:
+                lines.append(row(None, "local fallback", f"{', '.join(sorted(plan.substituted))} will run on another local model (free)"))
     else:
         lines.append(row(False, "ollama", f"not reachable @ {st.endpoint}" + ("" if st.installed else ", binary not installed")))
         lines.append(row(None, "cloud fallback", f"local roles will run on {config.cloud_fallback} (billed)"))
