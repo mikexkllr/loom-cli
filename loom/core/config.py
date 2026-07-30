@@ -54,6 +54,13 @@ class LoomConfig(BaseModel):
     escalation_threshold: float = 0.85
     artifact_offload_tokens: int = 2000
 
+    # How many `read_file` calls the orchestrator may make itself per user turn
+    # before the tool is withdrawn and it has to delegate (see
+    # loom.middleware.delegation_guard). Enough to confirm the paths a subagent
+    # named; not enough to sweep a codebase at cloud prices. 0 forbids direct
+    # reads entirely, -1 disables the cap.
+    orchestrator_read_budget: int = 4
+
     advisor_threshold: str = "medium"
     max_nesting_depth: int = 2
     worktree_isolation: bool = True
@@ -95,6 +102,15 @@ class LoomConfig(BaseModel):
     def _valid_depth(cls, v: int) -> int:
         if v < 1:
             raise ValueError("max_nesting_depth must be >= 1")
+        return v
+
+    @field_validator("orchestrator_read_budget")
+    @classmethod
+    def _valid_read_budget(cls, v: int) -> int:
+        if v < -1:
+            raise ValueError(
+                f"orchestrator_read_budget must be >= 0 (or -1 for unlimited), got {v}"
+            )
         return v
 
     @field_validator("max_local_context")

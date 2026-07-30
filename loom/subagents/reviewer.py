@@ -9,20 +9,21 @@ can gate on risk programmatically.
 """
 
 from loom.core.advisor import REVIEW_SYSTEM, ReviewVerdict
-from loom.subagents.base import SubagentSpec
+from loom.subagents.base import READ_FS_TOOLS, SubagentSpec
 
 
 def spec() -> SubagentSpec:
     return SubagentSpec(
         name="reviewer",
         description=(
-            "Critic. Dispatch after a significant code write to get a risk "
-            "rating (low/medium/high), an approve/flag decision, and a list of "
-            "issues. High risk => surface to the human before continuing."
+            "Critic. Dispatch after a significant write — pass it the task and "
+            "the list of changed files. Reads the change and returns a risk "
+            "rating (low/medium/high), an approve/flag decision, and located "
+            "issues. High risk or no approval means stop and ask the human."
         ),
         system_prompt=REVIEW_SYSTEM,
         tools=[],
-        mode="read-only",
+        fs_tools=READ_FS_TOOLS,
         inherits="advisor",
     )
 

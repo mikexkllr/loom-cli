@@ -499,11 +499,23 @@ def _status(session: "Session", args: str) -> bool:
         "[loom.dim]session[/loom.dim]",
         f"{u['turns']} turns · {u['input_tokens']} in / {u['output_tokens']} out tokens · ${u['cloud_cost']:.3f} cloud",
     )
-    share = session.tracker.session.local_share()
-    saved = session.tracker.session.savings(cfg.orchestrator)
+    su = session.tracker.session
+    budget = cfg.orchestrator_read_budget
+    budget_str = "off" if budget < 0 else f"{budget}/turn"
+    table.add_row(
+        "[loom.dim]delegation[/loom.dim]",
+        f"orchestrator held {su.orchestrator_share():.0%} of tokens · "
+        f"{su.delegations()} delegated role(s) · read budget {budget_str}"
+        f"{_read_budget_note(session)}",
+    )
+    # The counterfactual has to be priced against a cloud model, or local-only
+    # runs report a saving over a model that was never billed.
+    reference = session.tracker.cloud_reference()
+    saved = su.savings(reference)
     table.add_row(
         "[loom.dim]savings[/loom.dim]",
-        f"{share:.0%} of tokens ran locally (free) · saved ~${saved:.2f} vs all-cloud",
+        f"{su.local_share():.0%} of tokens ran locally (free) · "
+        f"saved ~${saved:.2f} vs all-cloud on {reference}",
     )
     session.console.print(Panel(table, title="status", border_style="loom.accent", expand=False))
     return True
@@ -664,28 +676,55 @@ def _mcp(session: "Session", args: str) -> bool:
     return True
 
 
-@command("cost", "Show the session cost receipt (cloud vs free local tokens)")
+@command("cost", "Show the session cost receipt, broken down by who spent it")
 def _cost(session: "Session", args: str) -> bool:
     t = session.tracker
     u = t.session
     session.console.print(f"session: [loom.accent]{t.turns}[/loom.accent] turns")
+    # Rows are per *actor*, not per model: the point of a delegating
+    # architecture is knowing whether the orchestrator or the fleet spent the
+    # tokens, and two roles can share one model.
     table = Table(show_header=True, header_style="loom.accent")
-    for col in ("Model", "Where", "In", "Out", "Cost"):
-        table.add_column(col)
-    from loom.core.usage import cost_usd
-
-    for model, mu in u.cloud.items():
-        table.add_row(model, "cloud", f"{mu.input_tokens:,}", f"{mu.output_tokens:,}", f"${cost_usd(model, mu.input_tokens, mu.output_tokens):.3f}")
-    for model, mu in u.local.items():
-        table.add_row(model, "local", f"{mu.input_tokens:,}", f"{mu.output_tokens:,}", "free")
+    for col in ("Role", "Model", "Where", "Calls", "In", "Cached", "Out", "Cost"):
+        numeric = col in ("Calls", "In", "Cached", "Out", "Cost")
+        # Fold rather than ellipsize: a truncated role or model name is the one
+        # thing in this table that can't be inferred from the others.
+        table.add_column(col, justify="right" if numeric else "left", overflow="fold")
+    for actor, mu in u.rows():
+        cost = u.cost_of(actor, mu)
+        table.add_row(
+            actor.role,
+            actor.model,
+            "⌂ local" if actor.is_local else "☁ cloud",
+            f"{mu.calls:,}",
+            f"{mu.input_tokens:,}",
+            f"{mu.cache_read_tokens:,}" if mu.cache_read_tokens else "—",
+            f"{mu.output_tokens:,}",
+            "free" if actor.is_local else f"${cost:.3f}",
+        )
     if table.row_count:
         session.console.print(table)
+        share = u.orchestrator_share()
+        session.console.print(
+            f"[loom.dim]delegation: orchestrator held {share:.0%} of all tokens "
+            f"(${u.orchestrator_cost():.3f}); {u.delegations()} delegated role(s) "
+            f"handled the rest in their own context{_read_budget_note(session)}[/loom.dim]"
+        )
     receipt = t.receipt(turn=False)
     if receipt:
         session.console.print(f"[loom.dim]✻ {receipt}[/loom.dim]")
     else:
         session.console.print("[loom.dim]0 tokens spent so far[/loom.dim]")
     return True
+
+
+def _read_budget_note(session: "Session") -> str:
+    """How often the orchestrator hit its per-turn read cap and had to delegate."""
+    guard = getattr(session.bundle, "delegation_guard", None) if session.bundle else None
+    blocked = getattr(guard, "blocked_count", 0) or 0
+    if not blocked:
+        return ""
+    return f" · read budget held the line on {blocked} model call(s)"
 
 
 @command("resume", "List past sessions, or resume one: /resume [n | thread-id]")

@@ -120,12 +120,35 @@ class PromptSizeGuard(AgentMiddleware):
 
     @staticmethod
     def _estimate_request_tokens(request: Any) -> int:
-        messages = getattr(request, "messages", None) or []
-        system = getattr(request, "system_prompt", "") or ""
-        total = estimate_tokens(str(system))
-        for msg in messages:
+        """Everything that will occupy the model's window: system prompt,
+        conversation, and the tool schemas.
+
+        Tool schemas are not a rounding error at this scale — deepagents' own
+        filesystem and task tools run to a few thousand tokens of JSON, which is
+        a tenth of a small local model's window before a single message is added.
+        Leaving them out under-counted exactly the calls most likely to overflow.
+        """
+        total = 0
+        system = getattr(request, "system_message", None)
+        if system is not None:
+            total += estimate_tokens(str(getattr(system, "content", system)))
+        for msg in getattr(request, "messages", None) or []:
             content = getattr(msg, "content", msg)
             total += estimate_tokens(str(content))
+        for tool in getattr(request, "tools", None) or []:
+            if isinstance(tool, dict):
+                total += estimate_tokens(str(tool))
+                continue
+            name = getattr(tool, "name", "") or ""
+            description = getattr(tool, "description", "") or ""
+            # `.args` builds the JSON schema on access and can raise on an
+            # unusual args_schema. An estimate that is slightly low beats killing
+            # the subagent call it was supposed to protect.
+            try:
+                schema = getattr(tool, "args", None)
+            except Exception:
+                schema = None
+            total += estimate_tokens(f"{name}{description}{schema if schema else ''}")
         return total
 
     @staticmethod

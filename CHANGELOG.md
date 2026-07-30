@@ -3,6 +3,91 @@
 ## Unreleased
 
 ### Changed
+
+- **Migrated to deepagents 0.7** (`>=0.7,<0.8`, LangChain `>=1.3.14`,
+  `langchain-anthropic >=1.5.3`). 0.7 stops shipping prompts and stops assuming
+  a toolset, which moves both to the harness. Four of its breaking changes were
+  silent failures for Loom:
+  - *`write_todos` disappeared.* `TodoListMiddleware` left the default stack, so
+    the orchestrator prompt was instructing the model to call a tool that no
+    longer existed. It's added back explicitly, with Loom's own planning prose
+    instead of LangChain's ~600 generic words: a todo is written as the work
+    *plus the subagent that will do it*, so the plan and the routing are one
+    artifact. Subagents deliberately don't get it — their work is already bounded
+    by the task they were handed.
+  - *The built-in prompts went empty.* `BASE_AGENT_PROMPT` is blank and the prose
+    describing the filesystem / `task` / summarization tools is gone. Every
+    system prompt in Loom was rewritten to carry its own tool inventory, method,
+    and output contract. New `tests/test_prompt_contract.py` binds each prompt to
+    its role's real allowlist, since a prompt naming a tool the role can't call
+    is a dead end no smoke test catches.
+  - *`delete` is now handed out recursively* whenever the backend supports it,
+    and classified as an ordinary write — so any rule permitting writes to a
+    directory also permitted erasing that subtree. No Loom role gets it (`bash`
+    can `rm` through `execute`, which the policy gate prompts for by name).
+  - *`write_file` silently replaces an existing file* instead of erroring. Every
+    write-capable prompt now says so and steers to `edit_file`.
+- **Per-role tool allowlists replace post-hoc filtering.** 0.7 lets a
+  caller-supplied middleware instance replace the default with the same `.name`,
+  so each agent now gets a `FilesystemMiddleware(tools=[...])` holding exactly
+  its role's tools — they are never constructed and their schemas never reach the
+  model, rather than being injected and stripped. The orchestrator's holds one
+  tool: `read_file`. `editor` lost `execute` and `bash` lost `write_file` /
+  `edit_file`; that split is what makes a delegation legible. Specs declare
+  `fs_tools` once and both the allowlist and the last-mile
+  `ToolExclusionMiddleware` derive from it — the exclusion layer stays because
+  the allowlist cannot express "no `read_file`", which is what `--airgap` needs.
+- **The orchestrator's own reads are now metered.** Its search and write tools
+  were already gone, but a strong cloud model handed `read_file` still swept a
+  dozen files "just to be sure" — the exact context pollution subagents exist to
+  prevent, at cloud prices. Prompt wording doesn't hold that line, so
+  `orchestrator_read_budget` (default 4) direct reads per user turn are enforced
+  by *removing the tool* for the rest of the turn
+  ([`middleware/delegation_guard.py`](loom/middleware/delegation_guard.py)). The
+  system prompt states the budget, so the tool vanishing reads as the rule
+  working rather than a broken harness — and because the note lives in the stable
+  prompt prefix, it never invalidates the provider's prompt cache. `0` forbids
+  direct reads (what `--airgap` does); `-1` removes the cap.
+- **Cost receipts were wrong in three ways, all fixed.**
+  - *Cached input was billed at the uncached rate.* Providers charge three
+    different rates for input (uncached, cache write at a premium, cache read at
+    a tenth) and `usage_metadata["input_tokens"]` is the sum of all three. With
+    prompt caching on — which deepagents enables for Anthropic by default — the
+    receipt overstated a long conversation by most of an order of magnitude.
+    Tokens are now split and priced per rate, and the cached share is shown.
+  - *There was no way to see whether the orchestrator was doing too much.* Usage
+    was keyed by model name, which cannot separate the orchestrator from a
+    subagent sharing its model. Attribution now comes from the callback run tree:
+    every model call beneath a `task` belongs to that subagent, and `consult`
+    calls to the advisor. The receipt reports `orchestrator N% of tokens, M
+    delegated roles`, and `/cost` breaks the session down per role — calls,
+    cached share, and cost each.
+  - *"Saved vs all-cloud" priced local tokens against `config.orchestrator`*,
+    even when that was itself a local model, inventing a saving in `--local-only`
+    runs where nothing was billed. The baseline is now always a billed model,
+    named in the receipt, falling back to a stated default when every configured
+    role is local.
+  Local/cloud classification also prefers the run's `ls_provider` over the
+  model-name heuristic, so an Ollama tag without a colon (`gpt-oss`,
+  `llama3.2`) stops being charged as cloud.
+- **`compaction_threshold` finally reaches the agents.** The builder in
+  `artifact_store.py` was never wired into `create_deep_agent`, so the documented
+  knob did nothing and every agent used deepagents' default — which derives its
+  trigger from the model's published profile and, for a profile-less ChatOllama,
+  falls back to a flat 170K tokens a 32K local model can never reach before
+  overflowing. Each agent now compacts at `compaction_threshold` of *its own*
+  detected window, and evicted history is offloaded through the shared backend
+  into `.loom/sessions/conversation_history/` where it stays re-readable. Local
+  roles also get their `grep` match cap and large-result eviction threshold
+  scaled to their window.
+- **The `consult` tool forwards its run config**, so the advisor's billed cloud
+  tokens actually appear in the receipt and are attributed to the advisor rather
+  than vanishing.
+- **The prompt-size guard now counts tool schemas.** deepagents' filesystem and
+  `task` tools run to a few thousand tokens of JSON — a tenth of a small local
+  model's window before a single message — so leaving them out under-counted
+  exactly the calls most likely to overflow.
+
 - **The reviewer now runs on the Advisor's model.** It was pinned to a cheap
   cloud model (`claude-haiku-4-5`), which made the one gate that decides
   whether a change needs human sign-off the weakest model in the fleet. Roles

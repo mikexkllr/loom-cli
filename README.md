@@ -324,12 +324,30 @@ After every turn Loom prints a receipt — the measurable version of the hybrid
 pitch:
 
 ```
-✔ turn complete · $0.052 cloud (10.0k in / 1.5k out) + 98.0k local tokens (free) · 89% local, saved ~$0.391 vs all-cloud · session $0.052 (saved ~$0.39)
+✔ turn complete · $0.100 cloud (41.1k in · 31.0k cached / 3.0k out) + 132.6k local tokens (free) · orchestrator 23% of tokens, 4 delegated roles · 75% local, saved ~$0.465 vs all-cloud on claude-sonnet-5 · session $0.100
 ```
 
-"Saved" prices the free local tokens at the cloud orchestrator's rates: what
-this task would have cost on an all-cloud agent. `/cost` breaks the session
-down per model; `/status` shows the session's local-token share and savings.
+Three numbers to read:
+
+- **cached** — cloud input is billed at three different rates (uncached, cache
+  write at a premium, cache read at a tenth), and `input_tokens` from the
+  provider is the sum of all three. Loom prices them separately; charging the
+  whole prompt at the uncached rate overstates a long cached conversation by
+  most of an order of magnitude.
+- **orchestrator N% of tokens** — how much of the turn the orchestrator held in
+  its own context instead of delegating. This is the health metric for the whole
+  design: if it climbs, the orchestrator is doing the work rather than routing
+  it. Attribution comes from the callback run tree (every model call under a
+  `task` belongs to that subagent), so two roles sharing one model stay
+  distinguishable.
+- **saved ~$X vs all-cloud on `<model>`** — the free local tokens priced at a
+  named cloud model's rates. The baseline is always a *billed* model; in
+  `--local-only` runs, where nothing is billed at all, it falls back to a stated
+  default rather than pricing local tokens against a local orchestrator.
+
+`/cost` breaks the session down per role — model, where it ran, calls, cached
+share, and cost — plus how often the read budget forced a delegation. `/status`
+shows the same delegation ratio alongside the session totals.
 
 ### Knowledge graph — GraphRAG (`/graphify`)
 
@@ -431,6 +449,13 @@ subagents:
   tester:   ollama/qwen3:14b
 advisor: claude-opus-4-8       # consulted on-demand only
 ollama_endpoint: http://localhost:11434
+
+# Direct read_file calls the orchestrator gets per turn before the tool is
+# withdrawn and it has to delegate. 0 forbids them; -1 removes the cap.
+orchestrator_read_budget: 4
+
+# Fraction of each model's own context window at which it auto-compacts.
+compaction_threshold: 0.70
 ```
 
 ## Settings (`settings.json`)
@@ -500,15 +525,25 @@ REPL (`/settings ui.theme light`), or by hand.
 
 ## The fleet
 
+Each role's toolset is an **allowlist**, not a suggestion: the tools outside it
+are never constructed, so they never appear in the model's tool schema at all
+(`FilesystemMiddleware(tools=[...])`, backed by a last-mile exclusion pass).
+
 | Agent | Default model | Tools | Mode |
 |---|---|---|---|
 | `explorer` | local small | `ls`, `read_file`, `glob`, `grep` | read-only |
-| `editor`   | local mid   | `read_file`, `write_file`, `edit_file` | write |
-| `bash`     | local mid   | `execute` (sandboxed shell), `write_file` | write |
-| `searcher` | local small | `grep`, `glob`, `web_search` (optional) | read-only |
-| `reviewer` | inherits `advisor` | `read_file`, `grep` | read-only |
-| `general-purpose` | local mid | all tools | fallback |
-| `tester`   | local mid   | `browser_*` (Playwright MCP) | write |
+| `editor`   | local mid   | `ls`, `read_file`, `glob`, `grep`, `write_file`, `edit_file` | write |
+| `bash`     | local mid   | `ls`, `read_file`, `glob`, `grep`, `execute` (sandboxed shell) | write |
+| `searcher` | local small | `ls`, `read_file`, `glob`, `grep`, `web_search` (optional) | read-only |
+| `reviewer` | inherits `advisor` | `ls`, `read_file`, `glob`, `grep` | read-only |
+| `general-purpose` | local mid | everything except `delete` | fallback |
+| `tester`   | local mid   | `browser_*` (Playwright MCP), `ls`, `read_file`, `glob`, `grep`, `write_file` | write |
+
+The `editor` cannot run commands and `bash` cannot edit files — the split is the
+point, and it is what makes a delegation legible. No role gets `delete`:
+deepagents hands out a *recursive* delete whenever the backend supports one and
+classifies it as an ordinary write, and nothing Loom delegates needs it (`bash`
+can `rm` through `execute`, which the policy gate prompts for by name).
 
 **Advisor** (`consult` tool): the strongest cloud model, called on-demand at
 decision gates. It only advises — it never acts. Auto-consultation is gated by
@@ -534,6 +569,18 @@ manually.
 
 ## How it stays clean
 
+- **The orchestrator cannot browse** — it has no `ls`, `glob`, `grep`,
+  `write_file`, `edit_file`, `delete` or shell tool at all. Recon, edits, and
+  commands exist only inside subagents. This used to be prompt guidance
+  ("delegate, don't investigate yourself"), which strong cloud models read,
+  agreed with, and then ignored — mapping the tree themselves at cloud prices.
+- **Read budget** — `read_file` survives, because confirming the one path a
+  subagent just named is genuinely the orchestrator's job. It is metered:
+  `orchestrator_read_budget` (default 4) direct reads per user turn, after which
+  the tool is *removed from the request* and delegation is the only way forward.
+  The system prompt states the budget, so the tool disappearing reads as the rule
+  working rather than a broken harness. `/cost` reports how often it held the
+  line. See [`middleware/delegation_guard.py`](loom/middleware/delegation_guard.py).
 - **Prompt-size guard** — if a local subagent's prompt nears its context window,
   that single call escalates instead of failing, up a two-rung ladder: first to
   the roomiest **local** model your daemon is already serving, and only if none
@@ -548,9 +595,15 @@ manually.
   unified memory on Apple Silicon and NVIDIA Grace/Jetson parts (8GB → 16K,
   24GB → 64K, 128GB → 256K). Set `max_local_context` to override.
 - **Artifact store** — tool output over `artifact_offload_tokens` is written to
-  `.loom/artifacts/` and replaced in-context with a path reference.
-- **Summarization** — the orchestrator auto-compacts at `compaction_threshold`
-  (default 70%) of its window.
+  `.loom/artifacts/` and replaced in-context with a path reference. Each role's
+  eviction threshold and `grep` match cap are also scaled to *its* window, so a
+  1000-match grep can't flood a 4B model the way it wouldn't a 200K cloud one.
+- **Summarization** — every agent auto-compacts at `compaction_threshold`
+  (default 70%) of **its own** window, and evicted history lands in
+  `.loom/sessions/conversation_history/` where it stays re-readable. deepagents
+  derives its own trigger from the model's published profile, which Ollama models
+  don't have — leaving them on a flat 170K-token trigger a 32K model can never
+  reach before overflowing.
 - **Worktree isolation** — parallel write agents each get their own git worktree
   so edits never collide. Falls back to in-place when not a git repo.
 
@@ -578,6 +631,8 @@ loom/
 ├── subagents/              # explorer, editor, bash, searcher, reviewer, general-purpose, tester
 ├── middleware/
 │   ├── prompt_size_guard.py
+│   ├── delegation_guard.py # meter the orchestrator's own reads per turn
+│   ├── tool_exclusion.py   # last-mile tool removal (what an allowlist can't express)
 │   └── policy.py           # enforce permissions + run hooks per tool call
 ├── tools/                  # sandboxed fs / shell / search tools
 ├── ui/
@@ -592,9 +647,10 @@ evals/                      # eval tasks + fixtures (scripts/eval.py)
 ```
 
 Built on [`deepagents`](https://docs.langchain.com/oss/python/deepagents) /
-LangChain. The orchestrator gets `write_todos` + `task` (delegation) +
-`compact_conversation` from the deepagents middleware stack; Loom adds the
-`consult` tool, the prompt-size guard, and tuned summarization.
+LangChain. deepagents supplies the `task` (delegation) tool and the filesystem
+layer; Loom supplies every system prompt, the `write_todos` middleware, the
+`consult` tool, the tool allowlists, the read budget, the prompt-size guard, and
+window-aware summarization.
 
 ## Tests
 
@@ -615,8 +671,34 @@ so you can confirm the deepagents wiring is sound right after
 
 ## deepagents compatibility
 
-Loom follows current deepagents / LangChain 1.0 best practices:
+Loom targets **deepagents 0.7** (`>=0.7,<0.8`) on LangChain 1.3.
 
+0.7 deliberately stopped shipping prompts, which moved real responsibility to
+the harness. Loom now owns all of it:
+
+- **Every prompt is Loom's.** The authored base prompt is empty and the
+  tool-usage prose that used to describe the filesystem, `task`, and todo tools
+  is gone, so nothing tells a model how to behave except
+  `ORCHESTRATOR_SYSTEM` and the per-subagent prompts. A test suite
+  ([`tests/test_prompt_contract.py`](tests/test_prompt_contract.py)) binds each
+  prompt to its role's actual allowlist, because a prompt naming a tool the role
+  doesn't have is a silent dead end.
+- **`write_todos` is opt-in.** `TodoListMiddleware` left the defaults; Loom adds
+  it back with its own planning prose — todos are written as *work plus the
+  subagent that will do it*, so the plan and the routing are one artifact.
+- **Tool allowlists, not post-hoc filtering.** A caller-supplied middleware
+  instance replaces the default with the same `.name`, so each agent gets a
+  `FilesystemMiddleware(tools=[...])` holding exactly its role's tools. The
+  orchestrator's holds one: `read_file`. `ToolExclusionMiddleware` remains as the
+  last mile for what an allowlist can't express — the constructor requires
+  `read_file`, and `--airgap` needs an orchestrator with none.
+- **One shared backend.** The `CompositeBackend` is built before the subagents
+  and threaded into each of them; a subagent that constructed its own filesystem
+  middleware without it would silently fall back to in-memory storage and see an
+  empty repository.
+- **`write_file` now overwrites** an existing file instead of erroring, and
+  `delete` is recursive. Every write-capable prompt says so, and no role gets
+  `delete`.
 - **Middleware** subclass `AgentMiddleware` and implement the `wrap_tool_call` /
   `wrap_model_call` hooks (plus their `awrap_*` async variants), returning a
   `ToolMessage` to short-circuit a gated tool. Tool identity is read from

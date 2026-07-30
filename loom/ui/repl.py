@@ -116,13 +116,16 @@ class Session:
     # Back-compat view used by /status and tests.
     @property
     def usage(self) -> dict:
-        ci, co = self.tracker.session.tokens(self.tracker.session.cloud)
-        li, lo = self.tracker.session.tokens(self.tracker.session.local)
+        session = self.tracker.session
+        ci, co = session.tokens(session.cloud)
+        li, lo = session.tokens(session.local)
         return {
             "turns": self.tracker.turns,
             "input_tokens": ci + li,
             "output_tokens": co + lo,
-            "cloud_cost": self.tracker.session.cloud_cost,
+            "cached_tokens": session.cache_read_tokens,
+            "cloud_cost": session.cloud_cost,
+            "orchestrator_share": session.orchestrator_share(),
         }
 
     # ----- lifecycle -----

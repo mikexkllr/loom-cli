@@ -21,15 +21,18 @@ classifiers = [
 ]
 
 dependencies = [
-    # Agent harness + orchestration. Loom relies on 0.6-era APIs
-    # (deepagents.backends, per-subagent middleware, the general-purpose
-    # override); <0.7 guards against breaking changes in the beta surfaces.
-    "deepagents>=0.6,<0.7",
-    "langchain>=1.0.0",
+    # Agent harness + orchestration. 0.7 ships lean built-in prompts (the base
+    # agent prompt is empty and the tool-usage prose is gone), drops
+    # TodoListMiddleware from the defaults, and lets a caller-supplied
+    # FilesystemMiddleware(tools=[...]) replace the default one by name — Loom
+    # owns all of that prose and tool allowlisting now. <0.8 guards the next
+    # round of breaking changes.
+    "deepagents>=0.7,<0.8",
+    "langchain>=1.3.14",
     "langgraph>=1.0.0",
     # Model providers
     "langchain-ollama>=0.3.0",      # local models (Metal on macOS, CUDA on Linux/Windows)
-    "langchain-anthropic>=0.3.0",   # cloud orchestrator / advisor / reviewer
+    "langchain-anthropic>=1.5.3",   # cloud orchestrator / advisor / reviewer
     "langchain-openai>=0.3.0",      # optional cloud orchestrator
     "langchain-google-genai>=2.0.0",# optional cloud orchestrator
     "langchain-mcp-adapters>=0.1.9",# MCP servers (Playwright browser testing)
