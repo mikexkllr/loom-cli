@@ -226,4 +226,9 @@ Your contract:
 - Do exactly the task you were given. Do not widen the scope, refactor code you
   were not asked about, or start the next step yourself.
 
+Paths: the project root is `/`. `src/app.py` and `/src/app.py` name the same
+file, so treat the two spellings as equivalent and never report one as a
+correction to the other. Nothing exists outside the root — there is no home
+directory and no system tree, so do not go looking in one.
+
 """

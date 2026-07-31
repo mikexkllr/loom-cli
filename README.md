@@ -184,10 +184,13 @@ editing required.
 | **Anthropic via AWS Bedrock** | `AWS_BEARER_TOKEN_BEDROCK` (or real AWS credentials) + optional `ANTHROPIC_BEDROCK_BASE_URL` for a corporate proxy. Needs `uv sync --extra bedrock`. |
 | **OpenAI** | `OPENAI_API_KEY`. |
 | **OpenAI-compatible (custom endpoint)** | Any server speaking the OpenAI Chat Completions API — vLLM, LM Studio, Together, Groq, etc. `LOOM_CUSTOM_BASE_URL` + `LOOM_CUSTOM_API_KEY`. |
-| **OpenCode Zen** | Curated pay-per-use model gateway (several free models). `OPENCODE_ZEN_API_KEY`. Only OpenAI-shaped Zen models are wired up so far. |
-| **OpenCode Go** | $5 first month / $10-mo subscription to curated open models (GLM, Kimi, DeepSeek, MiMo). `OPENCODE_GO_API_KEY`. |
+| **OpenCode Zen** | Curated pay-per-use model gateway. Models suffixed `-free` cost nothing and are billed as zero in receipts. `OPENCODE_ZEN_API_KEY`. |
+| **OpenCode Go** | $5 first month / $10-mo subscription to curated open models (GLM, Kimi, DeepSeek, MiMo, MiniMax, Qwen). `OPENCODE_GO_API_KEY`. Being a subscription, per-token cost doesn't apply — receipts mark these `~`. |
 | **Google AI Studio** (Gemini API) | Personal API key, no GCP project — `GOOGLE_API_KEY`. |
 | **Google Vertex AI** | GCP project + Application Default Credentials (`gcloud auth application-default login`). Needs `uv sync --extra vertexai`. |
+
+Both OpenCode gateways also accept a single `OPENCODE_API_KEY` covering Zen and
+Go together, so a mixed fleet needs one credential rather than two.
 
 Each provider maps to a config model-string prefix — see
 [`loom/core/providers.py`](loom/core/providers.py) for the full catalog (also
@@ -345,9 +348,19 @@ Three numbers to read:
   `--local-only` runs, where nothing is billed at all, it falls back to a stated
   default rather than pricing local tokens against a local orchestrator.
 
+What a call is priced *as* matters as much as the arithmetic. Loom prices the
+model the provider reported serving the call, because that is what actually ran —
+including a cloud fallback your config never named. When it doesn't recognise that
+name, the role's configured model answers instead: a gateway can serve a free tier
+under the upstream model's name (OpenCode Zen answers `deepseek-v4-flash-free` as
+`deepseek-v4-flash`), and pricing the upstream name invoices a session that was
+free. A `-free` tier costs zero, and a model Loom has no published price for is
+charged at the Sonnet-tier default but marked `~`, so an estimate never reads as a
+bill.
+
 `/cost` breaks the session down per role — model, where it ran, calls, cached
-share, and cost — plus how often the read budget forced a delegation. `/status`
-shows the same delegation ratio alongside the session totals.
+share, and cost — plus what the read budget did. `/status` shows the same
+delegation ratio alongside the session totals.
 
 ### Knowledge graph — GraphRAG (`/graphify`)
 
@@ -578,9 +591,14 @@ manually.
   subagent just named is genuinely the orchestrator's job. It is metered:
   `orchestrator_read_budget` (default 4) direct reads per user turn, after which
   the tool is *removed from the request* and delegation is the only way forward.
-  The system prompt states the budget, so the tool disappearing reads as the rule
-  working rather than a broken harness. `/cost` reports how often it held the
-  line. See [`middleware/delegation_guard.py`](loom/middleware/delegation_guard.py).
+  Withdrawing it is not enough on its own — the tool node still holds every tool
+  the agent was built with, so a model that calls it anyway (having just watched
+  four such calls succeed) would get its file. So the budget is enforced twice:
+  withdrawn at the model call, and refused at the tool call with a message naming
+  the subagent to hand the reading to. The system prompt states the budget, so
+  neither reads as a broken harness. `/cost` reports both counts — a refusal means
+  the model reached for a tool it could no longer see. See
+  [`middleware/delegation_guard.py`](loom/middleware/delegation_guard.py).
 - **Prompt-size guard** — if a local subagent's prompt nears its context window,
   that single call escalates instead of failing, up a two-rung ladder: first to
   the roomiest **local** model your daemon is already serving, and only if none

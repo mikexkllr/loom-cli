@@ -157,3 +157,64 @@ def test_startup_check_interactive_accept_triggers_relaunch(monkeypatch, capsys)
     result, kwargs = calls[0]
     assert result.asset == "loom-macos-arm64"
     assert kwargs["argv"] == sys.argv[1:]
+
+
+# ---------------------------------------------------------------------------
+# Options after the prompt
+#
+# Click turns off interspersed args for groups so a subcommand keeps its own
+# flags (`loom models pull --all`). That also swallowed the natural
+# `loom "fix the tests" --yolo`, which failed with "No such command '--yolo'" —
+# a confusing error for the most obvious way to type the command.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["fix the tests", "--yolo"],
+        ["fix the tests", "--plan"],
+        ["fix the tests", "--local-only"],
+        ["fix the tests", "--accept-edits"],
+        ["fix the tests", "--advisor-threshold", "high"],
+        ["fix the tests", "--yolo", "--plan"],
+    ],
+)
+def test_options_may_follow_the_prompt(argv):
+    result = runner.invoke(app, argv)
+    assert "No such command" not in result.output, result.output
+    assert "Got unexpected extra argument" not in result.output, result.output
+
+
+def test_options_may_still_precede_the_prompt():
+    """The form the module docstring documents must keep working."""
+    result = runner.invoke(app, ["--plan", "fix the tests"])
+    assert "No such command" not in result.output
+
+
+def test_a_root_option_after_the_prompt_is_honoured(tmp_path, monkeypatch):
+    """Not just parsed — the value has to reach the run path."""
+    seen = {}
+    monkeypatch.setattr(main_mod, "_run_task", lambda *a, **kw: seen.update(kw))
+    monkeypatch.setattr(main_mod, "_maybe_offer_update", lambda: None)
+    result = runner.invoke(app, ["fix the tests", "--root", str(tmp_path), "--yolo"])
+    assert result.exit_code == 0, result.output
+    assert seen.get("root") == str(tmp_path)
+    assert seen.get("yolo") is True
+
+
+def test_a_subcommands_own_flags_are_left_for_it(tmp_path, monkeypatch):
+    """The reason interspersed args are off by default: a flag after a subcommand
+    belongs to the subcommand, and must not be eaten by the root group."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    result = runner.invoke(app, ["config", "set", "orchestrator", "gpt-4o", "--root", str(proj)])
+    assert result.exit_code == 0, result.output
+    assert "No such command" not in result.output
+
+
+def test_an_unknown_subcommand_still_reports_itself_as_a_prompt():
+    """With no matching command, the token is a task — that is the whole design."""
+    result = runner.invoke(app, ["defintely-not-a-command"])
+    assert "No such command" not in result.output

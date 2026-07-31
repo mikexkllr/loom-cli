@@ -269,3 +269,92 @@ def test_legacy_general_key_survives_layer_merge(tmp_path):
     user.write_text("subagents:\n  general: ollama/custom:7b\n")
     config = cfg.load_config(path=user)
     assert config.subagents["general-purpose"] == "ollama/custom:7b"
+
+
+# ---------------------------------------------------------------------------
+# The no-cloud modes must not need a cloud credential to start
+#
+# The cloud-backed roles (the default config's `reviewer` trails a cloud advisor)
+# used to be filtered out of the fleet AFTER their models were built. Building a
+# model validates its credentials, so `--local-only` and `--airgap` — the two
+# modes whose entire promise is that nothing leaves the machine — refused to start
+# on a machine with no cloud key, which is the machine most likely to want them.
+# ---------------------------------------------------------------------------
+
+
+def _hybrid_settings():
+    """A local fleet with one cloud role in it, like the shipped default config."""
+    settings = _settings()
+    settings.models = settings.models.model_copy(
+        update={
+            "orchestrator": "claude-sonnet-5",
+            "advisor": "claude-opus-4-8",
+            "subagents": {**settings.models.subagents, "reviewer": "zen/claude-haiku-4-5"},
+        }
+    )
+    return settings
+
+
+def _watch_subagent_models(monkeypatch, *, refuse_cloud: bool):
+    """Record every model string the subagent builder resolves.
+
+    Local strings are handed to the real builder — ChatOllama constructs offline,
+    so this stays an honest build. Cloud strings either raise (standing in for a
+    provider that validates its key in its constructor, which is what actually
+    broke these modes) or are recorded and refused, since nothing should be asking.
+    """
+    from loom.core import model_router
+
+    real_build = model_router.build_model
+    seen: list[str] = []
+
+    def build(model_string, config, *a, **kw):
+        seen.append(model_string)
+        if not config.is_local(model_string):
+            if refuse_cloud:
+                raise RuntimeError(f"{model_string}: no API key on this machine")
+            return object()
+        return real_build(model_string, config, *a, **kw)
+
+    monkeypatch.setattr("loom.subagents.base.build_model", build)
+    return seen
+
+
+@pytest.mark.parametrize("mode", [{"local_only": True}, {"airgap": True}])
+def test_no_cloud_mode_builds_without_any_cloud_credential(monkeypatch, mode):
+    pytest.importorskip("deepagents")
+    from loom.core.orchestrator import build_orchestrator
+
+    _stub_ollama(monkeypatch)
+    _watch_subagent_models(monkeypatch, refuse_cloud=True)
+    bundle = build_orchestrator(_hybrid_settings(), **mode)
+    assert "reviewer" not in bundle.subagent_names
+    assert bundle.subagent_names, "the fleet must not be emptied along with the cloud role"
+
+
+@pytest.mark.parametrize("mode", [{"local_only": True}, {"airgap": True}])
+def test_no_cloud_mode_never_constructs_a_cloud_subagent_model(monkeypatch, mode):
+    """Not merely "does not crash": the construction must not be attempted at all,
+    since a provider is free to read a keychain or reach the network in there."""
+    pytest.importorskip("deepagents")
+    from loom.core.orchestrator import build_orchestrator
+
+    _stub_ollama(monkeypatch)
+    seen = _watch_subagent_models(monkeypatch, refuse_cloud=False)
+    build_orchestrator(_hybrid_settings(), **mode)
+    cloud = [m for m in seen if not _config().is_local(m)]
+    assert not cloud, f"built cloud models in {mode}: {cloud}"
+
+
+@pytest.mark.parametrize("local_only,expected", [(False, True), (True, False)])
+def test_the_cloud_role_filter_is_scoped_to_the_no_cloud_modes(monkeypatch, local_only, expected):
+    """Tested on the builder itself, since that is where the contract now lives:
+    a hybrid run keeps its cloud critic, a no-cloud run never asks for it."""
+    monkeypatch.setattr("loom.subagents.base.build_model", lambda *a, **k: object())
+    config = _config(advisor="claude-opus-4-8")
+    config = config.model_copy(
+        update={"subagents": {**config.subagents, "reviewer": "zen/claude-haiku-4-5"}}
+    )
+    names = {s["name"] for s in build_all_subagents(config, local_only=local_only)}
+    assert ("reviewer" in names) is expected
+    assert "explorer" in names, "local roles are unaffected either way"

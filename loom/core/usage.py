@@ -45,13 +45,16 @@ class Price(NamedTuple):
 
     ``inp``/``out`` are USD per million tokens. ``cache_read`` and
     ``cache_write`` are multipliers on ``inp``: providers charge a discount to
-    replay a cached prefix and a premium to write one.
+    replay a cached prefix and a premium to write one. ``estimated`` marks a
+    price Loom guessed rather than knows, so the UI can say so instead of
+    presenting a fabricated figure with the same confidence as a real one.
     """
 
     inp: float
     out: float
     cache_read: float = 0.1
     cache_write: float = 1.25
+    estimated: bool = False
 
 
 # USD per million tokens. Cloud models only — local is free.
@@ -79,16 +82,54 @@ CLOUD_PRICES: dict[str, Price] = {
     "gpt-4o": Price(2.5, 10.0, cache_write=1.0),
     "gpt-4.1": Price(2.0, 8.0, cache_write=1.0),
 }
-_DEFAULT_CLOUD_PRICE = Price(3.0, 15.0)
+_DEFAULT_CLOUD_PRICE = Price(3.0, 15.0, estimated=True)
+FREE_PRICE = Price(0.0, 0.0)
+
+# Gateways that publish a no-charge tier mark it in the model id. OpenCode Zen
+# uses a "-free" suffix (`deepseek-v4-flash-free`) — and answers such a request
+# reporting the *upstream* model's name with the suffix stripped, so this can only
+# be decided from the model string the user configured, never from the response.
+_FREE_SUFFIXES = ("-free", ":free")
+
+
+def is_free_model(model_string: str) -> bool:
+    """Whether a configured model string names a provider's free tier."""
+    return model_string.strip().lower().endswith(_FREE_SUFFIXES)
 
 # Used when nothing in the config offers a cloud model to price the
 # "what if this had all run in the cloud" counterfactual against.
 DEFAULT_CLOUD_REFERENCE = "claude-sonnet-5"
 
+# Run-metadata key a caller uses to name the role it is spending on behalf of.
+ROLE_KEY = "loom_role"
+
+
+def role_metadata(config: Any, role: str) -> dict[str, Any]:
+    """``config`` with ``role`` stamped on its run metadata.
+
+    For a model invoked directly rather than through the agent graph — the
+    advisor's ``consult``, ``/compact``'s summarizer — where the run tree cannot
+    say who spent the tokens. The rest of the config (callbacks, thread, tags) is
+    carried through untouched, so the tracker still sees the call at all.
+    """
+    merged = dict(config or {})
+    merged["metadata"] = {**(merged.get("metadata") or {}), ROLE_KEY: role}
+    return merged
+
 
 def price_entry(model_name: str) -> Price:
-    """Full pricing for a cloud model, longest-prefix match."""
-    name = model_name.lower()
+    """Full pricing for a cloud model, longest-prefix match.
+
+    Accepts a bare model name or a full ``provider/model`` string; the provider
+    prefix is dropped before matching, so a free-tier suffix is still seen.
+    """
+    name = model_name.strip().lower()
+    if is_free_model(name):
+        return FREE_PRICE
+    try:
+        name = resolve(name).name
+    except Exception:
+        pass
     best: Price | None = None
     best_len = -1
     for prefix, price in CLOUD_PRICES.items():
@@ -150,17 +191,34 @@ class ModelUsage:
 
 
 class Actor(NamedTuple):
-    """Who made a set of model calls."""
+    """Who made a set of model calls.
+
+    ``model`` is what the provider reported serving the call. ``billed_as`` is
+    the string it is priced against, which is usually the same — it differs when
+    a gateway reports a name Loom has no price for and the role's configured
+    model is the better answer (see ``UsageTracker._billing_model``).
+    """
 
     role: str  # "orchestrator", a subagent name, "advisor", or "?"
     model: str
     is_local: bool
+    billed_as: str = ""
+
+    @property
+    def price_model(self) -> str:
+        return self.billed_as or self.model
 
 
 # The orchestrator's own spending, for the delegation ratio. "?" is folded in
 # with it: an unattributed call was made outside any `task`, which in practice
 # means the main graph.
 _MAIN_ROLES = ("orchestrator", "?")
+
+# Housekeeping on the session itself, not work on the user's task: neither the
+# orchestrator reasoning nor a subagent it delegated to. Counted in the cost —
+# compacting a long session is not free — but kept out of the delegation ratio,
+# which would otherwise blame the orchestrator for every /compact.
+_OVERHEAD_ROLES = ("compaction",)
 
 
 @dataclass
@@ -179,8 +237,9 @@ class TurnUsage:
         role: str = "?",
         cache_read: int = 0,
         cache_write: int = 0,
+        billed_as: str = "",
     ) -> None:
-        mu = self.actors.setdefault(Actor(role, model, is_local), ModelUsage())
+        mu = self.actors.setdefault(Actor(role, model, is_local, billed_as), ModelUsage())
         mu.input_tokens += inp
         mu.output_tokens += out
         mu.cache_read_tokens += cache_read
@@ -219,12 +278,21 @@ class TurnUsage:
         if actor.is_local:
             return 0.0
         return cost_usd(
-            actor.model,
+            actor.price_model,
             usage.input_tokens,
             usage.output_tokens,
             cache_read_tokens=usage.cache_read_tokens,
             cache_write_tokens=usage.cache_write_tokens,
         )
+
+    @staticmethod
+    def is_estimated(actor: Actor) -> bool:
+        """Whether this row's price is a guess. Callers should say so rather than
+        print a fabricated number as if it were billed."""
+        return not actor.is_local and price_entry(actor.price_model).estimated
+
+    def has_estimates(self) -> bool:
+        return any(self.is_estimated(a) for a in self.actors)
 
     @property
     def cloud_cost(self) -> float:
@@ -242,14 +310,23 @@ class TurnUsage:
 
     # ----- delegation ratio -----
 
+    @staticmethod
+    def _is_delegated(role: str) -> bool:
+        return role not in _MAIN_ROLES and role not in _OVERHEAD_ROLES
+
     def orchestrator_tokens(self) -> int:
         return sum(u.total_tokens for a, u in self.actors.items() if a.role in _MAIN_ROLES)
 
     def delegated_tokens(self) -> int:
-        return sum(u.total_tokens for a, u in self.actors.items() if a.role not in _MAIN_ROLES)
+        return sum(u.total_tokens for a, u in self.actors.items() if self._is_delegated(a.role))
+
+    def overhead_tokens(self) -> int:
+        """Session housekeeping — compaction summaries. Real money, but not work
+        on the task, so it sits outside the delegation ratio."""
+        return sum(u.total_tokens for a, u in self.actors.items() if a.role in _OVERHEAD_ROLES)
 
     def orchestrator_share(self) -> float:
-        """Fraction (0..1) of this turn's tokens the orchestrator spent on
+        """Fraction (0..1) of this turn's task tokens the orchestrator spent on
         itself rather than delegating. High means it is doing the work instead
         of routing it."""
         total = self.orchestrator_tokens() + self.delegated_tokens()
@@ -264,8 +341,8 @@ class TurnUsage:
         """Distinct roles that ran in their own context this turn — every
         subagent, plus the advisor when it was consulted. The orchestrator caused
         those calls but never held their output, which is the distinction the
-        share below is measuring."""
-        return len({a.role for a in self.actors if a.role not in _MAIN_ROLES})
+        share above is measuring."""
+        return len({a.role for a in self.actors if self._is_delegated(a.role)})
 
     # ----- counterfactual -----
 
@@ -302,6 +379,13 @@ class UsageTracker(BaseCallbackHandler):
     where model names are not: two roles can share a model (a local role fallen
     back to the same cloud model as the reviewer), and the orchestrator's own
     calls are indistinguishable from a subagent's by name alone.
+
+    The tree only answers for calls that actually nest under the tool run, which
+    a model invoked *by hand* from inside a tool does not: the config such a tool
+    is handed belongs to the tool node, so its model call lands as a sibling of
+    the tool run rather than a child, and the walk sails past the role. Callers in
+    that position say who they are outright, via ``role_metadata`` — read here
+    before the walk, since an explicit claim beats an inferred one.
     """
 
     # Don't let a telemetry bug kill the agent run.
@@ -322,6 +406,41 @@ class UsageTracker(BaseCallbackHandler):
         self._parent: dict[Any, Any] = {}
         self._role: dict[Any, str] = {}
         self._provider: dict[Any, str] = {}
+
+    def _billing_model(self, role: str, reported: str) -> str:
+        """The model string to price this call against.
+
+        The reported name wins whenever Loom recognises it: it is what actually
+        ran, including a cloud fallback the config never named, and pricing that
+        is the whole point.
+
+        When Loom has no price for the reported name, the role's configured model
+        is the better answer. A gateway can answer a free-tier request under the
+        *upstream* model's name — OpenCode Zen serves ``deepseek-v4-flash-free``
+        and reports ``deepseek-v4-flash`` — and pricing that upstream name at the
+        unknown-model default invented a bill for a session that was free.
+        """
+        if not price_entry(reported).estimated:
+            return reported
+        configured = self._role_model(role)
+        return configured or reported
+
+    def _role_model(self, role: str) -> str:
+        """What the config assigns this role, or "" if it names no model for it.
+
+        Read off :class:`LoomConfig` directly rather than through the subagent
+        registry: importing it here would close a cycle (the reviewer spec pulls
+        in the advisor, which reports usage through this module).
+        """
+        config = self.config
+        if role in ("orchestrator", "?", "compaction"):
+            return config.orchestrator or ""
+        if role == "advisor":
+            return config.advisor or ""
+        try:
+            return config.model_for(role, "general-purpose") or ""
+        except Exception:
+            return config.subagents.get(role, "") or ""
 
     @staticmethod
     def _local_model_names(config: LoomConfig) -> set[str]:
@@ -414,6 +533,10 @@ class UsageTracker(BaseCallbackHandler):
             provider = str(meta.get("ls_provider") or "").lower()
             if provider and run_id is not None:
                 self._provider[run_id] = provider
+            # An explicit claim from the caller, for calls the run tree can't place.
+            role = meta.get(ROLE_KEY)
+            if role and run_id is not None:
+                self._role[run_id] = str(role)
         except Exception:
             pass
 
@@ -461,6 +584,7 @@ class UsageTracker(BaseCallbackHandler):
                 rmeta = getattr(msg, "response_metadata", None) or {}
                 model = str(rmeta.get("model_name") or rmeta.get("model") or "unknown")
                 is_local = self._is_local(model, provider)
+                billed_as = "" if is_local else self._billing_model(role, model)
                 for bucket in (self.turn, self.session):
                     bucket.add(
                         model,
@@ -470,6 +594,7 @@ class UsageTracker(BaseCallbackHandler):
                         role=role,
                         cache_read=cache_read,
                         cache_write=cache_write,
+                        billed_as=billed_as,
                     )
 
     def _is_local(self, model_name: str, provider: str = "") -> bool:
@@ -523,8 +648,10 @@ class UsageTracker(BaseCallbackHandler):
         if ci or co:
             cached = u.cache_read_tokens
             cached_note = f" · {self._fmt_tokens(cached)} cached" if cached else ""
+            # "~" when any of it was priced against an unpublished model.
+            approx = "~" if u.has_estimates() else ""
             parts.append(
-                f"{self._fmt_usd(u.cloud_cost)} cloud "
+                f"{approx}{self._fmt_usd(u.cloud_cost)} cloud "
                 f"({self._fmt_tokens(ci)} in{cached_note} / {self._fmt_tokens(co)} out)"
             )
         if li or lo:
@@ -546,7 +673,10 @@ class UsageTracker(BaseCallbackHandler):
                 f"vs all-cloud on {reference}"
             )
         if turn:
-            line += f" · session {self._fmt_usd(self.session.cloud_cost)}"
+            # Carries its own marker: the session total can be an estimate even
+            # when this turn's is not, and vice versa.
+            session_approx = "~" if self.session.has_estimates() else ""
+            line += f" · session {session_approx}{self._fmt_usd(self.session.cloud_cost)}"
             session_saved = self.session.savings(self.cloud_reference())
             if session_saved > 0:
                 line += f" (saved ~{self._fmt_usd(session_saved)})"

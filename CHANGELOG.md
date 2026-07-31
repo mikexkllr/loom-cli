@@ -2,6 +2,82 @@
 
 ## Unreleased
 
+### Fixed
+
+Found by driving the whole app end to end — the real CLI, the real graph, real
+tools on a real project, and live runs against a real provider. Every one of these
+was invisible to the unit tests that passed over it.
+
+- **The read budget was advice, not enforcement.** Withdrawing `read_file` from
+  the model's schema does not stop the call: `ToolNode` still holds every tool the
+  agent was built with, so an over-budget read emitted anyway — which is what a
+  model does after watching four such calls succeed in its visible history —
+  executed and returned the file. The budget is now enforced twice, withdrawn at
+  the model call and refused at the tool call, with the refusal naming the
+  subagent to delegate to. Counting stops at the call being judged, so a batch of
+  parallel reads degrades in order instead of being rejected wholesale.
+  `/cost` and `/status` report withheld and refused separately: a refusal means the
+  model reached for a tool it could no longer see, which is the signal that
+  withdrawing it was never going to be enough.
+- **The advisor's tokens were billed to the orchestrator.** Role attribution walks
+  the callback run tree, which works only for calls that nest under the `task`
+  run. A model invoked by hand from inside a tool does not: the config a tool is
+  handed belongs to the tool *node*, so `consult`'s call to the advisor landed
+  beside the `consult` run rather than under it and the walk sailed straight past
+  the role. Both hand-invoked callers — the advisor and `/compact`'s summariser —
+  now state their role outright via run metadata, which is read before the walk
+  because an explicit claim beats an inference.
+- **`/compact` made the orchestrator look greedy.** Its summarisation is
+  housekeeping on the transcript, not work on the task, so it is now a third
+  bucket: charged for and shown as its own `/cost` row, but kept out of the
+  delegation ratio and the delegated-role count. Compacting a session no longer
+  moves the number the receipt leads with.
+- **`--local-only` and `--airgap` refused to start without a cloud key.** The
+  cloud-backed roles in a hybrid fleet — the shipped config's `reviewer` trails a
+  cloud advisor — were filtered out of the fleet *after* their models were built,
+  and building a model validates its credentials. So the two modes whose entire
+  promise is that nothing leaves the machine died on a missing
+  `OPENCODE_ZEN_API_KEY`, on exactly the machine most likely to be asking for
+  them. Cloud roles are now skipped before construction.
+- **A free model was billed as if it were Sonnet.** Prices were looked up on the
+  name the provider reported, and a gateway can answer a free-tier request under
+  the *upstream* model's name — OpenCode Zen serves `deepseek-v4-flash-free` and
+  reports `deepseek-v4-flash`. Unknown name, so it fell to the Sonnet-tier
+  default: a live session on nothing but free models invoiced $0.032. The reported
+  name still wins whenever Loom recognises it, because that is what actually ran
+  and includes a cloud fallback the config never named; when it doesn't, the
+  role's configured model answers instead. A `-free`/`:free` suffix now prices at
+  zero, and provider prefixes no longer hide a known price
+  (`zen/claude-haiku-4-5` was priced as an unknown model).
+- **An estimated price looked exactly like a real one.** An unknown model is still
+  charged at the Sonnet-tier default — a receipt with a hole in it is worse — but
+  it now reads `~$0.008` with a footnote naming the assumption, instead of
+  presenting a fabricated figure with the same confidence as a billed one.
+- **`loom "fix the tests" --yolo` failed** with `No such command '--yolo'`. Click
+  disables interspersed arguments for groups so a subcommand keeps its own flags;
+  in prompt form there is no subcommand to shield, and the most obvious way to
+  type the command was the one that didn't work. Flags before the prompt still
+  work, and a subcommand's own flags are still left for it.
+- **Nothing told the agents where the filesystem root was.** The backend mounts
+  the project at `/`, undocumented in any prompt: a live run had the explorer
+  waste a call grepping an invented `/home/user`, then close its report by
+  "correcting" the user — "the file is at `/src/billing.py`, *not*
+  `src/billing.py`". Both spellings are the same file. The subagent preamble, the
+  reviewer's prompt, and the orchestrator's reading rule now say so.
+- **`/cost` folded role and model names mid-word** in an 80-column terminal
+  (`orchestra`/`tor`, `claude-so`/`nnet-5`). Local/cloud moved onto the model as a
+  badge, the way every other Loom surface shows it, which frees the column the
+  names needed. `/status` gained thousands separators, stopped saying "read
+  budget" twice in one line, and now carries the `~` estimate marker too — the
+  same figure read as billed there and estimated in the receipt.
+- **The OpenCode provider notes were wrong**, in the wizard and the README. Both
+  claimed MiniMax/Qwen-style models "are Anthropic-shaped and aren't wired up
+  yet"; every one of them answers over the gateways' OpenAI-compatible API, tool
+  calls included (checked live on `minimax-m3`, `qwen3.7-plus`, `kimi-k3`,
+  `glm-5.2`, `mimo-v2.5`, `hy3`). The notes were steering users away from models
+  that work. Also documented: one `OPENCODE_API_KEY` covers Zen and Go together,
+  and Go being a flat subscription means its per-token figures are estimates.
+
 ### Changed
 
 - **Migrated to deepagents 0.7** (`>=0.7,<0.8`, LangChain `>=1.3.14`,

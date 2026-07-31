@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from loom.core.config import LoomConfig
 from loom.core.model_router import build_model
+from loom.core.usage import role_metadata
 
 # ----------------------------------------------------------------------------
 # Risk model (shared by reviewer + advisor-threshold gating)
@@ -105,8 +106,11 @@ def make_consult_tool(config: LoomConfig) -> Callable:
         ]
         # Forward the ambient run config so the usage tracker's callbacks reach
         # this call: without it the advisor's (billed, cloud) tokens are invisible
-        # to the receipt and to the run tree that attributes them.
-        response = advisor_model.invoke(messages, config=config)
+        # to the receipt. The config a tool is handed belongs to the tool *node*,
+        # so this call lands beside the `consult` run rather than under it and the
+        # tracker's tree walk would credit the orchestrator — hence saying the
+        # role outright instead of leaving it to be inferred.
+        response = advisor_model.invoke(messages, config=role_metadata(config, "advisor"))
         return getattr(response, "content", str(response))
 
     return consult
@@ -123,6 +127,9 @@ You are isolated: you see only the task description and file list you were
 given. Use `read_file` to read the changed files, and `grep`/`glob`/`ls` to check
 how the changed code is called elsewhere. You cannot edit or run anything. Read
 the code before judging it — a review of a diff you did not open is worthless.
+
+The project root is `/`, so `src/app.py` and `/src/app.py` are the same file and
+nothing exists outside the root. Cite paths the way the task gave them to you.
 
 Look for, in priority order:
 1. Correctness — does it do what the task said, and does it handle the empty,

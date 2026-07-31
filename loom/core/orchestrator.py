@@ -151,9 +151,13 @@ calls. Keep it tight."""
 
 _READING_RULE_BUDGETED = """You get {budget} direct `read_file` calls per user turn. \
 After that the tool is withdrawn until the next turn — expect this, it is not an
-error. Spend those reads on confirmation, never on investigation: the exact path a
-subagent just named, or the region of a change you are about to approve. Anything
-that begins with "let me look around" belongs to `explorer`."""
+error, and a call made anyway comes back refused. Spend those reads on
+confirmation, never on investigation: the exact path a subagent just named, or the
+region of a change you are about to approve. Anything that begins with "let me
+look around" belongs to `explorer`.
+
+The project root is `/`, so `src/app.py` and `/src/app.py` are the same file.
+Nothing exists outside the root."""
 
 _READING_RULE_NONE = """You have no `read_file` tool. Every fact about this \
 codebase reaches you through a subagent's report. If you need to see a specific
@@ -161,7 +165,10 @@ region of a file, ask `explorer` for that region and what to note about it."""
 
 _READING_RULE_UNLIMITED = """`read_file` is uncapped in this configuration, which \
 makes discipline yours to keep: use it to confirm a path a subagent named or a
-change it reported, and route anything exploratory to `explorer` anyway."""
+change it reported, and route anything exploratory to `explorer` anyway.
+
+The project root is `/`, so `src/app.py` and `/src/app.py` are the same file.
+Nothing exists outside the root."""
 
 _BUDGET_PHRASE_BUDGETED = "a hard budget of {budget} direct reads per turn (see Reading)."
 _BUDGET_PHRASE_NONE = "unavailable in this run (see Reading)."
@@ -567,19 +574,22 @@ def build_orchestrator(
     # so nothing from the orchestrator's stack applies down there.
     # In airgap mode subagents keep the NORMAL settings — they must read and
     # edit files locally; only the orchestrator gets the hardened deny policy.
+    # Cloud-backed roles (e.g. a reviewer trailing a cloud advisor) are dropped
+    # by the builder itself in the no-cloud modes, before their models are
+    # constructed — building one validates credentials this machine is entitled
+    # not to have. In airgap mode this doubles as the rule that only local
+    # subagents may touch raw code.
     subagents = build_all_subagents(
-        config, loom_settings, cwd, read_only=plan, ladder=ladder, backend=backend
+        config,
+        loom_settings,
+        cwd,
+        read_only=plan,
+        ladder=ladder,
+        backend=backend,
+        local_only=local_only or airgap,
     )
     if plan:
         subagents = [s for s in subagents if s["name"] in _PLAN_SUBAGENTS]
-    if local_only or airgap:
-        # Drop any cloud-backed subagent (e.g. a reviewer trailing a cloud
-        # advisor). In airgap mode only local subagents may touch raw code.
-        # Resolved per spec, not read off config.subagents: an unassigned role
-        # still has a model, and it may well be a local one.
-        from loom.subagents import model_for
-
-        subagents = [s for s in subagents if config.is_local(model_for(config, s["name"]))]
     # deepagents auto-adds an unrestricted general-purpose subagent if the name
     # is absent — never let mode filtering open that hole.
     subagents = _ensure_general_purpose(

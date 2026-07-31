@@ -495,18 +495,21 @@ def _status(session: "Session", args: str) -> bool:
         "[loom.dim]escalations[/loom.dim]",
         f"{local_escalations} local→local (free) · {escalations} local→cloud (prompt-size guard)",
     )
+    approx = "~" if u.get("cost_estimated") else ""
     table.add_row(
         "[loom.dim]session[/loom.dim]",
-        f"{u['turns']} turns · {u['input_tokens']} in / {u['output_tokens']} out tokens · ${u['cloud_cost']:.3f} cloud",
+        f"{u['turns']} turns · {u['input_tokens']:,} in / {u['output_tokens']:,} out tokens "
+        f"· {approx}${u['cloud_cost']:.3f} cloud",
     )
     su = session.tracker.session
     budget = cfg.orchestrator_read_budget
     budget_str = "off" if budget < 0 else f"{budget}/turn"
+    note = _read_budget_note(session)
     table.add_row(
         "[loom.dim]delegation[/loom.dim]",
         f"orchestrator held {su.orchestrator_share():.0%} of tokens · "
         f"{su.delegations()} delegated role(s) · read budget {budget_str}"
-        f"{_read_budget_note(session)}",
+        f"{(' · ' + note) if note else ''}",
     )
     # The counterfactual has to be priced against a cloud model, or local-only
     # runs report a saving over a model that was never billed.
@@ -685,30 +688,43 @@ def _cost(session: "Session", args: str) -> bool:
     # architecture is knowing whether the orchestrator or the fleet spent the
     # tokens, and two roles can share one model.
     table = Table(show_header=True, header_style="loom.accent")
-    for col in ("Role", "Model", "Where", "Calls", "In", "Cached", "Out", "Cost"):
+    # Local/cloud rides on the model as a badge rather than taking its own
+    # column — it is how every other Loom surface shows it, and the columns it
+    # frees are what keep role and model names intact in an 80-column terminal.
+    # Folding them mid-word to fit was worse than the truncation it replaced.
+    for col in ("Role", "Model", "Calls", "In", "Cached", "Out", "Cost"):
         numeric = col in ("Calls", "In", "Cached", "Out", "Cost")
-        # Fold rather than ellipsize: a truncated role or model name is the one
-        # thing in this table that can't be inferred from the others.
         table.add_column(col, justify="right" if numeric else "left", overflow="fold")
     for actor, mu in u.rows():
         cost = u.cost_of(actor, mu)
+        if actor.is_local:
+            price = "free"
+        else:
+            # "~" marks a model Loom has no published price for, charged at the
+            # Sonnet-tier default. Printing it bare read as a real bill.
+            price = f"{'~' if u.is_estimated(actor) else ''}${cost:.3f}"
         table.add_row(
             actor.role,
-            actor.model,
-            "⌂ local" if actor.is_local else "☁ cloud",
+            f"{'⌂' if actor.is_local else '☁'} {actor.model}",
             f"{mu.calls:,}",
             f"{mu.input_tokens:,}",
             f"{mu.cache_read_tokens:,}" if mu.cache_read_tokens else "—",
             f"{mu.output_tokens:,}",
-            "free" if actor.is_local else f"${cost:.3f}",
+            price,
         )
     if table.row_count:
         session.console.print(table)
+        if u.has_estimates():
+            session.console.print(
+                "[loom.dim]~ estimated: no published price for that model, "
+                "charged here at Sonnet-tier rates[/loom.dim]"
+            )
         share = u.orchestrator_share()
         session.console.print(
             f"[loom.dim]delegation: orchestrator held {share:.0%} of all tokens "
             f"(${u.orchestrator_cost():.3f}); {u.delegations()} delegated role(s) "
-            f"handled the rest in their own context{_read_budget_note(session)}[/loom.dim]"
+            f"handled the rest in their own context · read budget "
+            f"{_read_budget_note(session) or 'never hit'}[/loom.dim]"
         )
     receipt = t.receipt(turn=False)
     if receipt:
@@ -719,12 +735,20 @@ def _cost(session: "Session", args: str) -> bool:
 
 
 def _read_budget_note(session: "Session") -> str:
-    """How often the orchestrator hit its per-turn read cap and had to delegate."""
+    """What the read budget actually did, as a bare fragment both callers frame
+    themselves — /status already labels the row "read budget", and repeating the
+    phrase there read like a stutter."""
     guard = getattr(session.bundle, "delegation_guard", None) if session.bundle else None
     blocked = getattr(guard, "blocked_count", 0) or 0
-    if not blocked:
+    refused = getattr(guard, "refused_count", 0) or 0
+    if not blocked and not refused:
         return ""
-    return f" · read budget held the line on {blocked} model call(s)"
+    parts = [f"withheld on {blocked} model call(s)"] if blocked else []
+    if refused:
+        # Worth naming separately: the model reached for a tool it could no
+        # longer see, which is why the budget is enforced at the tool too.
+        parts.append(f"{refused} over-budget read(s) refused")
+    return ", ".join(parts)
 
 
 @command("resume", "List past sessions, or resume one: /resume [n | thread-id]")
@@ -809,6 +833,7 @@ def _compact(session: "Session", args: str) -> bool:
         return True
 
     from loom.core.model_router import build_model
+    from loom.core.usage import role_metadata
 
     cfg = session.settings.models
     model_string = cfg.subagents.get("general-purpose", cfg.orchestrator) if session.local_only else cfg.orchestrator
@@ -820,7 +845,14 @@ def _compact(session: "Session", args: str) -> bool:
             "open next steps. Be concise but lose nothing load-bearing.\n\n"
             + "\n".join(lines)
         )
-        summary = str(model.invoke(prompt, config={"callbacks": [session.tracker]}).content)
+        # Billed to "compaction", not the orchestrator: it is housekeeping on the
+        # transcript, and folding it into the orchestrator's share would make the
+        # delegation ratio look worse every time the user compacts.
+        summary = str(
+            model.invoke(
+                prompt, config=role_metadata({"callbacks": [session.tracker]}, "compaction")
+            ).content
+        )
     except Exception as exc:
         session.console.print(f"[loom.err]compact failed:[/loom.err] {exc}")
         return True

@@ -125,6 +125,10 @@ class Session:
             "output_tokens": co + lo,
             "cached_tokens": session.cache_read_tokens,
             "cloud_cost": session.cloud_cost,
+            # True when any of that cost was priced against a model Loom has no
+            # published price for. Shown wherever the figure is, or the same
+            # number reads as billed in one place and estimated in another.
+            "cost_estimated": session.has_estimates(),
             "orchestrator_share": session.orchestrator_share(),
         }
 

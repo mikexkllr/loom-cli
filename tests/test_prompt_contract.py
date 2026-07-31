@@ -105,3 +105,63 @@ def test_orchestrator_prompt_does_not_claim_search_tools():
     assert "You have no" in prompt
     for tool in ("ls", "glob", "grep", "write_file", "edit_file"):
         assert tool in excluded
+
+
+# ---------------------------------------------------------------------------
+# The virtual filesystem root
+#
+# The backend mounts the project at `/` (virtual_mode=True), and nothing said so.
+# A live run had the explorer grep an invented `/home/user`, then close its report
+# by "correcting" the user: "the file is at /src/billing.py, not src/billing.py".
+# Both spellings are the same file; the prompt now says which.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", sorted(SPECS))
+def test_every_subagent_is_told_where_the_root_is(name):
+    prompt = SPECS[name].system_prompt
+    assert "project root is `/`" in prompt
+
+
+def _flat(text: str) -> str:
+    """Prompts are hand-wrapped, so match on content rather than line breaks."""
+    return " ".join(text.split())
+
+
+def test_the_root_convention_says_both_spellings_are_one_file():
+    preamble = _flat(ISOLATION_PREAMBLE)
+    assert "name the same file" in preamble
+    assert "correction" in preamble, (
+        "the failure was not confusion but a confident wrong correction in the report"
+    )
+
+
+def test_the_root_convention_rules_out_the_wider_filesystem():
+    """The invented `/home/user` grep cost a tool call and returned nothing."""
+    preamble = _flat(ISOLATION_PREAMBLE)
+    assert "Nothing exists outside the root" in preamble
+    assert "no home directory" in preamble
+
+
+@pytest.mark.parametrize("budget", [-1, 4])
+def test_the_orchestrator_is_told_the_root_whenever_it_can_read(budget):
+    from loom.core.orchestrator import orchestrator_system_prompt
+
+    prompt = orchestrator_system_prompt(budget)
+    assert "read_file" in prompt
+    assert "project root is `/`" in prompt
+
+
+def test_the_orchestrator_is_not_told_about_paths_when_it_cannot_read():
+    """Airgap mode: no filesystem tools, so path conventions are noise."""
+    from loom.core.orchestrator import orchestrator_system_prompt
+
+    assert "project root is `/`" not in orchestrator_system_prompt(0)
+
+
+def test_the_budget_prompt_warns_that_an_over_budget_call_is_refused():
+    """The guard refuses the call as well as withdrawing the tool, so the prompt
+    has to predict both or the refusal reads as a broken harness."""
+    from loom.core.orchestrator import orchestrator_system_prompt
+
+    assert "refused" in orchestrator_system_prompt(4)

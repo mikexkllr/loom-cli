@@ -159,3 +159,60 @@ def test_custom_provider_builds_chat_openai(monkeypatch):
         assert model.openai_api_base == "https://example.com/v1"
     finally:
         mr._build_cached.cache_clear()
+
+
+def test_opencode_go_falls_back_to_the_same_shared_api_key(monkeypatch):
+    """One OpenCode key covers both gateways — verified live: a Zen key answers
+    on the Go endpoint. Users with both should not need to set two variables."""
+    pytest.importorskip("langchain_openai")
+    monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
+    monkeypatch.setenv("OPENCODE_API_KEY", "shared-key")
+    mr._build_cached.cache_clear()
+    try:
+        model = mr._build_cached("opencode_go", "glm-5.2", "", 0)
+        assert model.openai_api_key.get_secret_value() == "shared-key"
+    finally:
+        mr._build_cached.cache_clear()
+
+
+def test_a_dedicated_key_still_beats_the_shared_one(monkeypatch):
+    pytest.importorskip("langchain_openai")
+    monkeypatch.setenv("OPENCODE_API_KEY", "shared-key")
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "go-key")
+    mr._build_cached.cache_clear()
+    try:
+        assert mr._build_cached("opencode_go", "glm-5.2", "", 0
+                                ).openai_api_key.get_secret_value() == "go-key"
+    finally:
+        mr._build_cached.cache_clear()
+
+
+def test_both_opencode_gateways_coexist_in_one_session(monkeypatch):
+    """The reason these endpoints are built directly instead of through
+    init_chat_model: each reads its own base_url/api_key rather than a shared
+    OPENAI_*, so a fleet can mix a Go orchestrator with Zen subagents."""
+    pytest.importorskip("langchain_openai")
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "zen-key")
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "go-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "unrelated")
+    mr._build_cached.cache_clear()
+    try:
+        zen = mr._build_cached("opencode_zen", "deepseek-v4-flash-free", "", 0)
+        go = mr._build_cached("opencode_go", "glm-5.2", "", 0)
+        assert zen.openai_api_base != go.openai_api_base
+        assert zen.openai_api_key.get_secret_value() == "zen-key"
+        assert go.openai_api_key.get_secret_value() == "go-key"
+    finally:
+        mr._build_cached.cache_clear()
+
+
+def test_a_self_hosted_mirror_overrides_the_default_base_url(monkeypatch):
+    pytest.importorskip("langchain_openai")
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "go-key")
+    monkeypatch.setenv("OPENCODE_GO_BASE_URL", "http://localhost:9000/v1")
+    mr._build_cached.cache_clear()
+    try:
+        model = mr._build_cached("opencode_go", "glm-5.2", "", 0)
+        assert model.openai_api_base == "http://localhost:9000/v1"
+    finally:
+        mr._build_cached.cache_clear()

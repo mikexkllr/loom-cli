@@ -139,8 +139,10 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
         flagship_model="gpt-5.5-pro",
         light_model="big-pickle",
         docs_url="https://opencode.ai/docs/zen/",
-        notes="Curated pay-per-use model gateway; several models are free. Only OpenAI-shaped models are "
-        "supported so far — MiniMax/Qwen-style Anthropic-shaped Zen models aren't wired up yet.",
+        notes="Curated pay-per-use model gateway. Models with a `-free` suffix cost nothing and are "
+        "billed as zero in Loom's receipts. GLM/Kimi/MiniMax/MiMo/DeepSeek all work, tool calls "
+        "included — the gateway serves everything over its OpenAI-compatible API. One "
+        "OPENCODE_API_KEY covers Zen and Go together.",
     ),
     ProviderInfo(
         id="opencode_go",
@@ -152,8 +154,10 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
         flagship_model="glm-5.2",
         light_model="deepseek-v4-flash",
         docs_url="https://opencode.ai/docs/go/",
-        notes="$5 first month / $10 mo subscription, flat usage limits. GLM/Kimi/DeepSeek/MiMo models route "
-        "here; MiniMax/Qwen are Anthropic-shaped and aren't wired up yet.",
+        notes="$5 first month / $10 mo subscription, flat usage limits. GLM/Kimi/DeepSeek/MiMo/MiniMax/Qwen "
+        "all route here over the OpenAI-compatible API, tool calls included. Because it is a "
+        "subscription, per-token cost does not apply — receipts mark these models `~` (estimated). "
+        "One OPENCODE_API_KEY covers Zen and Go together.",
     ),
     ProviderInfo(
         id="google_ai_studio",

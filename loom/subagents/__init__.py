@@ -38,6 +38,7 @@ def build_all_subagents(
     read_only: bool = False,
     ladder: tuple[tuple[str, int], ...] = (),
     backend: Any | None = None,
+    local_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Resolve every registered subagent into a deepagents subagent dict.
 
@@ -49,10 +50,19 @@ def build_all_subagents(
     backend — passing it lets each spec install its own tool-allowlisted
     ``FilesystemMiddleware`` in place of deepagents' unrestricted default
     (see :meth:`loom.subagents.base.SubagentSpec.build`).
+
+    ``local_only=True`` (``--local-only`` and ``--airgap``) drops cloud-backed
+    roles here rather than filtering them out of the returned list, which is a
+    correctness difference and not a tidiness one: constructing a cloud model
+    validates its credentials, so a fleet containing one cloud role — the default
+    config's ``reviewer`` — made both no-cloud modes fail to start on a machine
+    with no cloud key, which is the machine most likely to be asking for them.
     """
     extra = WRITE_TOOLS if read_only else frozenset()
     out: list[dict[str, Any]] = []
     for name, spec in SPECS.items():
+        if local_only and not config.is_local(model_for(config, name)):
+            continue
         sub = spec.build(
             config, settings, cwd, extra_excluded=extra, ladder=ladder, backend=backend
         )

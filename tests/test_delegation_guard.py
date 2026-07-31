@@ -159,3 +159,110 @@ def test_config_rejects_nonsense_budgets():
     assert LoomConfig(orchestrator_read_budget=-1).orchestrator_read_budget == -1
     with pytest.raises(ValueError):
         LoomConfig(orchestrator_read_budget=-2)
+
+
+# ---------------------------------------------------------------------------
+# Refusing the call the model makes anyway
+#
+# Withdrawing the tool from the model's schema is not enforcement on its own:
+# ToolNode still holds every tool the agent was built with, so an over-budget
+# `read_file` emitted regardless — which is what a model does after watching four
+# such calls succeed in its visible history — used to execute and return the file.
+# ---------------------------------------------------------------------------
+
+
+def _tool_request(messages, call_id="x", name="read_file"):
+    call = {"name": name, "args": {"file_path": "a.py"}, "id": call_id}
+    return SimpleNamespace(
+        tool_call=call,
+        state={"messages": [*messages, AIMessage(content="", tool_calls=[call])]},
+    )
+
+
+def _run_tool(guard, req):
+    """(result, ran) — ran is False when the guard short-circuited."""
+    ran = []
+
+    def handler(r):
+        ran.append(r)
+        return "FILE CONTENTS"
+
+    result = guard.wrap_tool_call(req, handler)
+    return result, bool(ran)
+
+
+def test_a_call_within_budget_runs():
+    guard = DelegationGuard(4)
+    result, ran = _run_tool(guard, _tool_request([HumanMessage("go"), *_reads(2)]))
+    assert ran and result == "FILE CONTENTS"
+    assert guard.refused_count == 0
+
+
+def test_the_last_call_inside_the_budget_still_runs():
+    """Budget 4 with 3 already spent: this is the 4th, and it must not be refused."""
+    guard = DelegationGuard(4)
+    _, ran = _run_tool(guard, _tool_request([HumanMessage("go"), *_reads(3)]))
+    assert ran
+    assert guard.refused_count == 0
+
+
+def test_an_over_budget_call_is_refused_not_executed():
+    guard = DelegationGuard(4)
+    result, ran = _run_tool(guard, _tool_request([HumanMessage("go"), *_reads(4)]))
+    assert not ran, "the tool ran despite the budget being spent"
+    assert guard.refused_count == 1
+    assert isinstance(result, ToolMessage)
+    assert "read budget" in result.content
+    assert "task" in result.content, "the refusal must name the way forward"
+
+
+def test_the_refusal_answers_the_call_it_refused():
+    """A ToolMessage whose id does not match leaves the graph with a dangling call."""
+    guard = DelegationGuard(0)
+    result, _ = _run_tool(guard, _tool_request([HumanMessage("go")], call_id="abc123"))
+    assert result.tool_call_id == "abc123"
+
+
+def test_other_tools_are_never_refused():
+    guard = DelegationGuard(0)
+    _, ran = _run_tool(guard, _tool_request([HumanMessage("go")], name="task"))
+    assert ran
+
+
+def test_a_negative_budget_refuses_nothing():
+    guard = DelegationGuard(-1)
+    _, ran = _run_tool(guard, _tool_request([HumanMessage("go"), *_reads(20)]))
+    assert ran
+    assert guard.refused_count == 0
+
+
+def test_a_parallel_batch_degrades_in_order():
+    """Three reads in one message with 2 of 4 spent: the first two are inside the
+    budget and must run. Totalling the batch would refuse all three, including
+    calls the orchestrator was entitled to make."""
+    guard = DelegationGuard(4)
+    calls = [{"name": "read_file", "args": {}, "id": f"p{i}"} for i in range(3)]
+    state = {"messages": [HumanMessage("go"), *_reads(2), AIMessage(content="", tool_calls=calls)]}
+    outcomes = []
+    for call in calls:
+        req = SimpleNamespace(tool_call=call, state=state)
+        _, ran = _run_tool(guard, req)
+        outcomes.append(ran)
+    assert outcomes == [True, True, False]
+    assert guard.refused_count == 1
+
+
+def test_refusals_are_counted_separately_from_revocations():
+    """They answer different questions: how often the model was told no, versus
+    how often it reached for a tool it could no longer see."""
+    guard = DelegationGuard(1)
+    _run(guard, _request([HumanMessage("go"), *_reads(1)]))       # revoked
+    _run_tool(guard, _tool_request([HumanMessage("go"), *_reads(1)]))  # refused
+    assert (guard.blocked_count, guard.refused_count) == (1, 1)
+
+
+def test_a_missing_state_does_not_crash_the_call():
+    guard = DelegationGuard(4)
+    req = SimpleNamespace(tool_call={"name": "read_file", "args": {}, "id": "z"}, state=None)
+    _, ran = _run_tool(guard, req)
+    assert ran, "with no history to count, the call must be allowed through"

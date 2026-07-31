@@ -36,6 +36,12 @@ class _PromptOrCommandGroup(typer.core.TyperGroup):
     subcommands, so ``loom models status`` would otherwise become the task
     "models". If the first non-option token names a known subcommand, insert
     an empty prompt placeholder so the subcommand resolves normally.
+
+    Otherwise we are in prompt form, and options are allowed to follow the task
+    text. Click switches that off for groups so a subcommand's own flags survive
+    to be parsed by the subcommand (``loom models pull --all``) — but in prompt
+    form there is no subcommand to shield, and leaving it off made the natural
+    ``loom "fix the tests" --yolo`` fail with "No such command '--yolo'".
     """
 
     def parse_args(self, ctx, args):
@@ -43,6 +49,8 @@ class _PromptOrCommandGroup(typer.core.TyperGroup):
         if first is not None and first in self.commands:
             idx = args.index(first)
             args = [*args[:idx], "", *args[idx:]]
+        else:
+            ctx.allow_interspersed_args = True
         return super().parse_args(ctx, args)
 
 
