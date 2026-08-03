@@ -575,6 +575,24 @@ def playwright_install(
     render.note(console, f"{browser} installed", kind="good")
 
 
+# model_router's provider ids mostly match providers.py's registry ids; these
+# two don't, and doctor needs the registry entry to know which env var to check.
+_ROUTER_TO_REGISTRY = {"google_genai": "google_ai_studio", "custom": "openai_compatible"}
+
+
+def _routed_cloud_providers(resolved) -> list[str]:
+    """Registry ids of the cloud providers this config actually routes to,
+    in first-seen order and de-duplicated."""
+    seen: list[str] = []
+    for r in resolved:
+        if r.is_local:
+            continue
+        pid = _ROUTER_TO_REGISTRY.get(r.provider, r.provider)
+        if pid not in seen:
+            seen.append(pid)
+    return seen
+
+
 @app.command("doctor")
 def doctor(
     root: str = typer.Option(".", "--root"),
@@ -591,7 +609,7 @@ def doctor(
     import os
     import sys as _sys
 
-    from loom.core import ollama
+    from loom.core import model_router, ollama, providers
     from loom.core.mcp import mcp_status
 
     _retheme(root)
@@ -612,9 +630,20 @@ def doctor(
             Text(detail, style="loom.muted" if ok else style),
         )
 
+    # What the config actually routes to. Doctor reports on the providers in
+    # use, not on a fixed list of infrastructure — a red ✘ for an Ollama daemon
+    # or an Anthropic key that no role touches reads as "your setup is broken"
+    # when nothing is.
+    routed = [*config.all_models().values(), config.escalation_model, config.cloud_fallback]
+    resolved = [model_router.resolve(m) for m in routed if m]
+    has_local_roles = any(r.is_local for r in resolved)
+
     lines = [row(_sys.version_info >= (3, 11), "python", _sys.version.split()[0])]
     st = ollama.status(config)
-    if st.running:
+    if not has_local_roles and not st.running:
+        # All-cloud config: the daemon being down is a non-event.
+        lines.append(row(None, "ollama", "not running — no local roles configured"))
+    elif st.running:
         detail = f"running @ {st.endpoint}" + ("" if st.installed else " (remote — no local binary)")
         lines.append(row(True, "ollama", detail))
         missing = ollama.missing_models(config)
@@ -631,12 +660,22 @@ def doctor(
     else:
         lines.append(row(False, "ollama", f"not reachable @ {st.endpoint}" + ("" if st.installed else ", binary not installed")))
         lines.append(row(None, "cloud fallback", f"local roles will run on {config.cloud_fallback} (billed)"))
-    key_set = bool(
-        effective_env("ANTHROPIC_API_KEY")
-        or effective_env("ANTHROPIC_AUTH_TOKEN")
-        or effective_env("AWS_BEARER_TOKEN_BEDROCK")
-    )
-    lines.append(row(key_set, "anthropic_api_key", "set" if key_set else "not set"))
+    for provider_id in _routed_cloud_providers(resolved):
+        try:
+            info = providers.get(provider_id)
+        except Exception:
+            continue
+        names = [v.key for v in info.env_vars if v.required and v.secret]
+        if not names:
+            continue
+        # Anthropic accepts a couple of alternatives the registry doesn't list,
+        # since Bedrock and the gateway proxies authenticate differently.
+        if provider_id == "anthropic":
+            names += ["ANTHROPIC_AUTH_TOKEN", "AWS_BEARER_TOKEN_BEDROCK"]
+        found = next((n for n in names if effective_env(n)), None)
+        lines.append(
+            row(bool(found), info.label, f"{found} set" if found else f"{names[0]} not set")
+        )
     from loom.core import playwright_setup
 
     pw = playwright_setup.status()

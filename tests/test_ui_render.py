@@ -165,6 +165,47 @@ def test_wrapping_never_splits_a_word():
         assert word in stripped, f"{word} was split across a wrap"
 
 
+def test_streamed_code_keeps_its_indentation():
+    """The rail must not reflow source. Leading whitespace after a newline is
+    indentation, not the space that caused a wrap — eating it turns every
+    streamed code block into flat, un-copyable text."""
+    console = _console(width=60)
+    weave = Weave(console)
+    thread = weave.thread("orchestrator")
+    code = "def divide(a, b):\n    if b == 0:\n        raise ValueError('x')\n    return a / b\n"
+
+    def draw():
+        weave.open(thread)
+        for char in code:  # one token at a time, as it really arrives
+            weave.text(char)
+        weave.end_block()
+
+    out = _capture(console, draw)
+    # Drop the rail so indentation can be compared directly.
+    rows = [line.split("│", 1)[-1][1:] for line in out.splitlines() if "│" in line]
+    rows = [r for r in rows if r.strip()]
+    assert rows[0].startswith("def divide"), rows
+    assert rows[1].startswith("    if b == 0"), rows
+    assert rows[2].startswith("        raise"), rows
+    assert rows[3].startswith("    return"), rows
+
+
+def test_wrapping_still_drops_the_space_that_caused_it():
+    """The counterpart to the test above: a soft wrap must not open the next
+    line with the space it broke on."""
+    console = _console(width=40)
+    weave = Weave(console)
+    thread = weave.thread("orchestrator")
+    out = _capture(
+        console,
+        lambda: (weave.open(thread), weave.text("alpha beta gamma delta epsilon zeta eta theta iota"), weave.end_block()),
+    )
+    body = [line for line in out.splitlines() if "│" in line and "orchestrator" not in line]
+    rows = [line.split("│", 1)[-1][1:] for line in body]
+    assert len(rows) > 1, "expected a wrap"
+    assert all(not r.startswith(" ") for r in rows if r), rows
+
+
 def test_a_subagent_rail_is_indented_under_its_caller():
     console = _console()
     weave = Weave(console)

@@ -49,6 +49,75 @@ def test_config_set_writes_winning_settings_layer(tmp_path, monkeypatch):
     assert st.load_settings(root=proj).models.orchestrator == "gpt-4o"
 
 
+_SUBAGENTS = ("explorer", "editor", "bash", "searcher", "general-purpose", "tester", "reviewer")
+
+
+def _all_cloud(model: str = "go:glm-5") -> dict:
+    """Every role pinned to ``model`` — including the subagents, which would
+    otherwise inherit config.yaml's local defaults through the merge."""
+    return {
+        "orchestrator": model,
+        "advisor": model,
+        "escalation_model": model,
+        "cloud_fallback": model,
+        "subagents": dict.fromkeys(_SUBAGENTS, model),
+    }
+
+
+def _doctor_on(tmp_path, monkeypatch, models: dict) -> str:
+    """Run `loom doctor` against a throwaway project pinned to ``models``."""
+    import json
+
+    from loom.core import ollama as ollama_mod
+    from loom.core import settings as st
+
+    monkeypatch.setattr(st, "USER_SETTINGS_PATH", tmp_path / "user-settings.json")
+    monkeypatch.setattr(
+        ollama_mod, "status", lambda cfg: ollama_mod.OllamaStatus(False, False, [], cfg.ollama_endpoint)
+    )
+    proj = tmp_path / "proj"
+    (proj / ".loom").mkdir(parents=True, exist_ok=True)  # a test may call this twice
+    (proj / ".loom" / "settings.json").write_text(json.dumps({"models": models}))
+    result = runner.invoke(app, ["doctor", "--root", str(proj)])
+    assert result.exit_code == 0
+    return result.output
+
+
+def test_doctor_only_reports_providers_the_config_uses(tmp_path, monkeypatch):
+    # An all-cloud config must not be told its Anthropic key is missing — no
+    # role asks for one. Reporting fixed infrastructure instead of the actual
+    # routing reads as "your setup is broken" when nothing is.
+    out = _doctor_on(tmp_path, monkeypatch, _all_cloud())
+    assert "ANTHROPIC_API_KEY" not in out
+    assert "OpenCode Go" in out
+
+
+def test_doctor_reports_anthropic_when_a_role_routes_there(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    out = _doctor_on(tmp_path, monkeypatch, {"orchestrator": "claude-sonnet-5"})
+    assert "ANTHROPIC_API_KEY" in out
+
+
+def test_doctor_downgrades_ollama_when_nothing_runs_locally(tmp_path, monkeypatch):
+    # A stopped daemon is a non-event with no local roles, but a real failure
+    # the moment one subagent needs it.
+    all_cloud = _doctor_on(tmp_path, monkeypatch, _all_cloud())
+    assert "no local roles configured" in all_cloud
+
+    one_local = _all_cloud() | {"subagents": dict.fromkeys(_SUBAGENTS, "go:glm-5") | {"explorer": "ollama/qwen3.5:2b"}}
+    assert "not reachable" in _doctor_on(tmp_path, monkeypatch, one_local)
+
+
+def test_opencode_go_defaults_are_not_region_locked():
+    # deepseek-v4-* 403 with a RegionError until the account opts in, so the
+    # wizard must never hand them to a new user as a default.
+    from loom.core import providers
+
+    go = providers.get("opencode_go")
+    for tier in ("main", "flagship", "light"):
+        assert not go.model_for_tier(tier).startswith("deepseek")
+
+
 def test_models_subcommand_resolves():
     result = runner.invoke(app, ["models", "status"])
     # Exit code depends on whether ollama is installed; either way it must hit

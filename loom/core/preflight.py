@@ -22,7 +22,12 @@ from loom.core import ollama as ollama_mod
 # A probe is a real billed call, so keep it to the smallest thing that proves
 # the round-trip works. Single digits of tokens.
 PROBE = "Reply with the single word: ok"
-TIMEOUT_SECONDS = 25.0
+# Generous on purpose. Reasoning models emit a full chain of thought before the
+# first visible token — GLM-5 on OpenCode Go takes 10-21s to answer "say ok" —
+# so a tight bound reports healthy models as dead. Probes for distinct models
+# run concurrently, and a wrong "won't answer" costs the user far more than
+# waiting does.
+TIMEOUT_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -95,7 +100,11 @@ def _check_cloud(model_string: str, config: cfg.LoomConfig, timeout: float) -> C
         reply = future.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
         return Check(
-            model_string, False, "timeout", f"no answer within {timeout:.0f}s", "the provider may be degraded"
+            model_string,
+            False,
+            "timeout",
+            f"no answer within {timeout:.0f}s",
+            "too slow to probe — it may still work on a real task",
         )
     except Exception as exc:
         return _classify(model_string, exc)

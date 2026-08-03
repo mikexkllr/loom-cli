@@ -227,4 +227,7 @@ def test_timeout_error_is_caught_not_propagated():
     """concurrent.futures.TimeoutError is not a subclass of the SDK errors we
     classify, so it needs its own arm — this pins that it has one."""
     assert issubclass(concurrent.futures.TimeoutError, Exception)
-    assert preflight.TIMEOUT_SECONDS > 0
+    # Reasoning models think for 10-20s before their first token on a probe as
+    # small as "say ok", so the bound has to clear that with room to spare or
+    # healthy models get reported dead.
+    assert preflight.TIMEOUT_SECONDS >= 45

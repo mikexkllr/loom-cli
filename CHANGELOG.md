@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.2.6 — 2026-08-03
+
+### Fixed
+
+- **The release pipeline could not install itself.** `uv.lock` pins the
+  project's own version, so bumping `pyproject.toml` to 0.2.5 without relocking
+  left `uv sync --locked` — the first step of every CI and release job —
+  refusing to run. All seven jobs failed before a single test or binary build
+  started. Relocked, and both workflows are green again.
+- **Streamed code lost its indentation.** The transcript's word-wrapper dropped
+  the space that caused a wrap, but it could not tell that space apart from the
+  leading whitespace of a genuine new line — so every code block the model
+  streamed arrived flattened to the left margin and un-copyable. Real newlines
+  now keep their indent; soft wraps still drop the space they broke on.
+- **`doctor` reported on infrastructure the config never touches.** An all-cloud
+  setup was told its Anthropic key was missing and its Ollama daemon was down,
+  both as red failures, when no role routed to either. Doctor now derives the
+  providers it checks from the actual routing, and a stopped daemon is a
+  non-event when nothing runs locally.
+- **OpenCode Go defaulted to a model that cannot answer.** `deepseek-v4-flash`
+  is hosted in China and returns 403 `RegionError` until the account opts in,
+  yet it was the wizard's suggestion for both the main and light tiers — so
+  picking OpenCode Go handed a new user a setup that 403s on first use. The
+  defaults are now `glm-5` / `glm-5.2` / `kimi-k2.7-code`, all verified
+  callable with a plain key.
+- **Preflight called healthy models dead.** The 25s probe timeout left no
+  headroom for reasoning models, which think for 10–20s before their first
+  token even on a one-word prompt — GLM-5 was reported as "no answer within
+  25s · the provider may be degraded" while working fine. The bound is now 60s,
+  and a timeout no longer asserts the provider is at fault.
+
 ## 0.2.5 — 2026-08-03
 
 ### Added

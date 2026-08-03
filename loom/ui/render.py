@@ -288,6 +288,7 @@ class Gutter:
         self._col = 0
         self._pending = ""
         self._fresh = True  # nothing written on the current line yet
+        self._wrapped = False  # ...and we got here by wrapping, not a newline
 
     def write(self, text: str) -> None:
         buf = self._pending + text
@@ -309,6 +310,7 @@ class Gutter:
         self.console.print()
         self._col = 0
         self._fresh = True
+        self._wrapped = False
 
     def blank(self) -> None:
         """An empty rail line — the breathing room between blocks."""
@@ -318,6 +320,7 @@ class Gutter:
         self.console.print(self.prefix)
         self._col = 0
         self._fresh = True
+        self._wrapped = False
 
     def block(self, renderable: RenderableType) -> None:
         """Render a full Rich renderable (markdown, diff, table) inside the rail."""
@@ -326,6 +329,7 @@ class Gutter:
             self.console.print()
             self._col = 0
             self._fresh = True
+        self._wrapped = False
         options = self.console.options.update(width=self.width)
         rendered = self.console.render_lines(renderable, options, pad=False)
         # Renderables that end in a newline (diffs, Markdown) leave a trailing
@@ -340,6 +344,7 @@ class Gutter:
             self.console.print(line)
         self._col = 0
         self._fresh = True
+        self._wrapped = False
 
     # -- internals
     def _raw(self, chunk: str) -> None:
@@ -348,6 +353,7 @@ class Gutter:
                 self.console.print()
                 self._col = 0
                 self._fresh = True
+                self._wrapped = False  # a real newline — keep this line's indent
             self._line(line)
 
     def _line(self, line: str) -> None:
@@ -355,13 +361,17 @@ class Gutter:
             if not word:
                 continue
             blank = not word.strip()
-            if blank and self._fresh:
-                continue  # never open a wrapped line with the wrap's own space
+            # Drop the space that *caused* a wrap, but never the leading
+            # whitespace of a genuine new line — that is source indentation,
+            # and eating it reflows every code block the model streams.
+            if blank and self._fresh and self._wrapped:
+                continue
             length = cell_len(word)
             if not blank and self._col and self._col + length > self.width:
                 self.console.print()
                 self._col = 0
                 self._fresh = True
+                self._wrapped = True
             if self._fresh:
                 self.console.print(self.prefix, end="")
                 self._fresh = False

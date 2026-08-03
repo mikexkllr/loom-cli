@@ -150,14 +150,19 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
         kind="cloud",
         prefix="go",
         env_vars=(EnvVar("OPENCODE_GO_API_KEY", "OpenCode Go API key"),),
-        main_model="deepseek-v4-flash",
+        # Deliberately NOT deepseek-v4-flash: it is hosted in China and 403s
+        # with a RegionError until the account opts in on the OpenCode
+        # dashboard, so defaulting to it hands a brand-new user a setup that
+        # cannot answer. These three are verified callable with a plain key.
+        main_model="glm-5",
         flagship_model="glm-5.2",
-        light_model="deepseek-v4-flash",
+        light_model="kimi-k2.7-code",
         docs_url="https://opencode.ai/docs/go/",
         notes="$5 first month / $10 mo subscription, flat usage limits. GLM/Kimi/DeepSeek/MiMo/MiniMax/Qwen "
         "all route here over the OpenAI-compatible API, tool calls included. Because it is a "
         "subscription, per-token cost does not apply — receipts mark these models `~` (estimated). "
-        "One OPENCODE_API_KEY covers Zen and Go together.",
+        "One OPENCODE_API_KEY covers Zen and Go together. The deepseek-v4-* models need an extra "
+        "region opt-in on the OpenCode dashboard before they will answer.",
     ),
     ProviderInfo(
         id="google_ai_studio",
