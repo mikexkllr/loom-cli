@@ -5,4 +5,4 @@ Ollama models) handle isolated, bounded subtasks in separate context windows and
 return only summaries — preserving the orchestrator's context quality.
 """
 
-__version__ = "0.2.10"
+__version__ = "0.3.0"

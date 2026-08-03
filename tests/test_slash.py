@@ -18,7 +18,7 @@ EXPECTED_COMMANDS = {
     "resume", "undo",
     # Loom-specific
     "plan", "local", "yolo", "agents", "ollama", "playwright", "settings", "theme", "cwd",
-    "airgap", "setup",
+    "airgap", "setup", "privacy",
 }
 
 
@@ -344,3 +344,42 @@ def test_first_turn_injects_repo_map_and_mentions(tmp_path):
     assert "[Repo map]" in text and "print('hi')" in text
     # second turn: no repo map again
     assert "[Repo map]" not in s._prepare_text("next")
+
+
+# ------------------------------------------------------------------ /privacy
+
+
+@pytest.fixture
+def _isolated_telemetry(tmp_path, monkeypatch):
+    from loom.core import telemetry as tel
+
+    monkeypatch.setattr(tel, "store_path", lambda: tmp_path / "telemetry.json")
+    tel._reset_for_tests()
+    yield tel
+    tel._reset_for_tests()
+
+
+def test_privacy_describes_the_default_state(tmp_path, capsys, _isolated_telemetry):
+    s = _session(tmp_path)
+    assert slash.dispatch(s, "/privacy") is True
+    out = capsys.readouterr().out
+    assert "nothing leaves this machine" in out
+
+
+def test_privacy_set_persists_and_reactivates(tmp_path, capsys, _isolated_telemetry):
+    tel = _isolated_telemetry
+    s = _session(tmp_path)
+    assert slash.dispatch(s, "/privacy set none") is True
+    consent = tel.load()
+    assert consent.mode == "none" and consent.decided is True
+    assert "in effect now" in capsys.readouterr().out
+
+    assert slash.dispatch(s, "/privacy set bogus") is True
+    assert tel.load().mode == "none"  # unchanged
+
+
+def test_privacy_here_requires_a_mode_first(tmp_path, capsys, _isolated_telemetry):
+    s = _session(tmp_path)
+    assert slash.dispatch(s, "/privacy here") is True
+    assert "set a mode first" in capsys.readouterr().out
+    assert _isolated_telemetry.project_share(tmp_path) is None  # nothing recorded

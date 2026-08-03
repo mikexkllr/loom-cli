@@ -220,7 +220,7 @@ def test_the_wizard_can_skip_probing(monkeypatch, tmp_path):
     from loom.ui.theme import make_console
     from loom.core.settings import UISettings
 
-    ob.run(make_console(UISettings()), root=str(tmp_path), verify=False)
+    ob.run(make_console(UISettings()), root=str(tmp_path), verify=False, privacy=False)
 
 
 def test_timeout_error_is_caught_not_propagated():

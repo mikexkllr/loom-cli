@@ -26,7 +26,7 @@ _GROUPS: list[tuple[str, tuple[str, ...]]] = [
     ("session", ("help", "status", "cost", "clear", "compact", "resume", "export", "exit")),
     ("modes", ("mode", "plan", "yolo", "local", "airgap", "loop", "vim")),
     ("fleet", ("model", "agents", "ollama", "setup", "skills", "mcp", "playwright", "graphify")),
-    ("project", ("cwd", "memory", "init", "undo", "permissions", "hooks", "settings", "theme", "doctor")),
+    ("project", ("cwd", "memory", "init", "undo", "permissions", "hooks", "privacy", "settings", "theme", "doctor")),
 ]
 
 
@@ -391,7 +391,9 @@ def _setup(session: "Session", args: str) -> bool:
         if requested:
             roles = requested
     try:
-        settings = onboarding.run(session.console, root=session.cwd, roles=roles)
+        # Re-picking one role's model is not the moment to re-ask someone what
+        # they consent to sending — the full wizard is.
+        settings = onboarding.run(session.console, root=session.cwd, roles=roles, privacy=(roles == onboarding.ALL_ROLES))
         onboarding.maybe_setup_playwright(session.console, settings)
     except (KeyboardInterrupt, EOFError):
         render.note(session.console, "setup cancelled")
@@ -510,6 +512,71 @@ def _permissions(session: "Session", args: str) -> bool:
         )
     )
     return True
+
+
+@command("privacy", "What Loom may share: /privacy [set none|errors|full] [here] [setup]")
+def _privacy(session: "Session", args: str) -> bool:
+    from loom.core import telemetry as tel
+    from loom.ui import privacy as privacy_mod
+
+    console = session.console
+    verb, _, rest = args.strip().partition(" ")
+
+    if verb == "set":
+        if privacy_mod.set_mode(console, rest.strip(), session.cwd):
+            _reactivate_telemetry(session)
+        return True
+    if verb == "here":
+        # Re-answer the per-project question regardless of the stored answer —
+        # this verb exists for "I said yes here once and I've changed my mind".
+        if tel.global_mode() == tel.DEFAULT_MODE:
+            render.note(console, "privacy mode is none — set a mode first ([loom.warp]/privacy set errors[/loom.warp])", kind="warn")
+            return True
+        try:
+            privacy_mod.ask_project(console, session.cwd)
+        except (KeyboardInterrupt, EOFError):
+            render.note(console, "left as it was")
+            return True
+        _reactivate_telemetry(session)
+        return True
+    if verb == "setup":
+        try:
+            privacy_mod.run(console, session.cwd)
+        except (KeyboardInterrupt, EOFError):
+            render.note(console, "cancelled — privacy left as it was")
+            return True
+        _reactivate_telemetry(session)
+        return True
+    if verb and verb != "status":
+        render.note(console, f"unknown /privacy verb {verb!r} — try [loom.warp]/privacy[/loom.warp]", kind="warn")
+        return True
+
+    privacy_mod.describe(console, session.cwd)
+    return True
+
+
+def _reactivate_telemetry(session: "Session") -> None:
+    """Re-read consent after a /privacy change so it takes effect this
+    session, and say what actually changed.
+
+    Callbacks are re-assembled per turn (``Session._run_config``) and crash
+    reporting checks the mode at capture time, so a mode change needs no
+    rebuild — but a mode that was off at startup has its SDKs cold, and a
+    mode switched *down* leaves an initialized SDK inert rather than
+    un-imported. The note says exactly that; anything vaguer would read as a
+    promise either way."""
+    from loom.core import telemetry as tel
+
+    try:
+        mode = tel.activate(session.cwd)
+    except Exception:
+        return
+    info = tel.mode_info(mode)
+    render.note(
+        session.console,
+        f"in effect now: [loom.warp]{info.label}[/loom.warp] — {info.blurb}",
+        kind="good" if mode == "none" else "warn",
+    )
 
 
 @command("settings", "Show settings, or set one: /settings ui.theme light")
@@ -1178,6 +1245,10 @@ def _doctor(session: "Session", args: str) -> bool:
     for r in mcp_status(session.settings):
         ok: bool | None = True if r["state"] == "connected" else (None if r["state"] in ("not connected", "disabled") else False)
         out.append(row(ok, f"mcp:{r['name']}", r["state"]))
+
+    from loom.ui import privacy as privacy_mod
+
+    out.append(row(*privacy_mod.doctor_row(session.cwd)))
 
     console.print()
     render.rule(console, "doctor")

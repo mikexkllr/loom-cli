@@ -1,0 +1,555 @@
+"""Privacy modes — what, if anything, Loom is allowed to send home.
+
+Three modes, and the default is the private one:
+
+``none``    nothing leaves the machine. No SDK is imported, no socket opened.
+``errors``  crashes only, via Sentry: exception type, message and stack trace,
+            scrubbed of paths, locals, argv and hostname. No prompts, no code.
+``full``    everything ``errors`` sends, plus complete LLM traces via Langfuse:
+            prompts, completions, tool calls, delegations, tokens and timings.
+            That is the training corpus for a distilled Loom orchestrator, and
+            it necessarily contains your source code — which is why it is a
+            deliberate, separate opt-in.
+
+Consent lives in ``$LOOM_HOME/telemetry.json`` (default ``~/.loom``), never in
+a project's ``.loom/settings.json``: that file is meant to be committed, and
+one developer's privacy choice is not a team-wide setting. The same file holds
+the Sentry DSN and Langfuse keys, so a secret key can never be swept into a
+repo by ``/setup --scope project``.
+
+Two consent gates, both of which must pass before a single byte is sent:
+
+1. the *global* mode above, chosen once during setup;
+2. a *per-project* answer, asked the first time Loom runs in a given git repo
+   or directory — because "I'll share crash reports" is not the same statement
+   as "I'll share crash reports from my employer's monorepo".
+
+Everything here degrades to a no-op rather than raising. Telemetry that can
+break the tool it is supposed to be improving is worse than no telemetry.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from loom.core import config as cfg
+
+# ----------------------------------------------------------------------------
+# Modes
+# ----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Mode:
+    """One privacy level, and the plain-English promise attached to it."""
+
+    id: str
+    label: str
+    blurb: str
+    sends: tuple[str, ...]
+    never: tuple[str, ...]
+    needs: tuple[str, ...] = ()  # credential keys this mode can't work without
+
+
+MODES: tuple[Mode, ...] = (
+    Mode(
+        id="none",
+        label="none",
+        blurb="nothing leaves this machine",
+        sends=(),
+        never=("crash reports", "prompts", "code", "usage counts"),
+    ),
+    Mode(
+        id="errors",
+        label="bug reports",
+        blurb="crashes only — the stack trace, scrubbed",
+        sends=("exception type + message", "stack trace (no local variables)", "Loom version, OS, python version"),
+        never=("your prompts", "your code", "file paths outside Loom itself", "environment variables", "hostname"),
+        needs=("SENTRY_DSN",),
+    ),
+    Mode(
+        id="full",
+        label="full tracing",
+        blurb="crashes plus complete LLM traces, to train a local orchestrator",
+        sends=(
+            "everything a bug report sends",
+            "every prompt and completion, orchestrator and subagents",
+            "tool calls, delegations, token counts and latencies",
+        ),
+        never=("anything, if you pick a different mode later — but past traces stay sent",),
+        needs=("SENTRY_DSN", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"),
+    ),
+)
+
+MODE_IDS: tuple[str, ...] = tuple(m.id for m in MODES)
+DEFAULT_MODE = "none"
+
+# Set LOOM_TELEMETRY=none in CI (or anywhere else) to force the private mode
+# regardless of what is on disk. It can only ever tighten, never loosen: a
+# stray env var must not be able to switch on tracing nobody consented to.
+ENV_OVERRIDE = "LOOM_TELEMETRY"
+
+STORE_VERSION = 1
+
+
+def mode_info(mode_id: str) -> Mode:
+    return next((m for m in MODES if m.id == mode_id), MODES[0])
+
+
+def _rank(mode_id: str) -> int:
+    return MODE_IDS.index(mode_id) if mode_id in MODE_IDS else 0
+
+
+# ----------------------------------------------------------------------------
+# The consent store
+# ----------------------------------------------------------------------------
+
+
+def store_path() -> Path:
+    """``$LOOM_HOME/telemetry.json``.
+
+    Resolved on every call rather than cached at import: the test suite points
+    ``LOOM_HOME`` at a temp dir, and ``/setup`` can be re-run after it changes.
+    """
+    return cfg.USER_CONFIG_DIR / "telemetry.json"
+
+
+@dataclass
+class Consent:
+    """The whole of what the user has agreed to, as stored on disk."""
+
+    version: int = STORE_VERSION
+    mode: str = DEFAULT_MODE
+    # False until the user has actually been shown the question. Distinct from
+    # `mode == "none"`, which is a real answer someone gave.
+    decided: bool = False
+    sentry_dsn: str = ""
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+    # project key -> {"share": bool, "at": epoch seconds}
+    projects: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "mode": self.mode,
+            "decided": self.decided,
+            "sentry": {"dsn": self.sentry_dsn},
+            "langfuse": {
+                "public_key": self.langfuse_public_key,
+                "secret_key": self.langfuse_secret_key,
+                "host": self.langfuse_host,
+            },
+            "projects": self.projects,
+        }
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "Consent":
+        langfuse = data.get("langfuse") or {}
+        sentry = data.get("sentry") or {}
+        mode = str(data.get("mode") or DEFAULT_MODE)
+        return cls(
+            version=int(data.get("version") or STORE_VERSION),
+            # An unrecognised mode (a downgrade, a hand-edit) reads as `none`.
+            # Failing closed is the only safe direction for a consent record.
+            mode=mode if mode in MODE_IDS else DEFAULT_MODE,
+            decided=bool(data.get("decided")),
+            sentry_dsn=str(sentry.get("dsn") or ""),
+            langfuse_public_key=str(langfuse.get("public_key") or ""),
+            langfuse_secret_key=str(langfuse.get("secret_key") or ""),
+            langfuse_host=str(langfuse.get("host") or "https://cloud.langfuse.com"),
+            projects=dict(data.get("projects") or {}),
+        )
+
+
+def load() -> Consent:
+    """Read the consent store. A missing or corrupt file means "never asked"."""
+    path = store_path()
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            return Consent.from_json(json.load(fh) or {})
+    except (OSError, ValueError, TypeError):
+        return Consent()
+
+
+def save(consent: Consent) -> Path:
+    """Persist the consent store, readable only by this user.
+
+    It holds a Langfuse secret key, so the 0600 is not decoration. The mode is
+    written last-write-wins; there is no merging, because the only writer is a
+    question the user just answered.
+    """
+    path = store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        json.dump(consent.to_json(), fh, indent=2)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass  # Windows / exotic filesystems — the content is still correct
+    return path
+
+
+# ----------------------------------------------------------------------------
+# Effective mode
+# ----------------------------------------------------------------------------
+
+
+def global_mode(consent: Consent | None = None) -> str:
+    """The configured mode, after the env override has had its (only
+    tightening) say."""
+    consent = consent if consent is not None else load()
+    override = (os.environ.get(ENV_OVERRIDE) or "").strip().lower()
+    if override in MODE_IDS:
+        return min(consent.mode, override, key=_rank)
+    return consent.mode
+
+
+def needs_decision(consent: Consent | None = None) -> bool:
+    """True until the user has been asked once.
+
+    Deliberately independent of :func:`loom.ui.onboarding.needs_onboarding`:
+    someone who configured Loom before privacy modes existed has settings.json
+    but has never answered this, and must still be asked rather than silently
+    defaulted into a choice they did not make.
+    """
+    consent = consent if consent is not None else load()
+    return not consent.decided
+
+
+# ----------------------------------------------------------------------------
+# Per-project consent
+# ----------------------------------------------------------------------------
+
+
+def project_key(root: str | Path = ".") -> str:
+    """A stable identity for "this project".
+
+    The git work-tree root when there is one, so that ``loom`` in
+    ``repo/backend`` and ``repo/frontend`` are one decision rather than two;
+    the resolved directory otherwise. Walks up looking for ``.git`` instead of
+    shelling out to git — this runs on every startup, and ``.git`` is a file
+    (not a directory) inside a linked worktree, so both forms count.
+    """
+    try:
+        here = Path(root).resolve()
+    except OSError:
+        return str(root)
+    for candidate in (here, *here.parents):
+        if (candidate / ".git").exists():
+            return str(candidate)
+    return str(here)
+
+
+def project_share(root: str | Path = ".", consent: Consent | None = None) -> bool | None:
+    """Whether this project may share: True, False, or None for "never asked"."""
+    consent = consent if consent is not None else load()
+    entry = consent.projects.get(project_key(root))
+    if not isinstance(entry, dict) or "share" not in entry:
+        return None
+    return bool(entry["share"])
+
+
+def needs_project_decision(root: str | Path = ".", consent: Consent | None = None) -> bool:
+    """True when this directory has never been asked *and* there is something
+    to ask about.
+
+    In ``none`` mode nothing is shared from anywhere, so a per-project question
+    would be a prompt with no consequence — the fastest way to teach someone to
+    dismiss consent dialogs without reading them.
+    """
+    consent = consent if consent is not None else load()
+    if global_mode(consent) == "none" or needs_decision(consent):
+        return False
+    return project_share(root, consent) is None
+
+
+def record_project(root: str | Path, share: bool, consent: Consent | None = None) -> Consent:
+    """Remember this project's answer and persist it."""
+    consent = consent if consent is not None else load()
+    consent.projects[project_key(root)] = {"share": bool(share), "at": int(time.time())}
+    save(consent)
+    return consent
+
+
+def active_mode(root: str | Path = ".", consent: Consent | None = None) -> str:
+    """The mode actually in force *here* — both gates applied.
+
+    A project that was never asked counts as not sharing. Consent is something
+    you gave, not something you failed to refuse.
+    """
+    consent = consent if consent is not None else load()
+    mode = global_mode(consent)
+    if mode == "none":
+        return "none"
+    return mode if project_share(root, consent) is True else "none"
+
+
+# ----------------------------------------------------------------------------
+# Scrubbing — the part that has to be right
+# ----------------------------------------------------------------------------
+
+# Event fields that exist to identify a machine or replay its invocation.
+# A bug report needs none of them; every one of them leaks something.
+_DROP_EVENT_KEYS = ("server_name", "user", "request", "modules")
+_DROP_EXTRA_KEYS = ("sys.argv",)
+
+_SECRET_MARKERS = (
+    "api_key", "apikey", "secret", "token", "password", "passwd",
+    "authorization", "auth", "dsn", "credential", "session", "cookie",
+)
+
+
+def _redactions() -> list[tuple[str, str]]:
+    """Literal strings that must never appear in an event, longest first.
+
+    The home directory is in every absolute path in a stack trace and usually
+    contains the user's real name. The username itself catches the cases where
+    the path was already relativised. Longest-first so ``/Users/mike/.loom``
+    is replaced before ``/Users/mike`` turns it into ``~/.loom`` twice.
+    """
+    out: list[tuple[str, str]] = []
+    try:
+        home = str(Path.home())
+        if len(home) > 3:
+            out.append((home, "~"))
+    except (OSError, RuntimeError):
+        pass
+    for key in ("USER", "USERNAME", "LOGNAME"):
+        name = os.environ.get(key) or ""
+        if len(name) > 2:
+            out.append((name, "<user>"))
+    return sorted(set(out), key=lambda pair: -len(pair[0]))
+
+
+def _redact_text(value: str, pairs: list[tuple[str, str]]) -> str:
+    for needle, replacement in pairs:
+        if needle in value:
+            value = value.replace(needle, replacement)
+    return value
+
+
+def _walk(value: Any, pairs: list[tuple[str, str]], depth: int = 0) -> Any:
+    """Recursively redact strings and drop anything that looks like a secret.
+
+    Depth-capped: a Sentry event is a plain JSON tree, but a hand-built one
+    could be cyclic, and a stack overflow inside the crash reporter would turn
+    one bug into two.
+    """
+    if depth > 12:
+        return "<truncated>"
+    if isinstance(value, str):
+        return _redact_text(value, pairs)
+    if isinstance(value, dict):
+        out = {}
+        for key, inner in value.items():
+            if isinstance(key, str) and any(m in key.lower() for m in _SECRET_MARKERS):
+                out[key] = "<redacted>"
+            else:
+                out[key] = _walk(inner, pairs, depth + 1)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_walk(item, pairs, depth + 1) for item in value]
+    return value
+
+
+def scrub_event(event: dict[str, Any], _hint: Any = None) -> dict[str, Any] | None:
+    """Sentry ``before_send``: strip everything that identifies the user or
+    carries their content, then let the rest through.
+
+    Kept pure and module-level so it is directly testable — the SDK is
+    optional, but this function's behaviour is the whole basis of the promise
+    made to the user in the setup wizard, so it is tested without it.
+    """
+    if not isinstance(event, dict):
+        return None
+    pairs = _redactions()
+
+    for key in _DROP_EVENT_KEYS:
+        event.pop(key, None)
+    # Breadcrumbs are the log of what happened before the crash, which for a
+    # coding assistant is a log of the user's work. A bug report does not need
+    # it and cannot be trusted to have scrubbed it.
+    event["breadcrumbs"] = []
+
+    extra = event.get("extra")
+    if isinstance(extra, dict):
+        for key in _DROP_EXTRA_KEYS:
+            extra.pop(key, None)
+
+    # Local variables are off in init too; this is the belt to that's braces,
+    # because one frame carrying `content=<the whole file>` undoes everything.
+    for exception in (event.get("exception") or {}).get("values") or []:
+        for frame in (exception.get("stacktrace") or {}).get("frames") or []:
+            frame.pop("vars", None)
+
+    return _walk(event, pairs, 0)
+
+
+# ----------------------------------------------------------------------------
+# Activation
+# ----------------------------------------------------------------------------
+
+_active_mode: str = "none"
+_sentry_ready = False
+_langfuse_handler: Any = None
+_langfuse_failed = False
+
+
+def _loom_version() -> str:
+    try:
+        from loom import __version__
+
+        return str(__version__)
+    except Exception:
+        return "unknown"
+
+
+def _init_sentry(consent: Consent) -> bool:
+    """Start the Sentry SDK. False if it isn't installed or has no DSN."""
+    global _sentry_ready
+    if _sentry_ready:
+        return True
+    dsn = os.environ.get("SENTRY_DSN") or consent.sentry_dsn
+    if not dsn:
+        return False
+    try:
+        import sentry_sdk
+    except ImportError:
+        return False
+
+    try:
+        sentry_sdk.init(
+            dsn=dsn,
+            release=f"loom@{_loom_version()}",
+            environment="binary" if getattr(__import__("sys"), "frozen", False) else "source",
+            # Every one of these defaults would otherwise send something the
+            # wizard promised it would not.
+            send_default_pii=False,
+            include_local_variables=False,
+            attach_stacktrace=False,
+            max_breadcrumbs=0,
+            # Crash reporting only. Performance tracing here would sample real
+            # runs, and a span name is a task description.
+            traces_sample_rate=0.0,
+            before_send=scrub_event,
+            before_send_transaction=lambda *_a, **_k: None,
+        )
+    except Exception:
+        return False
+    _sentry_ready = True
+    return True
+
+
+def _init_langfuse(consent: Consent) -> Any:
+    """Build the Langfuse LangChain callback handler, or None."""
+    global _langfuse_handler, _langfuse_failed
+    if _langfuse_handler is not None or _langfuse_failed:
+        return _langfuse_handler
+    public = os.environ.get("LANGFUSE_PUBLIC_KEY") or consent.langfuse_public_key
+    secret = os.environ.get("LANGFUSE_SECRET_KEY") or consent.langfuse_secret_key
+    host = os.environ.get("LANGFUSE_HOST") or consent.langfuse_host
+    if not (public and secret):
+        _langfuse_failed = True
+        return None
+    # The SDK reads these from the environment; setting them here keeps the
+    # keys out of every call site and matches how Settings.apply_env works.
+    os.environ.setdefault("LANGFUSE_PUBLIC_KEY", public)
+    os.environ.setdefault("LANGFUSE_SECRET_KEY", secret)
+    os.environ.setdefault("LANGFUSE_HOST", host)
+    try:
+        from langfuse.langchain import CallbackHandler
+    except ImportError:
+        try:  # langfuse v2 kept the handler somewhere else
+            from langfuse.callback import CallbackHandler  # type: ignore[no-redef]
+        except ImportError:
+            _langfuse_failed = True
+            return None
+    try:
+        _langfuse_handler = CallbackHandler()
+    except Exception:
+        _langfuse_failed = True
+        return None
+    return _langfuse_handler
+
+
+def activate(root: str | Path = ".") -> str:
+    """Turn on whatever this project has consented to, and return that mode.
+
+    Called once at startup. Safe to call repeatedly; safe to call when nothing
+    is configured, when the SDKs are absent, and when the network is down.
+    """
+    global _active_mode
+    consent = load()
+    mode = active_mode(root, consent)
+    _active_mode = mode
+    if mode == "none":
+        return "none"
+    if not _init_sentry(consent) and mode == "errors":
+        # Consented, but there is nowhere to send. Not an error worth
+        # interrupting anyone over — /privacy and /doctor both report it.
+        return "none"
+    if mode == "full":
+        _init_langfuse(consent)
+    return mode
+
+
+def current_mode() -> str:
+    """The mode :func:`activate` settled on for this process."""
+    return _active_mode
+
+
+def callbacks() -> list[Any]:
+    """LangChain callbacks to add to a run config — the Langfuse tracer in
+    ``full`` mode, nothing otherwise."""
+    if _active_mode != "full" or _langfuse_handler is None:
+        return []
+    return [_langfuse_handler]
+
+
+def capture_exception(exc: BaseException) -> None:
+    """Report a crash, if the user asked us to. Never raises."""
+    if _active_mode == "none" or not _sentry_ready:
+        return
+    try:
+        import sentry_sdk
+
+        sentry_sdk.capture_exception(exc)
+    except Exception:
+        pass
+
+
+def flush(timeout: float = 2.0) -> None:
+    """Push anything queued before the process exits. Never raises, and never
+    blocks for long — a slow telemetry endpoint must not hold the shell."""
+    if _active_mode == "none":
+        return
+    if _sentry_ready:
+        try:
+            import sentry_sdk
+
+            sentry_sdk.flush(timeout=timeout)
+        except Exception:
+            pass
+    if _langfuse_handler is not None:
+        try:
+            from langfuse import get_client
+
+            get_client().flush()
+        except Exception:
+            pass
+
+
+def _reset_for_tests() -> None:
+    """Drop process-level activation state. Tests only."""
+    global _active_mode, _sentry_ready, _langfuse_handler, _langfuse_failed
+    _active_mode = "none"
+    _sentry_ready = False
+    _langfuse_handler = None
+    _langfuse_failed = False

@@ -862,12 +862,16 @@ def run(
     roles: tuple[str, ...] = ALL_ROLES,
     scope: str | None = None,
     verify: bool = True,
+    privacy: bool = True,
 ) -> Settings:
     """Run the full wizard and return the reloaded, merged Settings.
 
     ``scope`` skips the "user vs project" prompt when given ("user" | "project").
     ``verify=False`` skips the closing preflight, which makes real (billed)
     model calls — pass it for tests and any unattended run.
+    ``privacy=False`` skips the data-sharing step; ``/setup <role>`` passes it
+    when re-picking a single model, since that is not the moment to re-ask
+    someone what they consent to sending.
     """
     from loom.ui import banner as banner_mod
 
@@ -947,6 +951,21 @@ def run(
 
     console.print(f"\n[loom.muted]detected: {rec.hardware_summary(hw)}[/loom.muted]")
     console.print(f"[loom.muted]{rec.CLOUD_RECOMMENDATION}[/loom.muted]")
+
+    # Part of both shapes of setup, deliberately. Quick mode exists to get
+    # someone running in under a minute, but "we picked your models and also
+    # quietly decided what we send home" is not a trade quick mode gets to
+    # make. It sits after the fleet and before the save so the model questions
+    # stay one uninterrupted run.
+    if privacy:
+        from loom.ui import privacy as privacy_mod
+
+        try:
+            privacy_mod.run(console, root)
+        except (KeyboardInterrupt, EOFError):
+            # Cancelling here must not cancel the models the user just picked,
+            # and must not be recorded as a "yes" to anything.
+            render.note(console, "privacy left unset — nothing is shared until you run /privacy", kind="warn")
 
     if scope not in ("user", "project"):
         scope = Prompt.ask(

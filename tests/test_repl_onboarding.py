@@ -22,6 +22,9 @@ def test_runs_wizard_on_true_first_run(tmp_path, monkeypatch):
     s = _session(tmp_path)
     monkeypatch.setattr(onboarding, "run", lambda console, **kw: calls.append(kw) or s.settings)
     monkeypatch.setattr(onboarding, "maybe_setup_playwright", lambda console, settings: None)
+    # "run setup now?" — yes. Piped stdin answers no (render.confirm declines
+    # on EOF), so the offer has to be scripted like any other prompt.
+    monkeypatch.setattr(repl.render, "confirm", lambda *a, **k: True)
     reloaded = []
     monkeypatch.setattr(s, "reload_settings", lambda: reloaded.append("settings"))
     monkeypatch.setattr(s, "rebuild", lambda: reloaded.append("rebuild"))
@@ -30,6 +33,23 @@ def test_runs_wizard_on_true_first_run(tmp_path, monkeypatch):
 
     assert calls and calls[0]["root"] == s.cwd
     assert reloaded == ["settings", "rebuild"]
+
+
+def test_declining_the_offer_runs_nothing(tmp_path, monkeypatch):
+    """Saying no to setup must not record an answer either way — the offer
+    simply comes back on the next start."""
+    monkeypatch.setattr(onboarding, "needs_onboarding", lambda root: True)
+    wizard_calls = []
+    monkeypatch.setattr(onboarding, "run", lambda console, **kw: wizard_calls.append(1))
+    monkeypatch.setattr(repl.render, "confirm", lambda *a, **k: False)
+    hint_calls = []
+    monkeypatch.setattr(repl, "_setup_hint", lambda session: hint_calls.append(1))
+    s = _session(tmp_path)
+
+    repl._maybe_run_onboarding(s)
+
+    assert wizard_calls == []
+    assert hint_calls == [1]
 
 
 def test_falls_back_to_hint_when_not_first_run(tmp_path, monkeypatch):
@@ -54,6 +74,7 @@ def test_cancel_does_not_crash_or_reload(tmp_path, monkeypatch, exc):
         raise exc
 
     monkeypatch.setattr(onboarding, "run", _cancel)
+    monkeypatch.setattr(repl.render, "confirm", lambda *a, **k: True)  # accept the offer, then cancel inside
     s = _session(tmp_path)
     reloaded = []
     monkeypatch.setattr(s, "reload_settings", lambda: reloaded.append(1))
@@ -62,6 +83,60 @@ def test_cancel_does_not_crash_or_reload(tmp_path, monkeypatch, exc):
     repl._maybe_run_onboarding(s)  # must not raise
 
     assert reloaded == []  # cancelled before any reload
+
+
+# ------------------------------------------------------------ privacy gates
+
+
+def test_non_first_run_with_consent_undecided_asks_privacy(tmp_path, monkeypatch):
+    """An install that predates privacy modes has settings.json, so the wizard
+    never fires — but it has never answered the question and must be asked."""
+    from loom.ui import privacy as privacy_mod
+
+    monkeypatch.setattr(onboarding, "needs_onboarding", lambda root: False)
+    monkeypatch.setattr(repl, "_setup_hint", lambda session: None)
+    calls = []
+    monkeypatch.setattr(privacy_mod, "run", lambda console, root=".": calls.append(root))
+    s = _session(tmp_path)
+
+    repl._maybe_run_onboarding(s)
+
+    assert calls == [s.cwd]
+
+
+def test_non_first_run_with_consent_decided_asks_about_the_project(tmp_path, monkeypatch):
+    from loom.core import telemetry as tel
+    from loom.ui import privacy as privacy_mod
+
+    monkeypatch.setattr(onboarding, "needs_onboarding", lambda root: False)
+    monkeypatch.setattr(repl, "_setup_hint", lambda session: None)
+    consent = tel.Consent(mode="errors", decided=True, sentry_dsn="https://x@y/1")
+    tel.save(consent)
+    project_calls = []
+    monkeypatch.setattr(privacy_mod, "maybe_ask_project", lambda console, root=".": project_calls.append(root))
+    run_calls = []
+    monkeypatch.setattr(privacy_mod, "run", lambda console, root=".": run_calls.append(root))
+    s = _session(tmp_path)
+
+    repl._maybe_run_onboarding(s)
+
+    assert run_calls == []
+    assert project_calls == [s.cwd]
+
+
+def test_privacy_prompt_failure_never_blocks_startup(tmp_path, monkeypatch):
+    from loom.ui import privacy as privacy_mod
+
+    monkeypatch.setattr(onboarding, "needs_onboarding", lambda root: False)
+    monkeypatch.setattr(repl, "_setup_hint", lambda session: None)
+
+    def _boom(console, root="."):
+        raise RuntimeError("telemetry store on fire")
+
+    monkeypatch.setattr(privacy_mod, "run", _boom)
+    s = _session(tmp_path)
+
+    repl._maybe_run_onboarding(s)  # must not raise
 
 
 # --------------------------------------------------------------- setup hint

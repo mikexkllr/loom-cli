@@ -52,13 +52,18 @@ COLLECT_PACKAGES = [
     "langchain_aws",
     "boto3",
     "botocore",
+    # Telemetry SDKs. The setup wizard offers privacy modes to every install,
+    # and a frozen binary cannot install anything later, so the opt-in the
+    # user makes at setup has to be satisfiable inside the bundle.
+    "sentry_sdk",
+    "langfuse",
 ]
 
 # Packages the shipped binary is expected to contain. collect_all() swallows a
 # missing package silently, so a build run without `--group build` would
 # quietly produce a binary that drops Bedrock and only fails on a user's
 # machine. Fail here instead.
-REQUIRED_PACKAGES = ["langchain_aws", "boto3", "botocore"]
+REQUIRED_PACKAGES = ["langchain_aws", "boto3", "botocore", "sentry_sdk", "langfuse"]
 
 # Distribution names — these only need importlib.metadata to see a version,
 # no dynamic submodule/data loading.
@@ -71,6 +76,10 @@ METADATA_ONLY = [
     "rich",
     "prompt_toolkit",
     "pyyaml",
+    # Collected above; the metadata copy is for importlib.metadata.version()
+    # checks the SDKs run against themselves at init.
+    "sentry-sdk",
+    "langfuse",
 ]
 
 datas = [

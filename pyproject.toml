@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "loom-cli"
-version = "0.2.10"
+version = "0.3.0"
 description = "Loom — a hybrid local/cloud multi-agent CLI coding assistant"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,6 +37,12 @@ dependencies = [
     "langchain-google-genai>=2.0.0",# optional cloud orchestrator
     "langchain-mcp-adapters>=0.1.9",# MCP servers (Playwright browser testing)
     "langgraph-checkpoint-sqlite>=2.0.0",  # durable session state for /resume
+    # Telemetry — imported lazily and only after an explicit opt-in (the
+    # default privacy mode is "none", nothing is sent anywhere without
+    # consent), but hard deps so a mode the user picks in setup actually
+    # works, and so the frozen binary can carry them.
+    "sentry-sdk>=2.0.0",            # "bug reports" mode: scrubbed crash reports
+    "langfuse>=3.0.0,<4",           # "full tracing" mode: LLM traces for training
     # CLI + UX
     "typer>=0.12.0",
     "rich>=13.7.0",

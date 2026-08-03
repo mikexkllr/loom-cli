@@ -706,6 +706,9 @@ def doctor(
     for r in mcp_status(settings):
         ok = True if r["state"] == "connected" else (None if r["state"] in ("not connected", "disabled") else False)
         lines.append(row(ok, f"mcp:{r['name']}", r["state"]))
+    from loom.ui import privacy as privacy_mod
+
+    lines.append(row(*privacy_mod.doctor_row(root)))
     console.print()
     render.rule(console, "doctor")
     console.print(render.kv(lines, justify="left"))
@@ -794,6 +797,43 @@ def update() -> None:
         update_mod.apply(result, console=console)
     except Exception as exc:
         console.print(f"[loom.bad.b]update failed:[/loom.bad.b] {exc}")
+        raise typer.Exit(1)
+
+
+@app.command("privacy")
+def privacy_cmd(
+    action: Optional[str] = typer.Argument(
+        None, help="Nothing: show state. `set <none|errors|full>`, `here`, or `setup` (interactive, collects keys)."
+    ),
+    mode: Optional[str] = typer.Argument(None, help="Mode for `set`: none | errors | full."),
+    root: str = typer.Option(".", "--root"),
+) -> None:
+    """Inspect or change what Loom may share off this machine.
+
+    Consent lives in ~/.loom/telemetry.json (never in a project's committable
+    settings.json) and has two gates: the global mode, and a per-project
+    answer asked the first time Loom runs in a repo. Default is none — nothing
+    is sent anywhere without both.
+    """
+    from loom.ui import privacy as privacy_mod
+
+    _retheme(root)
+    verb = (action or "").strip()
+    try:
+        if verb == "set":
+            if not privacy_mod.set_mode(console, (mode or "").strip(), root):
+                raise typer.Exit(1)
+        elif verb == "here":
+            privacy_mod.ask_project(console, root)
+        elif verb == "setup":
+            privacy_mod.run(console, root)
+        elif verb in ("", "status"):
+            privacy_mod.describe(console, root)
+        else:
+            console.print(f"[loom.bad.b]unknown action:[/loom.bad.b] {verb} (set | here | setup)")
+            raise typer.Exit(1)
+    except (KeyboardInterrupt, EOFError):
+        console.print("\n[loom.muted]cancelled — privacy left as it was[/loom.muted]")
         raise typer.Exit(1)
 
 

@@ -189,8 +189,18 @@ class Session:
         return self.bundle
 
     def _run_config(self):
-        """LangGraph config: usage callbacks always, thread_id when persistent."""
-        config: dict = {"callbacks": [self.tracker]}
+        """LangGraph config: usage callbacks always, thread_id when persistent.
+
+        In ``full`` privacy mode the Langfuse tracer rides along in the same
+        callback list as the usage tracker — one more ``BaseCallbackHandler``,
+        so it sees every model call the orchestrator and its subagents make
+        without any of them knowing it is there. `telemetry.callbacks()`
+        returns an empty list in every other mode, so this is a no-op unless
+        the user opted in.
+        """
+        from loom.core import telemetry
+
+        config: dict = {"callbacks": [self.tracker, *telemetry.callbacks()]}
         if self.bundle is not None and self.bundle.persistent:
             config["configurable"] = {"thread_id": self.thread_id}
         return config
@@ -1099,16 +1109,30 @@ def _setup_hint(session: Session) -> None:
 
 
 def _maybe_run_onboarding(session: Session) -> None:
-    """True first run (no settings.json anywhere yet): launch the setup
-    wizard instead of silently falling back to packaged defaults. Falls back
-    to the passive `_setup_hint` if the user cancels or it's not a first run."""
+    """True first run (no settings.json anywhere yet): offer the setup wizard
+    instead of silently falling back to packaged defaults. Falls back to the
+    passive `_setup_hint` if the user declines or it's not a first run."""
     from loom.ui import onboarding
 
     if not onboarding.needs_onboarding(session.cwd):
         _setup_hint(session)
+        _maybe_ask_privacy(session)
         return
-    render.note(session.console, "no settings.json yet — let's pick your models ([loom.warp]/setup[/loom.warp] to redo this later)")
+    render.note(
+        session.console,
+        "no settings.json yet — setup picks your models and asks what Loom may share "
+        "([loom.warp]/setup[/loom.warp] to redo this later)",
+    )
+    # Asked, not assumed. Someone who just wants to try one prompt against the
+    # packaged defaults should be able to say no and get a prompt, and the
+    # answer isn't recorded — the offer returns on the next start, which is
+    # what "runs on first start after installing" has to mean for anyone who
+    # skipped it the first time.
     try:
+        if not render.confirm(session.console, "  run setup now?", default=True):
+            render.note(session.console, "skipped — /setup any time")
+            _setup_hint(session)
+            return
         settings = onboarding.run(session.console, root=session.cwd)
         onboarding.maybe_setup_playwright(session.console, settings)
     except (KeyboardInterrupt, EOFError):
@@ -1116,6 +1140,53 @@ def _maybe_run_onboarding(session: Session) -> None:
         return
     session.reload_settings()
     session.rebuild()
+
+
+def _maybe_ask_privacy(session: Session) -> None:
+    """Catch the two cases the setup wizard doesn't cover.
+
+    An install that predates privacy modes has a settings.json, so it is not a
+    "first run" by any measure the wizard uses — but it has never been asked
+    this question, and defaulting someone into a data-sharing answer they were
+    never shown is exactly the thing this feature exists to avoid. Separately,
+    a machine that has answered globally still has to be asked about each new
+    project it opens.
+    """
+    from loom.core import telemetry as tel
+    from loom.ui import privacy as privacy_mod
+
+    try:
+        if tel.needs_decision():
+            privacy_mod.run(session.console, session.cwd)
+        else:
+            privacy_mod.maybe_ask_project(session.console, session.cwd)
+    except (KeyboardInterrupt, EOFError):
+        render.note(session.console, "skipped — nothing is shared until you run /privacy")
+    except Exception:
+        pass  # never let a consent prompt stop Loom from starting
+
+
+def _activate_telemetry(session: Session) -> None:
+    """Switch on whatever this project consented to, and say so once.
+
+    The line matters: a tool that is uploading your prompts should say it is
+    uploading your prompts, every session, not once at setup and never again.
+    """
+    from loom.core import telemetry
+
+    try:
+        mode = telemetry.activate(session.cwd)
+    except Exception:
+        return
+    if mode == "none":
+        return
+    info = telemetry.mode_info(mode)
+    render.note(
+        session.console,
+        f"privacy [loom.warp]{info.label}[/loom.warp] {ink(session.console).dot} {info.blurb} "
+        f"[loom.muted](/privacy)[/loom.muted]",
+        kind="warn" if mode == "full" else "muted",
+    )
 
 
 def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yolo=False, airgap=False) -> None:
@@ -1126,6 +1197,10 @@ def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yol
             banner_mod.hint_line(session.console, ["/help", "/status", "shift+tab modes", "ctrl+c interrupt"])
         )
     _maybe_run_onboarding(session)
+    # After onboarding, never before: the wizard is where consent is given, and
+    # activating a reporter that the user is one prompt away from declining
+    # would be the one bug this feature cannot afford.
+    _activate_telemetry(session)
 
     prompt_session = _make_prompt_session(session)
     session._prompt_session = prompt_session
@@ -1142,8 +1217,13 @@ def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yol
         if not line:
             continue
         if line.startswith("/"):
-            if not slash.dispatch(session, line):
-                break
+            try:
+                if not slash.dispatch(session, line):
+                    break
+            except KeyboardInterrupt:
+                render.note(session.console, "interrupted", kind="warn")
+            except Exception as exc:
+                _report_crash(session, exc, f"/{line[1:].split()[0] if len(line) > 1 else ''}")
             continue
 
         try:
@@ -1151,8 +1231,36 @@ def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yol
         except KeyboardInterrupt:
             render.note(session.console, "interrupted", kind="warn")
             continue
+        except Exception as exc:
+            _report_crash(session, exc, "turn")
+            continue
         if session.plan and reply and not session._interrupted:
             session.offer_plan_execution()
+
+    from loom.core import telemetry
+
+    telemetry.flush()
+
+
+def _report_crash(session: Session, exc: BaseException, where: str) -> None:
+    """Show a bug the way a user needs to see it, and report it if allowed.
+
+    A crash inside one command should not end the session — the transcript is
+    usually the most valuable thing in the room when something breaks.
+    """
+    from loom.core import telemetry
+
+    render.note(session.console, f"{where} failed: {type(exc).__name__}: {exc}", kind="bad")
+    telemetry.capture_exception(exc)
+    if telemetry.current_mode() == "none":
+        from loom.core import update as update_mod
+
+        render.note(
+            session.console,
+            f"report it at https://github.com/{update_mod.REPO}/issues "
+            "[loom.muted](or /privacy to send crashes automatically)[/loom.muted]",
+            kind="tip",
+        )
 
 
 def _make_prompt_session(session: Session | None = None):

@@ -108,6 +108,40 @@ def test_doctor_downgrades_ollama_when_nothing_runs_locally(tmp_path, monkeypatc
     assert "not reachable" in _doctor_on(tmp_path, monkeypatch, one_local)
 
 
+# ------------------------------------------------------------------ privacy
+
+
+def test_privacy_is_a_subcommand_not_a_task(tmp_path, monkeypatch):
+    from loom.core import telemetry as tel
+
+    monkeypatch.setattr(tel, "store_path", lambda: tmp_path / "telemetry.json")
+    result = runner.invoke(app, ["privacy", "--root", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "nothing leaves this machine" in result.output
+
+
+def test_privacy_set_round_trip(tmp_path, monkeypatch):
+    from loom.core import telemetry as tel
+
+    monkeypatch.setattr(tel, "store_path", lambda: tmp_path / "telemetry.json")
+    result = runner.invoke(app, ["privacy", "set", "errors", "--root", str(tmp_path)])
+    assert result.exit_code == 0
+    consent = tel.load()
+    assert consent.mode == "errors" and consent.decided is True
+
+    result = runner.invoke(app, ["privacy", "set", "bogus", "--root", str(tmp_path)])
+    assert result.exit_code == 1
+    assert tel.load().mode == "errors"  # unchanged
+
+
+def test_doctor_reports_the_privacy_mode(tmp_path, monkeypatch):
+    from loom.core import telemetry as tel
+
+    monkeypatch.setattr(tel, "store_path", lambda: tmp_path / "telemetry.json")
+    out = _doctor_on(tmp_path, monkeypatch, _all_cloud())
+    assert "privacy" in out and "nothing leaves this machine" in out
+
+
 def test_opencode_go_defaults_are_not_region_locked():
     # deepseek-v4-* 403 with a RegionError until the account opts in, so the
     # wizard must never hand them to a new user as a default.

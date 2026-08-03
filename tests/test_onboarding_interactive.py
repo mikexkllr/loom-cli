@@ -88,6 +88,22 @@ def _no_real_ollama(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_privacy_step(monkeypatch):
+    """Keep the privacy step out of the model-wizard scripts.
+
+    The wizard's privacy prompt is one more Prompt.ask in the sequence; every
+    scripted answer queue in this file was written for the model questions, so
+    the step is stubbed to a recorder here and covered on its own terms in
+    test_privacy.py. The calls are returned so a test can assert the step did
+    (or did not) run."""
+    from loom.ui import privacy as privacy_mod
+
+    calls = []
+    monkeypatch.setattr(privacy_mod, "run", lambda console, root=".", **kw: calls.append((console, root, kw)))
+    return calls
+
+
+@pytest.fixture(autouse=True)
 def _no_real_network(monkeypatch):
     """model_catalog's live listing must never touch a real network in
     tests — force every attempt to fail closed so available_models() always
@@ -306,6 +322,46 @@ def test_run_advanced_setup_per_role(monkeypatch, tmp_path):
     assert settings.models.orchestrator == "anthropic:claude-sonnet-4-6"
     assert settings.models.subagents["editor"] == "ollama/qwen3:14b"
     assert settings.env["ANTHROPIC_API_KEY"] == "test-key"
+
+
+# --------------------------------------------------------------------------
+# The privacy step — stubbed above so the model scripts stay in sync; these
+# pin *when* run() invokes it.
+# --------------------------------------------------------------------------
+
+
+def test_quick_setup_includes_the_privacy_step(monkeypatch, tmp_path, _no_real_privacy_step):
+    """Quick mode exists to be fast, not to silently decide what goes home —
+    the privacy question is part of it."""
+    monkeypatch.setattr(ob.rec, "detect_hardware", lambda: HW)
+    monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(["quick", "1", "user"]))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([False])))
+
+    ob.run(_console(), root=tmp_path, verify=False)
+
+    assert len(_no_real_privacy_step) == 1
+
+
+def test_advanced_setup_includes_the_privacy_step(monkeypatch, tmp_path, _no_real_privacy_step):
+    monkeypatch.setattr(ob.rec, "detect_hardware", lambda: HW)
+    answers = ["advanced", "local", "1", "user"]
+    monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(answers))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([])))
+
+    ob.run(_console(), root=tmp_path, verify=False, roles=("editor",))
+
+    assert len(_no_real_privacy_step) == 1
+
+
+def test_privacy_false_skips_the_step(monkeypatch, tmp_path, _no_real_privacy_step):
+    """`/setup <role>` re-picks one model — not the moment to re-ask consent."""
+    monkeypatch.setattr(ob.rec, "detect_hardware", lambda: HW)
+    monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(["advanced", "local", "1", "user"]))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([])))
+
+    ob.run(_console(), root=tmp_path, verify=False, roles=("editor",), privacy=False)
+
+    assert _no_real_privacy_step == []
 
 
 # --------------------------------------------------------------------------

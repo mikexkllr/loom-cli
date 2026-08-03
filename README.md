@@ -488,6 +488,30 @@ prompt-size escalation to cloud is disabled. You keep the strong cloud
 planner without ever uploading source code. (`--local-only` is the stricter
 variant: no cloud calls at all.)
 
+### Privacy modes (`/privacy`)
+
+Airgap governs what the *models* see; privacy modes govern what Loom itself
+sends home. Setup asks once, explicitly, with three choices:
+
+1. **none** — the default. No telemetry SDK is imported, no socket opened.
+2. **bug reports** — crashes only, to *your* Sentry project: exception type,
+   message and stack trace, scrubbed of paths, locals, argv and hostname.
+   Never a prompt, never your code. If the `sentry` CLI is installed and
+   logged in, the wizard fetches (or creates) the project and DSN for you.
+3. **full tracing** — crashes plus complete LLM traces to *your* Langfuse
+   project: prompts, completions, tool calls, delegations, tokens, timings.
+   This is the training corpus for a future distilled local orchestrator —
+   and it necessarily contains your source code, which the wizard says out
+   loud and asks you to confirm separately.
+
+Two gates, both required: the global mode, and a per-project answer asked
+the first time Loom starts in a new directory or git repo ("share bug
+reports" is not the same statement at work as at home). Consent lives in
+`~/.loom/telemetry.json` — never in a project's committable `settings.json`.
+When sharing is on, Loom says so once per session. Change any of it with
+`/privacy`, `/privacy set none|errors|full`, `/privacy here`, or
+`loom privacy`. CI can force the private mode with `LOOM_TELEMETRY=none`.
+
 ### Evals
 
 `uv run scripts/eval.py` runs the task suite in [evals/tasks.yaml](evals/tasks.yaml)
