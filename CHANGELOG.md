@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.8 — 2026-08-03
+
+### Added
+
+- **Bedrock is now inside the standalone binary.** `langchain-aws` (with boto3
+  and botocore) ships in the frozen build, so a config that worked from a
+  source checkout keeps working after installing globally via `install.sh`.
+  Costs about 20 MB — the binary goes from 45 MB to 65 MB. The `vertexai`
+  extra is deliberately still excluded: `google-cloud-aiplatform` and pyarrow
+  are 331 MB of site-packages, several times the whole binary, so Vertex AI
+  stays marked `▲ not installed` in the picker.
+- **The setup wizard lists real Bedrock models.** Picking Bedrock used to
+  offer two hardcoded names. Loom now enumerates what the AWS account can
+  actually call, via boto3 against the Bedrock control plane: cross-region
+  `ListInferenceProfiles` ids (which most current Claude models require —
+  passing the bare foundation-model id instead fails at invoke time with
+  "on-demand throughput isn't supported") merged with `ListFoundationModels`
+  filtered to Anthropic text models offering `ON_DEMAND`. The two calls are
+  separate IAM actions, so being denied one still returns the other. A
+  corporate proxy (`ANTHROPIC_BEDROCK_BASE_URL`) is not queried — its catalog
+  shape is not Loom's to assume — and any failure falls back to the example
+  models as before.
+- **The binary build fails loudly if a required package is missing.**
+  `collect_all()` skips absent packages silently, so building without
+  `--group build` would have quietly shipped a binary with no Bedrock,
+  failing only on a user's machine. The spec now raises instead.
+
 ## 0.2.7 — 2026-08-03
 
 ### Fixed

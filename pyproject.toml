@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "loom-cli"
-version = "0.2.7"
+version = "0.2.8"
 description = "Loom — a hybrid local/cloud multi-agent CLI coding assistant"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -72,8 +72,17 @@ dev = [
 ]
 # Only needed to freeze standalone binaries (`uv sync --group build`); see
 # packaging/. Not installed by a plain `uv sync`.
+#
+# langchain-aws is here, not just in the `bedrock` extra, because the binary
+# has to *contain* it: a frozen bundle cannot install anything later, so any
+# provider the setup wizard offers must already be inside. Bedrock costs ~30MB
+# (boto3 + botocore) and is worth it. The `vertexai` extra deliberately is NOT
+# bundled — google-cloud-aiplatform and pyarrow are 331MB of site-packages,
+# which would dwarf the rest of the binary; `providers.is_available()` marks
+# it "not installed" in the picker instead.
 build = [
     "pyinstaller>=6.11",
+    "langchain-aws>=1.4.0",
 ]
 
 [project.scripts]

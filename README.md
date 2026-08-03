@@ -214,7 +214,7 @@ editing required.
 |---|---|
 | **Local (Ollama)** | Free, private. Metal (macOS), CUDA (NVIDIA), or ROCm (AMD) — Ollama picks the right backend automatically. |
 | **Anthropic** | Direct API — `ANTHROPIC_API_KEY`. |
-| **Anthropic via AWS Bedrock** | `AWS_BEARER_TOKEN_BEDROCK` (or real AWS credentials) + optional `ANTHROPIC_BEDROCK_BASE_URL` for a corporate proxy. Needs `uv sync --extra bedrock` — **source installs only**, the standalone binary does not bundle it. |
+| **Anthropic via AWS Bedrock** | `AWS_BEARER_TOKEN_BEDROCK` (or real AWS credentials) + optional `ANTHROPIC_BEDROCK_BASE_URL` for a corporate proxy. Needs `uv sync --extra bedrock` for source installs; the standalone binary bundles it already. The setup wizard lists the models your account can actually call. |
 | **OpenAI** | `OPENAI_API_KEY`. |
 | **OpenAI-compatible (custom endpoint)** | Any server speaking the OpenAI Chat Completions API — vLLM, LM Studio, Together, Groq, etc. `LOOM_CUSTOM_BASE_URL` + `LOOM_CUSTOM_API_KEY`. |
 | **OpenCode Zen** | Curated pay-per-use model gateway. Models suffixed `-free` cost nothing and are billed as zero in receipts. `OPENCODE_ZEN_API_KEY`. |

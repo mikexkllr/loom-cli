@@ -1312,7 +1312,7 @@ wheels = [
 
 [[package]]
 name = "loom-cli"
-version = "0.2.7"
+version = "0.2.8"
 source = { editable = "." }
 dependencies = [
     { name = "deepagents" },
@@ -1345,6 +1345,7 @@ vertexai = [
 
 [package.dev-dependencies]
 build = [
+    { name = "langchain-aws" },
     { name = "pyinstaller" },
 ]
 dev = [
@@ -1377,7 +1378,10 @@ requires-dist = [
 provides-extras = ["mlx", "bedrock", "vertexai"]
 
 [package.metadata.requires-dev]
-build = [{ name = "pyinstaller", specifier = ">=6.11" }]
+build = [
+    { name = "langchain-aws", specifier = ">=1.4.0" },
+    { name = "pyinstaller", specifier = ">=6.11" },
+]
 dev = [
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.23" },

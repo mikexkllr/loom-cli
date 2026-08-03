@@ -45,7 +45,20 @@ COLLECT_PACKAGES = [
     "anthropic",
     "openai",
     "google.genai",
+    # Bedrock. Comes from the `build` dependency-group rather than the base
+    # deps, because it is only needed inside the frozen binary — a source
+    # install gets it from `uv sync --extra bedrock` on demand. botocore
+    # carries the service definitions boto3 loads at runtime.
+    "langchain_aws",
+    "boto3",
+    "botocore",
 ]
+
+# Packages the shipped binary is expected to contain. collect_all() swallows a
+# missing package silently, so a build run without `--group build` would
+# quietly produce a binary that drops Bedrock and only fails on a user's
+# machine. Fail here instead.
+REQUIRED_PACKAGES = ["langchain_aws", "boto3", "botocore"]
 
 # Distribution names — these only need importlib.metadata to see a version,
 # no dynamic submodule/data loading.
@@ -78,6 +91,11 @@ for pkg in COLLECT_PACKAGES:
     try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
     except Exception:
+        if pkg in REQUIRED_PACKAGES:
+            raise SystemExit(
+                f"packaging/loom.spec: {pkg!r} is required in the binary but isn't installed.\n"
+                f"Build with:  uv sync --locked --group build"
+            )
         continue
     datas += [d for d in pkg_datas if not _is_test_noise(d[1])]
     binaries += pkg_binaries

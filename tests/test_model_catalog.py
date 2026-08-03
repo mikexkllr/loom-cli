@@ -35,8 +35,11 @@ def test_can_list_covers_rest_listable_providers():
         assert catalog.can_list(prov.get(pid))
 
 
-def test_can_list_excludes_sdk_only_providers():
-    assert not catalog.can_list(prov.get("anthropic_bedrock"))
+def test_can_list_excludes_only_providers_whose_sdk_is_absent():
+    # Bedrock is listable: boto3 signs the control-plane calls and is bundled
+    # into the binary. Vertex AI is not — its SDK is 331MB and deliberately
+    # left out, so there is nothing to list with.
+    assert catalog.can_list(prov.get("anthropic_bedrock"))
     assert not catalog.can_list(prov.get("google_vertexai"))
 
 
@@ -197,3 +200,121 @@ def test_available_models_custom_endpoint_without_base_url_uses_examples():
     models, is_live = catalog.available_models(prov.get("openai_compatible"), {})
     assert is_live is False
     assert models == list(prov.get("openai_compatible").example_models)
+
+
+# ------------------------------------------------------------------ bedrock
+#
+# boto3 is stubbed: these pin the shape Loom asks for and how it degrades, not
+# AWS's behaviour. The call has not been run against a live AWS account.
+
+
+class _FakeBedrockClient:
+    def __init__(self, profiles=None, models=None, fail_profiles=False, fail_models=False):
+        self._profiles = profiles or []
+        self._models = models or []
+        self._fail_profiles = fail_profiles
+        self._fail_models = fail_models
+        self.list_kwargs = None
+
+    def get_paginator(self, name):
+        assert name == "list_inference_profiles"
+        client = self
+
+        class _Paginator:
+            def paginate(self):
+                if client._fail_profiles:
+                    raise RuntimeError("AccessDeniedException")
+                return [{"inferenceProfileSummaries": client._profiles}]
+
+        return _Paginator()
+
+    def list_foundation_models(self, **kwargs):
+        if self._fail_models:
+            raise RuntimeError("AccessDeniedException")
+        self.list_kwargs = kwargs
+        return {"modelSummaries": self._models}
+
+
+def _stub_boto3(monkeypatch, client):
+    import sys
+    import types
+
+    boto3 = types.ModuleType("boto3")
+    boto3.client = lambda *a, **k: client
+    botocore = types.ModuleType("botocore")
+    config_mod = types.ModuleType("botocore.config")
+    config_mod.Config = lambda **kwargs: None
+    monkeypatch.setitem(sys.modules, "boto3", boto3)
+    monkeypatch.setitem(sys.modules, "botocore", botocore)
+    monkeypatch.setitem(sys.modules, "botocore.config", config_mod)
+
+
+def _bedrock_ids(monkeypatch, client, env=None):
+    _stub_boto3(monkeypatch, client)
+    for key in ("ANTHROPIC_BEDROCK_BASE_URL", "AWS_REGION", "AWS_DEFAULT_REGION"):
+        monkeypatch.delenv(key, raising=False)
+    return catalog.list_models(prov.get("anthropic_bedrock"), env or {})
+
+
+def test_bedrock_merges_inference_profiles_and_foundation_models(monkeypatch):
+    client = _FakeBedrockClient(
+        profiles=[
+            {"inferenceProfileId": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"},
+            {"inferenceProfileId": "eu.amazon.nova-pro-v1:0"},  # not Anthropic
+        ],
+        models=[
+            {"modelId": "anthropic.claude-3-5-haiku-20241022-v1:0", "inferenceTypesSupported": ["ON_DEMAND"]},
+        ],
+    )
+    ids = _bedrock_ids(monkeypatch, client)
+    assert "us.anthropic.claude-sonnet-4-5-20250929-v1:0" in ids
+    assert "anthropic.claude-3-5-haiku-20241022-v1:0" in ids
+    assert "eu.amazon.nova-pro-v1:0" not in ids
+    assert client.list_kwargs == {"byProvider": "anthropic", "byOutputModality": "TEXT"}
+
+
+def test_bedrock_skips_models_without_on_demand_throughput(monkeypatch):
+    # A provisioned-only id is listed by AWS but fails at invoke time with
+    # "on-demand throughput isn't supported" — offering it is a trap.
+    client = _FakeBedrockClient(
+        models=[
+            {"modelId": "anthropic.claude-provisioned-v1:0", "inferenceTypesSupported": ["PROVISIONED"]},
+            {"modelId": "anthropic.claude-ok-v1:0", "inferenceTypesSupported": ["ON_DEMAND"]},
+        ]
+    )
+    assert _bedrock_ids(monkeypatch, client) == ["anthropic.claude-ok-v1:0"]
+
+
+def test_bedrock_survives_losing_either_half(monkeypatch):
+    # Listing profiles and listing foundation models are separate IAM actions;
+    # being denied one must not cost the other.
+    only_models = _FakeBedrockClient(
+        models=[{"modelId": "anthropic.claude-ok-v1:0", "inferenceTypesSupported": ["ON_DEMAND"]}],
+        fail_profiles=True,
+    )
+    assert _bedrock_ids(monkeypatch, only_models) == ["anthropic.claude-ok-v1:0"]
+
+    only_profiles = _FakeBedrockClient(
+        profiles=[{"inferenceProfileId": "us.anthropic.claude-sonnet-4-5-v1:0"}], fail_models=True
+    )
+    assert _bedrock_ids(monkeypatch, only_profiles) == ["us.anthropic.claude-sonnet-4-5-v1:0"]
+
+
+def test_bedrock_does_not_query_aws_when_pointed_at_a_proxy(monkeypatch):
+    """ANTHROPIC_BEDROCK_BASE_URL means a corporate gateway. Asking real AWS
+    what it hosts would answer a question nobody asked."""
+    client = _FakeBedrockClient(models=[{"modelId": "x", "inferenceTypesSupported": ["ON_DEMAND"]}])
+    _stub_boto3(monkeypatch, client)
+    ids = catalog.list_models(
+        prov.get("anthropic_bedrock"), {"ANTHROPIC_BEDROCK_BASE_URL": "https://proxy.corp/v1"}
+    )
+    assert ids == []
+
+
+def test_bedrock_falls_back_to_examples_without_boto3(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "boto3", None)  # import raises
+    models, is_live = catalog.available_models(prov.get("anthropic_bedrock"), {})
+    assert is_live is False
+    assert models == list(prov.get("anthropic_bedrock").example_models)
