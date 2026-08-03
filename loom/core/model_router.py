@@ -182,10 +182,11 @@ def _build_cached(provider: str, name: str, ollama_endpoint: str, num_ctx: int) 
         try:
             from langchain_aws import ChatAnthropicBedrock
         except ImportError as exc:
+            from loom.core import providers
+
             raise ImportError(
                 "LOOM_USE_BEDROCK / ANTHROPIC_BEDROCK_BASE_URL is set, but "
-                "langchain-aws isn't installed. Run `uv sync --extra bedrock` "
-                "(or `uv pip install langchain-aws`)."
+                f"langchain-aws isn't installed. {providers.extra_install_hint('bedrock')}"
             ) from exc
 
         # ChatAnthropicBedrock wraps anthropic's AnthropicBedrock client, which

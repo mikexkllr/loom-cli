@@ -247,6 +247,50 @@ def routed_providers(models) -> list[str]:
     return seen
 
 
+def extra_install_hint(extra: str) -> str:
+    """How to obtain optional dependency group ``extra`` for *this* install.
+
+    The standalone binary is a frozen bundle: it has no site-packages and no
+    uv, so `uv sync --extra ...` is not merely inconvenient there, it is
+    impossible. Telling a binary user to run it sends them in a circle, which
+    is what every one of these call sites used to do.
+    """
+    from loom.core import update
+
+    if update.is_frozen():
+        return (
+            "The standalone binary can't add packages. This route needs the source "
+            f"install: clone the repo, then `uv sync --extra {extra}`."
+        )
+    return f"Install it with `uv sync --extra {extra}`."
+
+
+def is_available(provider_id: str) -> bool:
+    """Whether this install can actually build models for ``provider_id``.
+
+    Providers behind a `pip_extra` are unusable until that extra is present —
+    always the case in a frozen binary, which bundles none of them.
+    """
+    try:
+        info = get(provider_id)
+    except KeyError:
+        return False
+    if not info.pip_extra:
+        return True
+    import importlib.util
+
+    module = _EXTRA_MODULE.get(info.pip_extra)
+    return module is None or importlib.util.find_spec(module) is not None
+
+
+# The import name that proves an extra is installed.
+_EXTRA_MODULE = {
+    "bedrock": "langchain_aws",
+    "vertexai": "langchain_google_vertexai",
+    "mlx": "mlx_lm",
+}
+
+
 def credential_keys(provider_id: str) -> tuple[str, ...]:
     """Env var names that authenticate ``provider_id``, preferred first.
 

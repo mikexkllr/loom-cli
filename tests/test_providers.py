@@ -69,3 +69,44 @@ def test_example_models_deduplicates_and_skips_blank():
     p = prov.get("opencode_go")  # main == light in the catalog
     assert len(p.example_models) == len(set(p.example_models))
     assert "" not in p.example_models
+
+
+# ------------------------------------------------- optional-extra providers
+
+
+def test_providers_behind_an_extra_report_unavailable_when_it_is_absent():
+    """A frozen binary bundles none of the extras, so `is_available` is what
+    keeps the wizard from offering a provider that cannot possibly run."""
+    import importlib.util
+
+    for p in prov.PROVIDERS:
+        if not p.pip_extra:
+            assert prov.is_available(p.id), f"{p.id} is a base provider"
+            continue
+        module = prov._EXTRA_MODULE.get(p.pip_extra)
+        installed = module is None or importlib.util.find_spec(module) is not None
+        assert prov.is_available(p.id) is installed
+
+
+def test_every_extra_has_an_import_name_to_probe():
+    # Without a mapping, is_available() silently returns True and the provider
+    # fails at first use instead of in the picker.
+    for p in prov.PROVIDERS:
+        if p.pip_extra:
+            assert p.pip_extra in prov._EXTRA_MODULE, p.pip_extra
+
+
+def test_install_hint_never_tells_a_binary_user_to_run_uv_sync(monkeypatch):
+    """`uv sync` is impossible in a frozen bundle — no project, no uv, no
+    site-packages. Saying it anyway sends the user in a circle."""
+    from loom.core import update
+
+    monkeypatch.setattr(update, "is_frozen", lambda: True)
+    frozen = prov.extra_install_hint("bedrock")
+    assert "standalone binary" in frozen
+    assert "source install" in frozen
+
+    monkeypatch.setattr(update, "is_frozen", lambda: False)
+    source = prov.extra_install_hint("bedrock")
+    assert "uv sync --extra bedrock" in source
+    assert frozen != source

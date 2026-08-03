@@ -288,3 +288,22 @@ def test_an_unknown_subcommand_still_reports_itself_as_a_prompt():
     """With no matching command, the token is a task — that is the whole design."""
     result = runner.invoke(app, ["defintely-not-a-command"])
     assert "No such command" not in result.output
+
+
+def test_a_missing_optional_provider_fails_cleanly_not_as_a_traceback(monkeypatch, tmp_path):
+    """`_build_cached` raises bare ImportError (not ModuleNotFoundError) when
+    an optional provider package is absent. Catching only the subclass let it
+    escape PyInstaller's entry point as a raw traceback ending in
+    'Failed to execute script' — the worst failure mode a shipped binary has.
+    """
+    from loom.ui import repl as repl_mod
+
+    def boom(self):
+        raise ImportError("langchain-aws isn't installed. Install it with `uv sync --extra bedrock`.")
+
+    monkeypatch.setattr(repl_mod.Session, "ensure_bundle", boom)
+    result = runner.invoke(app, ["--root", str(tmp_path), "do a thing"])
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "uv sync --extra bedrock" in result.output
+    assert "Traceback" not in result.output

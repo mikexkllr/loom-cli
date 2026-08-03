@@ -402,12 +402,15 @@ def prompt_provider(
     known_env = known_env or {}
     ready = {p.id: not missing_credentials(p, known_env) for p in candidates}
 
-    default_index = 1
+    usable = {p.id: prov.is_available(p.id) for p in candidates}
+    default_index = next((i for i, p in enumerate(candidates, 1) if usable[p.id]), 1)
     if current is not None and current in candidates:
         default_index = candidates.index(current) + 1
     else:
+        # Prefer one that is both installed and already credentialed — pressing
+        # Enter should never select a provider that cannot possibly run.
         for i, p in enumerate(candidates, 1):
-            if ready[p.id]:
+            if ready[p.id] and usable[p.id]:
                 default_index = i
                 break
 
@@ -420,7 +423,11 @@ def prompt_provider(
         ("", {"overflow": "fold"}),
     )
     for i, p in enumerate(candidates, 1):
-        if current is not None and p is current:
+        if not prov.is_available(p.id):
+            # A key would not help: the package backing this provider isn't in
+            # this install. Say so here rather than at first use.
+            state, style = f"{g.warn} not installed", "loom.warn"
+        elif current is not None and p is current:
             state, style = "in use", "loom.warp"
         elif ready[p.id]:
             state, style = f"{g.ok} key set", "loom.good"
@@ -480,8 +487,9 @@ def prompt_credentials(
             collected[v.key] = current
         elif v.required:
             console.print(f"[loom.warn]{v.key} left blank — {provider.label} won't work until it's set.[/loom.warn]")
-    if provider.pip_extra:
-        console.print(f"[loom.muted]note: needs `uv sync --extra {provider.pip_extra}`[/loom.muted]")
+    if provider.pip_extra and not prov.is_available(provider.id):
+        console.print(f"[loom.warn]{provider.label} needs a package this install doesn't have[/loom.warn]")
+        console.print(f"[loom.muted]{prov.extra_install_hint(provider.pip_extra)}[/loom.muted]")
     if provider.docs_url:
         console.print(f"[loom.muted]get a key: {provider.docs_url}[/loom.muted]")
     return collected

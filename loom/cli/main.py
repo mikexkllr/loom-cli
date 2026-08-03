@@ -209,7 +209,16 @@ def _run_task(
     try:
         bundle = session.ensure_bundle()
     except ModuleNotFoundError as exc:
-        render.note(session.console, f"missing dependency: {exc} — install with `uv sync`", kind="bad")
+        from loom.core import update
+
+        fix = "reinstall Loom" if update.is_frozen() else "install with `uv sync`"
+        render.note(session.console, f"missing dependency: {exc} — {fix}", kind="bad")
+        raise typer.Exit(1)
+    except ImportError as exc:
+        # The parent class, deliberately: an optional provider that isn't
+        # installed raises ImportError with its own guidance already attached.
+        # Catching only ModuleNotFoundError let those escape as a traceback.
+        render.note(session.console, str(exc), kind="bad")
         raise typer.Exit(1)
     except RuntimeError as exc:  # e.g. local-only without Ollama
         render.note(session.console, str(exc), kind="bad")

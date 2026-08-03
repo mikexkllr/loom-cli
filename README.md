@@ -122,7 +122,10 @@ uv run loom                 # or: source .venv/bin/activate && loom
 ```
 
 Optional extras: `uv sync --extra bedrock` (AWS Bedrock), `--extra vertexai`
-(Google Vertex AI), `--extra mlx` (native MLX on Apple Silicon).
+(Google Vertex AI), `--extra mlx` (native MLX on Apple Silicon). These are
+available to source installs only — the standalone binary is a frozen bundle
+and cannot add packages, so `loom setup` marks those providers `not installed`
+rather than offering a route that would fail at first use.
 (`pip install -e .` still works if you must.) Source installs update with
 `git pull && uv sync` — `loom update` detects this and tells you so instead
 of trying to replace a binary that doesn't exist.
@@ -211,13 +214,13 @@ editing required.
 |---|---|
 | **Local (Ollama)** | Free, private. Metal (macOS), CUDA (NVIDIA), or ROCm (AMD) — Ollama picks the right backend automatically. |
 | **Anthropic** | Direct API — `ANTHROPIC_API_KEY`. |
-| **Anthropic via AWS Bedrock** | `AWS_BEARER_TOKEN_BEDROCK` (or real AWS credentials) + optional `ANTHROPIC_BEDROCK_BASE_URL` for a corporate proxy. Needs `uv sync --extra bedrock`. |
+| **Anthropic via AWS Bedrock** | `AWS_BEARER_TOKEN_BEDROCK` (or real AWS credentials) + optional `ANTHROPIC_BEDROCK_BASE_URL` for a corporate proxy. Needs `uv sync --extra bedrock` — **source installs only**, the standalone binary does not bundle it. |
 | **OpenAI** | `OPENAI_API_KEY`. |
 | **OpenAI-compatible (custom endpoint)** | Any server speaking the OpenAI Chat Completions API — vLLM, LM Studio, Together, Groq, etc. `LOOM_CUSTOM_BASE_URL` + `LOOM_CUSTOM_API_KEY`. |
 | **OpenCode Zen** | Curated pay-per-use model gateway. Models suffixed `-free` cost nothing and are billed as zero in receipts. `OPENCODE_ZEN_API_KEY`. |
 | **OpenCode Go** | $5 first month / $10-mo subscription to curated open models (GLM, Kimi, DeepSeek, MiMo, MiniMax, Qwen). `OPENCODE_GO_API_KEY`. Being a subscription, per-token cost doesn't apply — receipts mark these `~`. |
 | **Google AI Studio** (Gemini API) | Personal API key, no GCP project — `GOOGLE_API_KEY`. |
-| **Google Vertex AI** | GCP project + Application Default Credentials (`gcloud auth application-default login`). Needs `uv sync --extra vertexai`. |
+| **Google Vertex AI** | GCP project + Application Default Credentials (`gcloud auth application-default login`). Needs `uv sync --extra vertexai` — **source installs only**, the standalone binary does not bundle it. |
 
 Both OpenCode gateways also accept a single `OPENCODE_API_KEY` covering Zen and
 Go together, so a mixed fleet needs one credential rather than two.

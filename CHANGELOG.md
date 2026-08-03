@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.7 — 2026-08-03
+
+### Fixed
+
+- **The standalone binary crashed with a raw traceback on optional providers.**
+  `langchain-aws` (Bedrock) and `langchain-google-vertexai` are optional extras
+  and are not bundled into the frozen binary — botocore alone would add ~25 MB
+  to a 45 MB download for a route most users never take. That is defensible;
+  the failure mode was not. Selecting Bedrock ended in a Python traceback and
+  `Failed to execute script 'entry_point'`, because `_build_cached` raises a
+  bare `ImportError` while the task runner caught only its subclass
+  `ModuleNotFoundError`. It now catches the parent and prints one clean line.
+- **…and the advice it printed was impossible to follow.** Both the router and
+  the setup wizard told the user to run `uv sync --extra bedrock`, which a
+  frozen bundle cannot do: no project, no uv, no site-packages. Guidance is now
+  install-aware — source installs get the `uv sync` line, binary installs are
+  told plainly that this route needs the source install.
+- **The wizard offered providers this install cannot run.** Bedrock and Vertex
+  AI were listed like any other, and pressing Enter could select one, with the
+  failure deferred to first use. The picker now marks them `▲ not installed`
+  and never defaults to one.
+
 ## 0.2.6 — 2026-08-03
 
 ### Fixed
