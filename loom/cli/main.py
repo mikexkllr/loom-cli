@@ -90,6 +90,21 @@ app.add_typer(playwright_app, name="playwright")
 # ----------------------------------------------------------------------------
 
 
+def _subcommand_names(ctx: typer.Context) -> set[str]:
+    """Every command name registered on the top-level app.
+
+    Taken off the live Click group rather than a hand-kept list, so a command
+    added later is covered without anyone remembering to update this.
+    """
+    lister = getattr(ctx.command, "list_commands", None)
+    if lister is None:
+        return set()
+    try:
+        return set(lister(ctx))
+    except Exception:
+        return set()
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -109,6 +124,21 @@ def main(
     """Run a task, or (with no task and no subcommand) open the interactive UI."""
     if ctx.invoked_subcommand is not None:
         return
+
+    # `loom --root /x doctor` fills this callback's positional `prompt` with
+    # "doctor" before Click ever looks for a subcommand — only when the option
+    # is written with a separated value (`--root .`, not `--root=.`), which is
+    # the natural way to type it. Left alone it silently bills a model call for
+    # the word "doctor". `loom doctor` already declines to read that as a
+    # prompt, so refusing here matches existing behaviour rather than adding a
+    # restriction.
+    if prompt and prompt in _subcommand_names(ctx):
+        render.note(console, f"`{prompt}` is a command, not a task.", kind="bad")
+        console.print(f"  [loom.muted]run it as:[/loom.muted] loom {prompt} …")
+        console.print(
+            "  [loom.muted]global options go after the command, or write them as[/loom.muted] --root=…"
+        )
+        raise typer.Exit(2)
 
     _maybe_offer_update()
 

@@ -307,3 +307,47 @@ def test_a_missing_optional_provider_fails_cleanly_not_as_a_traceback(monkeypatc
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "uv sync --extra bedrock" in result.output
     assert "Traceback" not in result.output
+
+
+def test_a_subcommand_after_a_global_option_is_not_billed_as_a_task(monkeypatch):
+    """`loom --root /x doctor` fills the callback's positional `prompt` with
+    "doctor" before Click looks for a subcommand — but only when the option
+    uses a separated value (`--root .`, not `--root=.`), which is how people
+    naturally type it. It used to run silently as a task, billing a model call
+    for the word "doctor"."""
+    ran = []
+    monkeypatch.setattr(main_mod, "_run_task", lambda *a, **k: ran.append(a))
+    monkeypatch.setattr(main_mod, "_maybe_offer_update", lambda: None)
+
+    result = runner.invoke(app, ["--root", ".", "doctor"])
+    assert ran == [], "a command name must never reach the task runner"
+    assert result.exit_code == 2
+    assert "is a command, not a task" in result.output
+
+
+def test_the_guard_does_not_swallow_real_tasks(monkeypatch):
+    # Only an exact, whole-prompt match is a misordered command. A task that
+    # merely mentions one is still a task.
+    prompts = []
+    monkeypatch.setattr(main_mod, "_run_task", lambda *a, **k: prompts.append(a[1]))
+    monkeypatch.setattr(main_mod, "_maybe_offer_update", lambda: None)
+
+    for prompt in ("explain this codebase", "fix the doctor module", "update the README"):
+        assert runner.invoke(app, ["--root", ".", prompt]).exit_code == 0
+    assert prompts == ["explain this codebase", "fix the doctor module", "update the README"]
+
+
+def test_guard_covers_every_registered_command(monkeypatch):
+    """Derived from the live Click group, so a command added later is covered
+    without anyone remembering to update a list."""
+    ran = []
+    monkeypatch.setattr(main_mod, "_run_task", lambda *a, **k: ran.append(a))
+    monkeypatch.setattr(main_mod, "_maybe_offer_update", lambda: None)
+
+    import typer.main
+
+    names = typer.main.get_command(app).list_commands(None)
+    assert {"doctor", "chat", "config", "setup"} <= set(names)
+    for name in names:
+        assert runner.invoke(app, ["--root", ".", name]).exit_code == 2, name
+    assert ran == []

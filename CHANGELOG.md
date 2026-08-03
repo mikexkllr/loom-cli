@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.10 — 2026-08-03
+
+### Fixed
+
+- **A subcommand written after a global option was silently billed as a task.**
+  `loom --root /x doctor` ran "doctor" as a prompt against the orchestrator
+  instead of running the health check — the callback's positional `prompt`
+  argument is filled before Click looks for a subcommand. It only happened
+  with a separated option value (`--root .`); `--root=.` and flags like
+  `--yolo` were unaffected, which is why it hid for so long. The cost was real:
+  a model call, and in `--yolo` a model call with tools enabled. Loom now
+  recognises a command name in that position and says so instead of running
+  anything. `loom doctor` already declined to treat the word as a prompt, so
+  this makes the two forms agree rather than adding a restriction — a task
+  that merely mentions a command ("fix the doctor module") is still a task.
+  The command list is read off the live Click group, so commands added later
+  are covered automatically.
+
 ## 0.2.9 — 2026-08-03
 
 ### Fixed
