@@ -201,3 +201,61 @@ def get(provider_id: str) -> ProviderInfo:
 
 def cloud_providers() -> tuple[ProviderInfo, ...]:
     return tuple(p for p in PROVIDERS if p.kind == "cloud")
+
+
+# ---------------------------------------------------------------------------
+# Credentials the *current config* needs
+#
+# Every "is this set up?" surface used to hardcode its own list of providers
+# and read os.environ directly. Both halves were wrong: the lists missed
+# providers (OpenCode especially), and the wizard writes keys to
+# settings.json's env block, not the shell. Ask here instead.
+# ---------------------------------------------------------------------------
+
+# model_router's provider ids mostly match the registry ids above; these two
+# don't.
+_ROUTER_TO_REGISTRY = {"google_genai": "google_ai_studio", "custom": "openai_compatible"}
+
+# Credentials a provider accepts beyond its declared env_vars: Anthropic can be
+# reached by a gateway token or a Bedrock bearer, and one OPENCODE_API_KEY
+# covers both OpenCode endpoints (mirrors model_router's api_key_env_fallback).
+_ALSO_ACCEPTS = {
+    "anthropic": ("ANTHROPIC_AUTH_TOKEN", "AWS_BEARER_TOKEN_BEDROCK"),
+    "opencode_zen": ("OPENCODE_API_KEY",),
+    "opencode_go": ("OPENCODE_API_KEY",),
+}
+
+
+def routed_providers(models) -> list[str]:
+    """Registry ids of the cloud providers ``models`` route to, first-seen
+    order, de-duplicated. Local (Ollama) models are skipped.
+
+    ``models`` is an iterable of config model strings.
+    """
+    from loom.core import model_router
+
+    seen: list[str] = []
+    for model in models:
+        if not model:
+            continue
+        resolved = model_router.resolve(model)
+        if resolved.is_local:
+            continue
+        pid = _ROUTER_TO_REGISTRY.get(resolved.provider, resolved.provider)
+        if pid not in seen:
+            seen.append(pid)
+    return seen
+
+
+def credential_keys(provider_id: str) -> tuple[str, ...]:
+    """Env var names that authenticate ``provider_id``, preferred first.
+
+    Empty when the provider needs no key (Ollama, Vertex's ADC) — callers
+    treat that as "nothing to check", not as "missing".
+    """
+    try:
+        info = get(provider_id)
+    except KeyError:
+        return ()
+    declared = tuple(v.key for v in info.env_vars if v.required and v.secret)
+    return declared + _ALSO_ACCEPTS.get(provider_id, ())

@@ -575,24 +575,6 @@ def playwright_install(
     render.note(console, f"{browser} installed", kind="good")
 
 
-# model_router's provider ids mostly match providers.py's registry ids; these
-# two don't, and doctor needs the registry entry to know which env var to check.
-_ROUTER_TO_REGISTRY = {"google_genai": "google_ai_studio", "custom": "openai_compatible"}
-
-
-def _routed_cloud_providers(resolved) -> list[str]:
-    """Registry ids of the cloud providers this config actually routes to,
-    in first-seen order and de-duplicated."""
-    seen: list[str] = []
-    for r in resolved:
-        if r.is_local:
-            continue
-        pid = _ROUTER_TO_REGISTRY.get(r.provider, r.provider)
-        if pid not in seen:
-            seen.append(pid)
-    return seen
-
-
 @app.command("doctor")
 def doctor(
     root: str = typer.Option(".", "--root"),
@@ -635,8 +617,7 @@ def doctor(
     # or an Anthropic key that no role touches reads as "your setup is broken"
     # when nothing is.
     routed = [*config.all_models().values(), config.escalation_model, config.cloud_fallback]
-    resolved = [model_router.resolve(m) for m in routed if m]
-    has_local_roles = any(r.is_local for r in resolved)
+    has_local_roles = any(model_router.resolve(m).is_local for m in routed if m)
 
     lines = [row(_sys.version_info >= (3, 11), "python", _sys.version.split()[0])]
     st = ollama.status(config)
@@ -660,21 +641,13 @@ def doctor(
     else:
         lines.append(row(False, "ollama", f"not reachable @ {st.endpoint}" + ("" if st.installed else ", binary not installed")))
         lines.append(row(None, "cloud fallback", f"local roles will run on {config.cloud_fallback} (billed)"))
-    for provider_id in _routed_cloud_providers(resolved):
-        try:
-            info = providers.get(provider_id)
-        except Exception:
+    for provider_id in providers.routed_providers(routed):
+        names = providers.credential_keys(provider_id)
+        if not names:  # needs no key (e.g. Vertex's ADC)
             continue
-        names = [v.key for v in info.env_vars if v.required and v.secret]
-        if not names:
-            continue
-        # Anthropic accepts a couple of alternatives the registry doesn't list,
-        # since Bedrock and the gateway proxies authenticate differently.
-        if provider_id == "anthropic":
-            names += ["ANTHROPIC_AUTH_TOKEN", "AWS_BEARER_TOKEN_BEDROCK"]
         found = next((n for n in names if effective_env(n)), None)
         lines.append(
-            row(bool(found), info.label, f"{found} set" if found else f"{names[0]} not set")
+            row(bool(found), providers.get(provider_id).label, f"{found} set" if found else f"{names[0]} not set")
         )
     from loom.core import playwright_setup
 

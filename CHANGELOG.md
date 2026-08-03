@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- **The REPL told a working setup its tasks would fail.** The startup banner
+  checked a hardcoded three-provider list (`ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY`, `GOOGLE_API_KEY`) against `os.environ` alone — so it missed
+  OpenCode entirely, and missed *every* key the setup wizard had written, since
+  the wizard stores them in `settings.json`'s `env` block rather than the
+  shell. Anyone who configured Loom through `/setup` was greeted with
+  "no cloud API key … tasks will fail" and told to export an Anthropic key they
+  do not use. The check now derives the credentials it wants from the providers
+  the config actually routes to, and looks in both places. `doctor` and the
+  banner share one implementation (`providers.routed_providers` /
+  `providers.credential_keys`) so the two cannot drift apart again.
+
 - **The release pipeline could not install itself.** `uv.lock` pins the
   project's own version, so bumping `pyproject.toml` to 0.2.5 without relocking
   left `uv sync --locked` — the first step of every CI and release job —

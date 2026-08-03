@@ -1053,29 +1053,49 @@ def _toolbar(session: Session):
 
 
 def _setup_hint(session: Session) -> None:
-    """First-run guidance when neither a cloud key nor Ollama is available."""
+    """First-run guidance when the configured roles have no way to run.
+
+    Judged against what this config actually routes to, and against the keys
+    Loom can really see — the wizard writes them to settings.json's env block,
+    so checking os.environ alone calls a working setup broken.
+    """
     import os
 
-    cloud_keys = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY")
-    if any(os.environ.get(k) for k in cloud_keys):
-        return
+    from loom.core import providers
+
+    config = session.settings.models
+    routed = providers.routed_providers(
+        [*config.all_models().values(), config.escalation_model, config.cloud_fallback]
+    )
+
+    def have(key: str) -> bool:
+        return bool(os.environ.get(key) or session.settings.env.get(key))
+
+    missing = []
+    for provider_id in routed:
+        keys = providers.credential_keys(provider_id)
+        if not keys:  # needs no key at all (e.g. Vertex ADC)
+            continue
+        if any(have(k) for k in keys):
+            return  # something can run — not a first-run dead end
+        missing.append((providers.get(provider_id).label, keys[0]))
+
     try:
         from loom.core import ollama
 
-        if ollama.status(session.settings.models).running:
+        if ollama.status(config).running:
             return
     except Exception:
         pass
-    render.note(session.console, "no cloud API key and no Ollama daemon — tasks will fail", kind="warn")
-    session.console.print(
-        render.kv(
-            [
-                ("cloud", "[loom.muted]export ANTHROPIC_API_KEY=…[/loom.muted]"),
-                ("local", "[loom.muted]install Ollama (https://ollama.com), then `loom models pull`[/loom.muted]"),
-                ("check", "[loom.muted]/doctor[/loom.muted]"),
-            ]
-        )
-    )
+    if not routed:  # all-local config, daemon down
+        render.note(session.console, "no Ollama daemon and no cloud roles — tasks will fail", kind="warn")
+        rows = [("local", "[loom.muted]install Ollama (https://ollama.com), then `loom models pull`[/loom.muted]")]
+    elif not missing:
+        return  # every routed provider is credentialed
+    else:
+        render.note(session.console, "no key for the models you have configured — tasks will fail", kind="warn")
+        rows = [(label, f"[loom.muted]export {key}=…[/loom.muted]") for label, key in missing]
+    session.console.print(render.kv(rows + [("check", "[loom.muted]/doctor[/loom.muted]")]))
 
 
 def _maybe_run_onboarding(session: Session) -> None:
