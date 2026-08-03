@@ -171,3 +171,103 @@ def test_context_length_survives_an_unreachable_daemon(monkeypatch):
     monkeypatch.setattr(ollama.httpx, "post", raise_connect)
     ollama.context_length.cache_clear()
     assert ollama.context_length("qwen3:4b", "http://down:11434") is None
+
+
+# ---------------------------------------------------------------------------
+# pull retries: a dropped transfer is ordinary, not fatal
+# ---------------------------------------------------------------------------
+
+
+def test_a_dropped_transfer_is_retried(monkeypatch):
+    """The real report: `max retries exceeded: read tcp ...: connection reset
+    by peer` at 0.5 GB of a 9.6 GB model. Ollama keeps finished blobs, so the
+    next attempt resumes — giving up threw that away."""
+    attempts = []
+
+    def _stream(*a, **k):
+        attempts.append(1)
+        if len(attempts) < 3:
+            return _FakeStream([{"error": "max retries exceeded: read tcp 1.2.3.4:443: connection reset by peer"}])
+        return _FakeStream([{"status": "success"}])
+
+    monkeypatch.setattr(ollama.httpx, "stream", _stream)
+    monkeypatch.setattr(ollama.time, "sleep", lambda s: None)
+    assert ollama.pull("gemma4:e4b", "http://x", _quiet_console()) == 0
+    assert len(attempts) == 3
+
+
+def test_a_permanent_error_is_not_retried(monkeypatch):
+    """A missing manifest fails identically forever; retrying only makes the
+    user wait longer to hear the same thing."""
+    attempts = []
+
+    def _stream(*a, **k):
+        attempts.append(1)
+        return _FakeStream([{"error": "pull model manifest: file does not exist"}])
+
+    monkeypatch.setattr(ollama.httpx, "stream", _stream)
+    monkeypatch.setattr(ollama.time, "sleep", lambda s: pytest.fail("slept before a hopeless retry"))
+    assert ollama.pull("nope:1b", "http://x", _quiet_console()) == 1
+    assert len(attempts) == 1
+
+
+def test_an_unreachable_daemon_is_not_retried(monkeypatch):
+    attempts = []
+
+    def _raise(*a, **k):
+        attempts.append(1)
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(ollama.httpx, "stream", _raise)
+    monkeypatch.setattr(ollama.time, "sleep", lambda s: pytest.fail("slept waiting for a dead daemon"))
+    assert ollama.pull("qwen3:4b", "http://down:11434", _quiet_console()) == 1
+    assert len(attempts) == 1
+
+
+def test_retries_are_bounded(monkeypatch):
+    attempts = []
+
+    def _stream(*a, **k):
+        attempts.append(1)
+        return _FakeStream([{"error": "connection reset by peer"}])
+
+    monkeypatch.setattr(ollama.httpx, "stream", _stream)
+    monkeypatch.setattr(ollama.time, "sleep", lambda s: None)
+    assert ollama.pull("gemma4:e4b", "http://x", _quiet_console(), attempts=3) == 1
+    assert len(attempts) == 3
+
+
+def test_a_broken_stream_mid_transfer_is_retryable(monkeypatch):
+    """The daemon answered, so it is up — the transfer itself broke."""
+    attempts = []
+
+    def _stream(*a, **k):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise httpx.ReadError("connection reset")
+        return _FakeStream([{"status": "success"}])
+
+    monkeypatch.setattr(ollama.httpx, "stream", _stream)
+    monkeypatch.setattr(ollama.time, "sleep", lambda s: None)
+    assert ollama.pull("gemma4:e4b", "http://x", _quiet_console()) == 0
+
+
+def test_ctrl_c_during_a_pull_stops_rather_than_retrying(monkeypatch):
+    attempts = []
+
+    def _stream(*a, **k):
+        attempts.append(1)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(ollama.httpx, "stream", _stream)
+    monkeypatch.setattr(ollama.time, "sleep", lambda s: pytest.fail("retried after an interrupt"))
+    assert ollama.pull("gemma4:e4b", "http://x", _quiet_console()) == 130
+    assert len(attempts) == 1
+
+
+def test_transient_classification():
+    assert ollama._is_transient("max retries exceeded: connection reset by peer")
+    assert ollama._is_transient("unexpected EOF")
+    assert ollama._is_transient("i/o timeout")
+    assert not ollama._is_transient("pull model manifest: file does not exist")
+    assert not ollama._is_transient("model 'typo:9b' not found")

@@ -1,8 +1,80 @@
 # Changelog
 
-## Unreleased
+## 0.2.5 — 2026-08-03
+
+### Added
+
+- **A rebuilt UI, organised around what Loom actually is.** Two colours now carry
+  meaning on every surface: warm `⌂` for work running here at no cost, cool `☁`
+  for work that is billed. The transcript is drawn as a **weave** — the
+  orchestrator holds a rail down the gutter, each delegated subagent opens its
+  own indented rail beside it, and the rail is tied off with
+  `context dropped, summary returned` when the subagent finishes. The shape of a
+  turn is legible before you read a word of it. New `loom/ui/`: `render.py`
+  (primitives + the weave), `theme.py` (palettes), `glyphs.py` (Unicode plus a
+  total ASCII fallback), `banner.py`, `prompt.py` (input line + status bar).
+  Themes: `loom`, `loom-light`, `phosphor`, `mono`; `NO_COLOR` and `TERM=dumb`
+  select `mono` automatically, and `LOOM_ASCII=1` drops every box-drawing glyph.
+  `ui.weave: false` renders flat for piping to a file.
+- **Model preflight (`loom/core/preflight.py`).** Configuring a model and being
+  able to *call* it are different things. The wizard now sends one tiny prompt
+  per distinct model before it finishes, and `loom doctor --probe` / `/doctor
+  probe` re-checks on demand. A 401 means the key was rejected; a 403 means the
+  key works and *that model* is refused — a distinction that previously surfaced
+  as a failed turn hours later. Roles sharing a model are probed once, since
+  probes are real billed calls.
+- **Ollama installs itself (`loom/core/ollama_setup.py`).** `loom models install`
+  installs Ollama with the platform's package manager (Homebrew, winget, or the
+  vendor's script on Linux), starts the daemon, and pulls the configured models.
+  Also `loom models serve`, `loom models rm <tag>`, and `/ollama install`. The
+  exact command is always shown and confirmed; Loom never runs `sudo` itself.
+- **Pulls retry.** A dropped transfer part-way through a multi-gigabyte download
+  is ordinary, and giving up threw away every finished layer from the user's
+  point of view. Only transient failures retry — an unreachable daemon or a
+  missing manifest still fails immediately rather than making you wait to hear
+  the same thing four times.
 
 ### Fixed
+
+- **A save could be silently ignored.** Saving to the user layer while the
+  project has its own `.loom/settings.json` wrote a file that was then completely
+  overridden — and the wizard reported "saved — reload complete" while the next
+  turn ran on the old models. Writes are now reloaded and compared against what
+  actually resolves, with an offer to save to the winning layer; verification
+  probes the *effective* config rather than what was chosen. `/model <role>` got
+  the same check.
+- **`cloud_fallback` belonged to nobody.** The wizard configured a provider but
+  never touched the fallback every local role uses when Ollama is down, so a dead
+  daemon produced a credential error for a service the user had never set up.
+  Quick setup now points it at the chosen provider's cheap tier.
+- **A 9.6 GB model was recommended for an 8 GB machine.** `gemma4:e4b` was listed
+  at `min_gb=8` on the strength of its "effective-4B" name; the weights are
+  9.6 GB. And `fits_hardware` compared `min_gb <= budget` with no headroom, so an
+  8 GB entry passed on an 8 GB machine with nothing left for the OS or the KV
+  cache. There is now a `usable_budget` (65% of a unified pool, 90% of a discrete
+  card), download sizes are shown before the pull, and `_LOCAL_TIERS` has a test
+  asserting it stays sorted.
+- **Quick setup put `reviewer` on the cloud.** `_DEFAULT_CLOUD_ROLES` was derived
+  from the tier table, so every role with a tier defined was swept into the cloud
+  set. Only the three roles that reason across the whole task go there now;
+  anything touching raw file content stays local.
+- **The provider picker defaulted to Anthropic.** Pressing Enter selected the top
+  of the list and then demanded an Anthropic key from people who had never used
+  Anthropic. It now defaults to the provider already configured, and marks which
+  providers have a key present.
+- **Borders were invisible.** `loom.line` measured 1.06:1 against a common
+  terminal background — card titles floated with no frame. Every palette colour
+  now has a contrast floor tested against the dark and light backgrounds people
+  actually run.
+- **Every yes/no prompt could crash a headless run.** None handled EOF, so piped
+  input or CI raised instead of declining. They go through `render.confirm`,
+  which assumes *no* — each one guards a side effect, and doing that because
+  nobody answered is the wrong way to be wrong.
+- **The test suite read the developer's own project config.** `load_settings()`
+  with no root reads `<cwd>/.loom/settings.json`, which is this repo — so running
+  Loom on Loom made tests fail on that machine and nowhere else.
+
+### Fixed — delegation, budgets and pricing
 
 Found by driving the whole app end to end — the real CLI, the real graph, real
 tools on a real project, and live runs against a real provider. Every one of these

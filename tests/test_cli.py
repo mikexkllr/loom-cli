@@ -20,8 +20,9 @@ runner = CliRunner()
 def test_doctor_is_a_subcommand_not_a_task():
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
-    assert "loom doctor" in result.output
-    assert "python" in result.output
+    assert "doctor" in result.output
+    # The health rows, not a model reply — proof it never reached the agent.
+    assert "python" in result.output and "ollama" in result.output
 
 
 def test_nested_subcommands_resolve():

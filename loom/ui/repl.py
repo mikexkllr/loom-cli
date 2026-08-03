@@ -1,12 +1,15 @@
 """The interactive Loom REPL — a chat UI that lives in the terminal.
 
-Launched by ``loom`` with no task (or ``loom chat``). Uses prompt_toolkit for a
-rich input line (history, key bindings, a live status toolbar) and Rich for
-rendering the orchestrator/subagent stream, styled after Claude Code /
-opencode: a compact welcome box, a bare ``>`` prompt, token-level streaming
-with ``⏺`` bullets for assistant text and tool calls, ``⎿`` continuation
-lines for results, and a cost receipt after every turn. Slash commands
-(``/help``, ``/model``, ``/resume`` …) are handled without touching the model.
+Launched by ``loom`` with no task (or ``loom chat``). prompt_toolkit drives the
+input line (history, key bindings, the status line); Rich draws everything
+else through :mod:`loom.ui.render`.
+
+The transcript is drawn as a **weave**: the orchestrator holds a rail down the
+left gutter, and every subagent it delegates to opens its own indented rail
+beside it, coloured warm when the work is local and free and cool when it is
+billed. A turn's shape — who did what, where, and what it cost — is legible
+without reading any of the prose. Slash commands (``/help``, ``/model``,
+``/resume`` …) are handled without touching the model.
 """
 
 from __future__ import annotations
@@ -14,8 +17,6 @@ from __future__ import annotations
 import difflib
 from pathlib import Path
 
-from rich.markdown import Markdown
-from rich.panel import Panel
 from rich.text import Text
 
 from loom.core import repomap
@@ -26,10 +27,10 @@ from loom.core.settings import Settings
 from loom.core.usage import UsageTracker
 from loom.middleware import policy
 from loom.tools import sandbox
-from loom.ui import slash
+from loom.ui import banner as banner_mod
+from loom.ui import render, slash
+from loom.ui.render import Thread, Weave, ink
 from loom.ui.theme import make_console
-
-_HISTORY_FILE = settings_mod.cfg.USER_CONFIG_DIR / "history"
 
 # Project memory files, first match wins (Claude Code reads CLAUDE.md; Loom's
 # own is LOOM.md but we honor the ecosystem names too).
@@ -66,6 +67,7 @@ class Session:
         self._confirm_lock = threading.Lock()
         self._interrupted = False
         self.console = make_console(settings.ui)
+        self.weave = Weave(self.console, flat=not settings.ui.weave)
         self.messages: list = []
         self.bundle = None
         # Subagent attribution: a nested graph streams under a "tools:<id>"
@@ -142,6 +144,7 @@ class Session:
     def reload_settings(self) -> None:
         self.settings = settings_mod.load_settings(self.cwd)
         self.console = make_console(self.settings.ui)
+        self.weave = Weave(self.console, flat=not self.settings.ui.weave)
         self.tracker.config = self.settings.models
 
     def rebuild(self) -> None:
@@ -160,22 +163,28 @@ class Session:
                 cwd=str(self.cwd),
                 checkpointer=self.checkpointer,
             )
+            g = ink(self.console)
             if self.bundle.substitutions:
                 # Still local, still free — a note, not a warning.
                 roles = ", ".join(
-                    f"{role} → {self._substituted_model(role)}"
+                    f"{role} {g.arrow} {self._substituted_model(role)}"
                     for role in sorted(self.bundle.substitutions)
                 )
-                self.console.print(
-                    f"[loom.dim]⌂ model not pulled — {roles} for this session "
-                    f"(still local). `loom models pull` to use your configured models.[/loom.dim]"
+                render.note(
+                    self.console,
+                    f"[loom.local]{g.local}[/loom.local] model not pulled — {roles} for this session "
+                    f"(still free). [loom.muted]`loom models pull` to use your configured models.[/loom.muted]",
                 )
             if self.bundle.fallbacks:
                 roles = ", ".join(sorted(self.bundle.fallbacks))
-                self.console.print(
-                    f"[loom.warn]⚠ No local model available — {roles} running on "
-                    f"{self.settings.models.cloud_fallback} this session (billed).[/loom.warn] "
-                    f"[loom.dim]Start Ollama and `loom models pull` to go hybrid; /doctor for details.[/loom.dim]"
+                render.note(
+                    self.console,
+                    f"no local model available — {roles} running on "
+                    f"[loom.cloud]{self.settings.models.cloud_fallback}[/loom.cloud] this session "
+                    f"[loom.warn](billed)[/loom.warn].\n"
+                    f"  [loom.muted]start Ollama and `loom models pull` to go hybrid "
+                    f"{g.dot} /doctor for details[/loom.muted]",
+                    kind="warn",
                 )
         return self.bundle
 
@@ -241,10 +250,10 @@ class Session:
         try:
             bundle = self.ensure_bundle()
         except ModuleNotFoundError as exc:
-            self.console.print(f"[loom.err]missing dependency:[/loom.err] {exc} — run `uv sync`")
+            self.console.print(f"[loom.bad.b]missing dependency:[/loom.bad.b] {exc} — run `uv sync`")
             return None
         except Exception as exc:
-            self.console.print(f"[loom.err]could not start orchestrator:[/loom.err] {exc}")
+            self.console.print(f"[loom.bad.b]could not start orchestrator:[/loom.bad.b] {exc}")
             return None
 
         sessions_mod.record(self.cwd, self.thread_id, text)
@@ -262,28 +271,49 @@ class Session:
 
         run_config = self._run_config()
         final_text: str | None = None
+        self.weave.reset()
+        # The gap before the first token is the one moment nothing is streaming.
+        # The weave retires this the instant it has anything real to draw.
+        working = render.Working(self.console, "weaving")
+        self.weave.working = working
+        working.start()
         try:
             final_text = self._stream(bundle.agent, inputs, run_config)
         except KeyboardInterrupt:
             self._interrupted = True
-            self.console.print("\n[loom.warn]⏹ interrupted — partial work may have landed; /undo rolls back this turn's file writes[/loom.warn]")
+            self.weave.aside(
+                Text(
+                    "interrupted — partial work may have landed; /undo rolls back this turn's writes",
+                    style="loom.warn",
+                )
+            )
         except Exception as exc:
-            self.console.print(f"[loom.warn]streaming unavailable ({exc}); running synchronously…[/loom.warn]")
+            self.weave.aside(Text(f"streaming unavailable ({exc}); running synchronously…", style="loom.warn"))
             try:
                 result = bundle.agent.invoke(inputs, config=run_config)
             except Exception as exc2:
-                self.console.print(f"[loom.err]model call failed: {exc2}[/loom.err]")
+                self.weave.aside(Text(f"model call failed: {exc2}", style="loom.bad.b"))
                 return None
             final_text = self._absorb_result(result)
         finally:
+            working.stop()
+            self.weave.working = None
             undo.current_turn_id.set("")
             # Explicit end-of-turn marker: while it's absent, Loom is still
             # streaming — intermediate text is never the final answer.
-            marker = "⏹ turn interrupted" if self._interrupted else "✔ turn complete"
-            receipt = self.tracker.receipt(turn=True)
-            tail = f" · {receipt}" if receipt else ""
-            self.console.print(Text(f"{marker}{tail}", style="loom.dim"))
+            self.weave.close(self._receipt_text(), ok=not self._interrupted)
         return final_text
+
+    def _receipt_text(self) -> Text:
+        """The turn's receipt, with the money in the accent colour and
+        everything free stated as free — the whole reason the fleet exists."""
+        parts = [
+            Text("turn interrupted" if self._interrupted else "turn complete", style="loom.muted")
+        ]
+        receipt = self.tracker.receipt(turn=True)
+        if receipt:
+            parts.append(Text(receipt, style="loom.muted"))
+        return render.join(self.console, parts)
 
     # ----- plan mode (Claude Code-style: plan → approve → execute) -----
     PLAN_EXECUTE_PROMPT = (
@@ -296,31 +326,25 @@ class Session:
         """After a planning turn, offer to approve the plan and execute it
         immediately — plan mode switches off and the same thread continues,
         so the orchestrator implements the plan it just wrote."""
-        from rich.prompt import Prompt
-
-        self.console.print(
-            Panel(
-                "[loom.accent]1[/loom.accent]  yes, and auto-accept edits\n"
-                "[loom.accent]2[/loom.accent]  yes, and approve edits manually\n"
-                "[loom.accent]3[/loom.accent]  no, keep planning",
-                title="plan ready — execute it?",
-                border_style="loom.accent",
-                expand=False,
-            )
+        self.console.print()
+        render.rule(self.console, "plan ready", style="loom.warp")
+        render.choices(
+            self.console,
+            [
+                ("1", "execute it", "auto-accept edits"),
+                ("2", "execute it", "approve each edit"),
+                ("3", "keep planning", ""),
+            ],
         )
         try:
-            choice = Prompt.ask("  choice", choices=["1", "2", "3"], default="3")
+            choice = render.ask(self.console, "", options=["1", "2", "3"], default="3")
         except (EOFError, KeyboardInterrupt):
             choice = "3"
         if choice not in ("1", "2"):
-            self.console.print(
-                "[loom.dim]still in plan mode — refine the plan, or /plan to leave without executing[/loom.dim]"
-            )
+            render.note(self.console, "still in plan mode — /plan leaves it without executing")
             return
         self.set_mode("accept-edits" if choice == "1" else "default")
-        self.console.print(
-            f"[loom.accent]✓ plan approved[/loom.accent] [loom.dim]— executing (mode: {self.mode})[/loom.dim]"
-        )
+        render.note(self.console, f"plan approved — executing in [loom.warp]{self.mode}[/loom.warp] mode", kind="good")
         self.run_turn(self.PLAN_EXECUTE_PROMPT)
 
     # ----- loop mode -----
@@ -336,21 +360,27 @@ class Session:
         Check failures are fed back into the next iteration."""
         import subprocess
 
+        g = ink(self.console)
         if self.approval_mode == "default":
-            self.console.print(
-                "[loom.dim]tip: loop mode pauses on every approval — /mode accept-edits or /yolo makes it autonomous[/loom.dim]"
+            render.note(
+                self.console,
+                "loop mode pauses on every approval — /mode accept-edits or /yolo makes it autonomous",
+                kind="tip",
             )
         next_prompt = prompt + self.LOOP_NOTE
         for i in range(1, max_iters + 1):
-            self.console.print(f"[loom.accent]↻ loop {i}/{max_iters}[/loom.accent]")
+            self.console.print()
+            render.rule(self.console, f"{g.loop} loop {i}/{max_iters}", style="loom.line")
             text = self.run_turn(next_prompt) or ""
             if self._interrupted:
-                self.console.print("[loom.warn]loop stopped (interrupted)[/loom.warn]")
+                render.note(self.console, "loop stopped (interrupted)", kind="warn")
                 return
             if until:
                 check = subprocess.run(until, shell=True, cwd=self.cwd, capture_output=True, text=True)
                 if check.returncode == 0:
-                    self.console.print(f"[loom.subagent]✓ loop done — `{until}` passed after {i} iteration(s)[/loom.subagent]")
+                    render.note(
+                        self.console, f"loop done — `{until}` passed after {i} iteration(s)", kind="good"
+                    )
                     return
                 tail = (check.stdout + check.stderr)[-2000:]
                 next_prompt = (
@@ -359,10 +389,12 @@ class Session:
                 )
                 continue
             if "LOOP_COMPLETE" in text:
-                self.console.print(f"[loom.subagent]✓ loop done — agent reported complete after {i} iteration(s)[/loom.subagent]")
+                render.note(
+                    self.console, f"loop done — agent reported complete after {i} iteration(s)", kind="good"
+                )
                 return
             next_prompt = "Continue the loop task from where you left off." + self.LOOP_NOTE
-        self.console.print(f"[loom.warn]loop ended after {max_iters} iterations without completing[/loom.warn]")
+        render.note(self.console, f"loop ended after {max_iters} iterations without completing", kind="warn")
 
     # ----- approval prompt with diff preview (Claude Code-style selector) -----
     def _confirm(self, tool_name: str, tool_input: dict, reason: str) -> "bool | tuple[bool, str]":
@@ -374,22 +406,38 @@ class Session:
     def _confirm_locked(self, tool_name: str, tool_input: dict, reason: str) -> "bool | tuple[bool, str]":
         if tool_name in self.session_allowed:  # approved while we waited on the lock
             return True
-        from rich.prompt import Prompt
-
-        detail = ", ".join(f"{k}={str(v)[:60]}" for k, v in (tool_input or {}).items())
-        self.console.print(
-            Panel(f"[loom.tool]{tool_name}[/loom.tool]  {detail}", title=f"approve? ({reason})", border_style="loom.warn")
-        )
+        self.weave.end_block()
+        g = ink(self.console)
+        head = Text(f"{g.pending} ", style="loom.warn.b")
+        head.append(tool_name, style="loom.tool")
+        body = [head]
         diff = self._diff_for(tool_name, tool_input or {})
+        # With a diff to show, the raw old_string/new_string/content arguments
+        # are the same bytes twice — the diff is the readable half.
+        hidden = {"old_string", "new_string", "content"} if diff else set()
+        for key, value in (tool_input or {}).items():
+            if key in hidden:
+                continue
+            row = Text("  ")
+            row.append(f"{key} ", style="loom.key")
+            row.append(str(value)[:200].replace("\n", "↵"), style="loom.text")
+            body.append(row)
         if diff:
-            self.console.print(diff)
+            body.extend([Text(), diff])
+        self.console.print()
         self.console.print(
-            f"  [loom.accent]1[/loom.accent]  yes\n"
-            f"  [loom.accent]2[/loom.accent]  yes, don't ask again for [loom.tool]{tool_name}[/loom.tool] this session\n"
-            f"  [loom.accent]3[/loom.accent]  no, and tell Loom what to do differently"
+            render.card(self.console, render.stack(*body), title="approve?", subtitle=reason, style="loom.warn")
+        )
+        render.choices(
+            self.console,
+            [
+                ("1", "yes", ""),
+                ("2", "yes, and don't ask again", f"{tool_name} {g.dot} this session"),
+                ("3", "no", "and tell Loom what to do instead"),
+            ],
         )
         try:
-            choice = Prompt.ask("  choice", choices=["1", "2", "3"], default="1")
+            choice = render.ask(self.console, "", options=["1", "2", "3"], default="1")
         except (EOFError, KeyboardInterrupt):
             return False
         if choice == "2":
@@ -397,7 +445,7 @@ class Session:
             return True
         if choice == "3":
             try:
-                feedback = Prompt.ask("  what should Loom do instead? (enter = just decline)", default="")
+                feedback = render.ask(self.console, "what should Loom do instead?", default="")
             except (EOFError, KeyboardInterrupt):
                 feedback = ""
             return (False, feedback.strip())
@@ -432,13 +480,7 @@ class Session:
         )
         if not lines:
             return None
-        out = Text()
-        for line in lines[:80]:
-            style = "loom.subagent" if line.startswith("+") else "loom.err" if line.startswith("-") else "loom.dim"
-            out.append(line + "\n", style=style)
-        if len(lines) > 80:
-            out.append(f"… +{len(lines) - 80} more diff lines\n", style="loom.dim")
-        return out
+        return render.diff(self.console, lines)
 
     # ----- rendering (Claude Code style: ⏺ bullets + ⎿ results) -----
 
@@ -511,43 +553,69 @@ class Session:
                 tags.append(tag)
         return tags
 
+    # Args worth showing bare — the one that says *what* the call is about.
+    # Everything else reads better as "key: value".
+    _HEADLINE_ARGS = ("path", "file_path", "command", "pattern", "query", "url", "subagent_type")
+
     @staticmethod
     def _call_args_brief(call) -> str:
+        """A one-line gist of a tool call. The interesting argument — the path
+        being read, the command being run — is shown bare, since prefixing it
+        with ``path:`` costs width and says nothing."""
         args = call.get("args", {}) if isinstance(call, dict) else getattr(call, "args", {}) or {}
         if not isinstance(args, dict):
             return str(args)[:80]
-        brief = ", ".join(f"{k}: {str(v)[:50]}" for k, v in list(args.items())[:3])
-        return brief[:100]
+        for key in Session._HEADLINE_ARGS:
+            if args.get(key):
+                return str(args[key]).splitlines()[0][:100]
+        rest = [k for k in args if args[k] not in (None, "", [], {})]
+        if not rest:
+            return ""
+        return f"{rest[0]}: {str(args[rest[0]]).splitlines()[0][:70]}"
+
+    def _thread_for(self, source: str | None, node: str = "agent") -> Thread:
+        """The weave thread a piece of output belongs to.
+
+        Source labels arrive as ``"role · model (⌂ local)"`` (or just
+        ``"model (☁ cloud)"`` when no role matched); the orchestrator is
+        ``None``/``"orchestrator"``. Anything that isn't the orchestrator is a
+        delegated thread and gets its own indented rail."""
+        if source in (None, "orchestrator") and node in ("agent", "model", ""):
+            origin = self.model_origin("orchestrator")
+            model, is_local = origin if origin else ("", False)
+            return self.weave.thread("orchestrator", model, is_local, depth=0)
+        label = source or node
+        role, _, rest = label.partition(" · ")
+        model = rest
+        if "(" in model:
+            model = model[: model.index("(")].strip()
+        if not rest:  # bare node name, e.g. a nested graph with no metadata
+            role, model = label, ""
+            origin = self.model_origin(label)
+            if origin:
+                model, _ = origin
+        return self.weave.thread(role or label, model, "cloud" not in label, depth=1)
 
     def _print_tool_call(self, call, node: str, source: str | None = None) -> None:
         name = call.get("name", "?") if isinstance(call, dict) else getattr(call, "name", "?")
         args = call.get("args", {}) if isinstance(call, dict) else getattr(call, "args", {}) or {}
-        line = Text()
-        line.append("⏺ ", style="loom.tool")
-        line.append(name, style="loom.tool")
-        brief = self._call_args_brief(call)
-        if brief:
-            line.append(f"({brief})", style="loom.dim")
-        # Delegation calls: show which model will do the work, and where it
-        # runs (⌂ local / ☁ cloud), so billed calls are visible at a glance.
+        thread = self._thread_for(source, node)
+        # Delegation calls: name the model that will do the work and where it
+        # runs, so a billed hand-off is visible at the moment it happens.
         target = None
         if name == "task" and isinstance(args, dict):
             target = args.get("subagent_type") or "general-purpose"
         elif name == "consult":
             target = "advisor"
         origin = self.model_origin(target) if target else None
-        if origin:
-            line.append(f"  → {origin[0]} ({self._where_badge(origin[1])})", style="loom.dim")
-        # Every tool call says who issued it — orchestrator or a subagent.
-        caller = source or (self._node_label(node) if node not in ("agent", "model") else "orchestrator")
-        line.append(f"  [{caller}]", style="loom.dim")
-        self.console.print(line)
+        badge = render.model_badge(self.console, origin[0], origin[1]) if origin else None
+        self.weave.tool_call(thread, name, self._call_args_brief(call), target=badge)
         # Inline diff for file edits — unless the approval prompt is about to
         # render the same diff anyway.
         if name in ("write_file", "edit_file") and isinstance(args, dict) and not self._will_prompt(name, args):
             diff = self._diff_for(name, args)
             if diff:
-                self.console.print(diff)
+                self.weave.block(thread, diff)
 
     def _will_prompt(self, tool_name: str, tool_input: dict) -> bool:
         """True if this call is about to trigger the interactive approval
@@ -561,14 +629,20 @@ class Session:
             return False
         return perm_engine.check(tool_name, tool_input, self.settings.permissions) is Decision.ask
 
-    def _print_tool_result(self, msg) -> None:
+    def _print_tool_result(self, msg, source: str | None = None, node: str = "agent", nested: bool = False) -> None:
+        """A tool result belongs to the thread that *called* the tool, not to
+        the graph node that produced it — the node is always "tools". Depth
+        comes from the stream namespace: a nested namespace means a subagent
+        ran the tool inside its own graph."""
         content = str(getattr(msg, "content", "") or "").strip()
         if not content:
             return
-        first = content.splitlines()[0][:120]
-        more = len(content.splitlines()) - 1
-        suffix = f" … +{more} lines" if more > 0 else ""
-        self.console.print(Text(f"  ⎿ {first}{suffix}", style="loom.dim"))
+        lines = content.splitlines()
+        bad = str(getattr(msg, "status", "")) == "error" or lines[0].lower().startswith("error")
+        stack = self.weave._stack
+        depth = 1 if nested else 0
+        thread = stack[depth] if depth < len(stack) else self._thread_for(source, node)
+        self.weave.tool_result(thread, lines[0][:120], extra_lines=len(lines) - 1, bad=bad)
 
     def _node_label(self, node: str) -> str:
         """Node name plus its ⌂ local / ☁ cloud badge when the model is known."""
@@ -576,18 +650,10 @@ class Session:
         return f"{node} · {self._where_badge(origin[1])}" if origin else node
 
     def _print_assistant(self, text: str, node: str, source: str | None = None) -> None:
-        is_main = source in (None, "orchestrator") and node in ("agent", "model")
-        bullet = Text("⏺ ", style="loom.agent" if is_main else "loom.subagent")
-        if source and source != "orchestrator":
-            bullet.append(f"[{source}] ", style="loom.dim")
-        elif node not in ("agent", "model"):
-            bullet.append(f"[{self._node_label(node)}] ", style="loom.dim")
-        self.console.print(bullet, end="")
-        try:
-            self.console.print(Markdown(text))
-        except Exception:
-            self.console.print(text)
-        self.console.print()
+        thread = self._thread_for(source, node)
+        self.weave.open(thread)
+        self.weave.markdown(text)
+        self.weave.end_block()
 
     @staticmethod
     def _chunk_text(chunk) -> str:
@@ -751,31 +817,21 @@ class Session:
                     streamed.add("".join(buf).strip())
                 buf = []
                 open_key = None
-                self.console.print("\n")
+            self.weave.end_block()
 
         def emit(kind: str, source: str | None, piece: str) -> None:
-            """Append tokens to the current block, opening a new headed block
-            whenever the kind (text vs thinking) or emitting model changes."""
-            nonlocal open_key
+            """Append tokens to the current block, opening a new rail whenever
+            the kind (text vs thinking) or the emitting model changes."""
+            nonlocal open_key, buf
             if open_key != (kind, source):
-                finish_block()
+                if open_key is not None and open_key[0] == "text" and buf:
+                    streamed.add("".join(buf).strip())
+                    buf = []
                 open_key = (kind, source)
-                header = Text()
-                if kind == "thinking":
-                    header.append("✻ thinking…", style="loom.dim")
-                    if source:
-                        header.append(f" [{source}]", style="loom.dim")
-                    header.append("\n")
-                else:
-                    header.append("⏺ ", style="loom.agent" if source is None else "loom.subagent")
-                    if source:
-                        header.append(f"[{source}] ", style="loom.dim")
-                self.console.print(header, end="")
+                self.weave.open(self._thread_for(source), kind)
             if kind == "text":
                 buf.append(piece)
-                self.console.print(piece, end="", markup=False, highlight=False, soft_wrap=True)
-            else:
-                self.console.print(Text(piece, style="loom.dim"), end="", soft_wrap=True)
+            self.weave.text(piece)
 
         for item in stream:
             if not isinstance(item, tuple):
@@ -815,8 +871,20 @@ class Session:
                     continue
                 msg = msgs[-1]
                 if getattr(msg, "type", "") == "tool":
+                    # A `task` result is the delegated thread handing its
+                    # summary back and dropping its context. Tie the rail off
+                    # first, so the summary reads as arriving on the caller's
+                    # rail after the subagent is done — which is what happened.
+                    if getattr(msg, "name", "") == "task":
+                        self._close_delegated_thread()
                     if ui.show_tool_calls:
-                        self._print_tool_result(msg)
+                        role = self._attribute_ns(ns) if ns else None
+                        self._print_tool_result(
+                            msg,
+                            source=self._role_label(role) if role else None,
+                            node=node,
+                            nested=nested,
+                        )
                     continue
                 calls = getattr(msg, "tool_calls", []) or []
                 # Learn delegations before attributing, so a subagent's own
@@ -844,6 +912,12 @@ class Session:
         if final_text is not None and not (self.bundle and self.bundle.persistent):
             self.messages.append(("assistant", final_text))
         return final_text
+
+    def _close_delegated_thread(self) -> None:
+        """Tie off the deepest open subagent rail, if one is open."""
+        stack = self.weave._stack
+        if len(stack) > 1:
+            self.weave.close_thread(stack[-1], "context dropped, summary returned")
 
     def _stream_updates(self, stream) -> str | None:
         ui = self.settings.ui
@@ -884,53 +958,93 @@ class Session:
 # ---------------------------------------------------------------------------
 
 
-def _banner(session: Session) -> Panel:
-    from loom import __version__
+def _roster(session: Session):
+    """The welcome card's fleet summary: who is driving, who advises, and what
+    the subagents are running on.
 
+    The subagent roles collapse into one ``fleet`` row — a session has seven of
+    them sharing three model tags, and listing all seven turns the card into a
+    config dump. Fallback-aware, so a role the cloud is covering because Ollama
+    is down is counted as cloud, not quietly listed as free."""
     from loom.core.model_router import resolve
 
     cfg = session.settings.models
-    o_badge = "⌂" if cfg.is_local(cfg.orchestrator) else "☁"
-    a_badge = "⌂" if cfg.is_local(cfg.advisor) else "☁"
-    parts = [f"model: {o_badge} {cfg.orchestrator}"]
-    # Local models power the subagent roles — show them even when the
-    # orchestrator/advisor are cloud (skip the orchestrator's own tag).
-    local = [t for t in session.local_model_tags() if not (cfg.is_local(cfg.orchestrator) and t == resolve(cfg.orchestrator).name)]
-    if local:
-        parts.append(f"local: ⌂ {', '.join(local)}")
-    parts.append(f"advisor: {a_badge} {cfg.advisor}")
-    body = Text()
-    body.append("✻ Welcome to Loom!", style="loom.accent")
-    body.append(f"  v{__version__}\n\n", style="loom.dim")
-    body.append("  /help for help, /status for your current setup\n\n", style="loom.dim")
-    body.append("  " + " · ".join(parts) + "\n", style="loom.dim")
-    body.append(f"  cwd: {session.cwd}", style="loom.dim")
-    return Panel(body, border_style="loom.accent", expand=False, padding=(0, 1))
+    rows = []
+    for role in ("orchestrator", "advisor"):
+        origin = session.model_origin(role)
+        if origin:
+            rows.append((role, resolve(origin[0]).name, origin[1], ""))
+
+    tags, billed = [], 0
+    for role in sorted(cfg.subagents):
+        origin = session.model_origin(role)
+        if origin is None:
+            continue
+        model, is_local = resolve(origin[0]).name, origin[1]
+        if not is_local:
+            billed += 1
+        elif model not in tags:
+            tags.append(model)
+    if tags:
+        note = f"{len(cfg.subagents)} roles" + (f", {billed} on cloud" if billed else "")
+        rows.append(("fleet", " · ".join(tags), True, note))
+    elif cfg.subagents:
+        rows.append(("fleet", cfg.cloud_fallback, False, f"{len(cfg.subagents)} roles, no local models"))
+    return rows
+
+
+def _banner(session: Session):
+    from loom import __version__
+
+    ui = session.settings.ui
+    home = str(Path.home())
+    cwd = str(session.cwd)
+    if cwd.startswith(home):
+        cwd = "~" + cwd[len(home) :]
+    body = banner_mod.welcome(
+        session.console,
+        version=__version__,
+        roles=[] if ui.compact else _roster(session),
+        cwd=cwd,
+        tagline="hybrid local/cloud agent fleet",
+    )
+    return render.card(session.console, body, title="loom")
+
+
+# The status line lives under the input box: what is running, in what mode,
+# and what it has cost. prompt_toolkit renders it, so it carries its own
+# style names (see loom.ui.prompt).
+def _toolbar_state(session: Session) -> dict:
+    from loom.core.model_router import resolve
+
+    model, is_local = session.model_origin("orchestrator")
+    cfg = session.settings.models
+    local = [t for t in session.local_model_tags() if not (is_local and t == resolve(cfg.orchestrator).name)]
+    modes = [session.approval_mode] if session.approval_mode != "default" else []
+    for name, on in (("plan", session.plan), ("local", session.local_only), ("airgap", session.airgap), ("vim", session.vim)):
+        if on:
+            modes.append(name)
+    return {
+        "model": model,
+        "is_local": is_local,
+        "local_tags": local,
+        "modes": modes or ["default"],
+        "cost": session.tracker.session.cloud_cost,
+        "estimated": session.tracker.session.has_estimates(),
+        "local_share": session.tracker.session.local_share(),
+        "turns": session.tracker.turns,
+    }
 
 
 def _toolbar(session: Session):
-    modes = [session.approval_mode.upper()] if session.approval_mode != "default" else []
-    if session.plan:
-        modes.append("PLAN")
-    if session.local_only:
-        modes.append("LOCAL")
-    if session.airgap:
-        modes.append("AIRGAP")
-    if session.vim:
-        modes.append("VIM")
-    mode_str = " ".join(modes) or "normal"
-    cost = session.tracker.session.cloud_cost
-    # model_origin/local_model_tags are fallback-aware: if Ollama is down the
-    # orchestrator badge flips to the billed ☁ cloud fallback and dead local
-    # tags drop out, rather than lying about what's running.
-    model, is_local = session.model_origin("orchestrator")
-    where = "⌂" if is_local else "☁"
-    from loom.core.model_router import resolve
+    """The status line as prompt_toolkit fragments."""
+    from loom.ui import prompt as prompt_mod
+    from loom.ui.theme import active_theme_name, theme_of
 
-    cfg = session.settings.models
-    local = [t for t in session.local_model_tags() if not (is_local and t == resolve(cfg.orchestrator).name)]
-    local_str = f" · ⌂ {', '.join(local)}" if local else ""
-    return f" {where} {model}{local_str} · {mode_str} · ${cost:.3f} · shift+tab: mode · /help "
+    name = active_theme_name(session.settings.ui)
+    if not theme_of(session.console).unicode:
+        name = "ascii"
+    return prompt_mod.status_line(_toolbar_state(session), theme_name=name)
 
 
 # ---------------------------------------------------------------------------
@@ -952,11 +1066,15 @@ def _setup_hint(session: Session) -> None:
             return
     except Exception:
         pass
+    render.note(session.console, "no cloud API key and no Ollama daemon — tasks will fail", kind="warn")
     session.console.print(
-        "[loom.warn]⚠ No cloud API key and no Ollama daemon found — tasks will fail.[/loom.warn]\n"
-        "[loom.dim]  cloud:  export ANTHROPIC_API_KEY=…\n"
-        "  local:  install Ollama (https://ollama.com) · loom models pull\n"
-        "  check:  /doctor[/loom.dim]"
+        render.kv(
+            [
+                ("cloud", "[loom.muted]export ANTHROPIC_API_KEY=…[/loom.muted]"),
+                ("local", "[loom.muted]install Ollama (https://ollama.com), then `loom models pull`[/loom.muted]"),
+                ("check", "[loom.muted]/doctor[/loom.muted]"),
+            ]
+        )
     )
 
 
@@ -969,12 +1087,12 @@ def _maybe_run_onboarding(session: Session) -> None:
     if not onboarding.needs_onboarding(session.cwd):
         _setup_hint(session)
         return
-    session.console.print("[loom.dim]No settings.json found yet — let's configure your models (/setup to redo this later).[/loom.dim]")
+    render.note(session.console, "no settings.json yet — let's pick your models ([loom.warp]/setup[/loom.warp] to redo this later)")
     try:
         settings = onboarding.run(session.console, root=session.cwd)
         onboarding.maybe_setup_playwright(session.console, settings)
     except (KeyboardInterrupt, EOFError):
-        session.console.print("\n[loom.dim]setup skipped — run /setup any time to configure models[/loom.dim]")
+        render.note(session.console, "setup skipped — /setup any time to configure models")
         return
     session.reload_settings()
     session.rebuild()
@@ -984,6 +1102,9 @@ def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yol
     session = Session(settings, cwd, plan=plan, local_only=local_only, yolo=yolo, airgap=airgap)
     if settings.ui.banner:
         session.console.print(_banner(session))
+        session.console.print(
+            banner_mod.hint_line(session.console, ["/help", "/status", "shift+tab modes", "ctrl+c interrupt"])
+        )
     _maybe_run_onboarding(session)
 
     prompt_session = _make_prompt_session(session)
@@ -991,9 +1112,10 @@ def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yol
 
     while True:
         try:
+            session.console.print()
             line = _read_line(prompt_session, session)
         except (EOFError, KeyboardInterrupt):
-            session.console.print("\n[loom.dim]bye[/loom.dim]")
+            render.note(session.console, "bye")
             break
 
         line = (line or "").strip()
@@ -1007,38 +1129,32 @@ def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yol
         try:
             reply = session.run_turn(line)
         except KeyboardInterrupt:
-            session.console.print("[loom.warn]⏹ interrupted[/loom.warn]")
+            render.note(session.console, "interrupted", kind="warn")
             continue
         if session.plan and reply and not session._interrupted:
             session.offer_plan_execution()
 
 
 def _make_prompt_session(session: Session | None = None):
+    from loom.ui import prompt as prompt_mod
+
     try:
-        from prompt_toolkit import PromptSession
-        from prompt_toolkit.completion import WordCompleter
-        from prompt_toolkit.history import FileHistory
-        from prompt_toolkit.key_binding import KeyBindings
-
-        _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        completer = WordCompleter([f"/{n}" for n in slash._REGISTRY], sentence=True)
-        kb = KeyBindings()
-        if session is not None:
-            # Claude Code-style: Shift+Tab cycles default → accept-edits → yolo.
-            @kb.add("s-tab")
-            def _cycle(event) -> None:
-                session.cycle_approval_mode()
-                event.app.invalidate()  # refresh the toolbar
-
-        return PromptSession(history=FileHistory(str(_HISTORY_FILE)), completer=completer, key_bindings=kb)
+        return prompt_mod.make_prompt_session(session)
     except Exception:
         return None  # fall back to builtin input()
 
 
 def _read_line(prompt_session, session: Session) -> str:
+    from loom.ui import prompt as prompt_mod
+    from loom.ui.theme import active_theme_name, theme_of
+
+    symbol = session.settings.ui.prompt_symbol
     if prompt_session is None:
-        return input(f"{session.settings.ui.prompt_symbol} ")
+        return input(f"{symbol or ink(session.console).prompt} ")
+    name = active_theme_name(session.settings.ui)
+    if not theme_of(session.console).unicode:
+        name = "ascii"
     return prompt_session.prompt(
-        f"{session.settings.ui.prompt_symbol} ",
+        prompt_mod.caret(name, symbol),
         bottom_toolbar=lambda: _toolbar(session),
     )

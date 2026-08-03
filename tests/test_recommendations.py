@@ -199,3 +199,43 @@ def test_discrete_nvidia_is_not_marked_unified(monkeypatch):
 def test_unified_nvidia_reads_as_unified_memory_not_vram():
     hw = rec.Hardware("Linux", 128.0, "nvidia", 128.0, unified=True)
     assert "unified memory" in rec.hardware_summary(hw)
+
+
+def test_local_tiers_are_ordered_by_requirement():
+    """`recommend_local_models` walks this tuple assuming it ascends. A tier
+    whose min_gb was edited without moving it silently broke that ordering —
+    which is how a 16GB model stayed listed among the 8GB ones."""
+    mins = [t.min_gb for t in rec._LOCAL_TIERS]
+    assert mins == sorted(mins), f"_LOCAL_TIERS is out of order: {mins}"
+
+
+def test_a_model_larger_than_usable_memory_never_fits():
+    """The report: an 8GB machine was recommended a model whose weights are
+    9.6GB. `min_gb <= budget` alone allowed it; the weights have to fit too."""
+    hw = rec.Hardware(os_name="Darwin", ram_gb=8, gpu_vendor="apple", vram_gb=8, unified=True)
+    huge = rec.LocalModelRec("huge:1b", 8, "mislabelled", size_gb=9.6)
+    assert rec.fits_hardware(hw, huge) is False
+
+
+def test_a_model_never_gets_the_whole_machine():
+    hw = rec.Hardware(os_name="Darwin", ram_gb=8, gpu_vendor="apple", vram_gb=8, unified=True)
+    assert rec.usable_budget(hw) < 8, "the OS and KV cache need room too"
+    # Unified memory is shared, so it keeps less of the pool than a discrete card.
+    discrete = rec.Hardware(os_name="Linux", ram_gb=32, gpu_vendor="nvidia", vram_gb=8)
+    assert rec.usable_budget(hw) < rec.usable_budget(discrete)
+
+
+def test_apple_unified_memory_is_not_treated_as_dedicated_vram():
+    """Apple reports the unified pool as vram_gb; using the discrete ratio on
+    it over-promises memory the OS is already using."""
+    apple = rec.Hardware(os_name="Darwin", ram_gb=16, gpu_vendor="apple", vram_gb=16, unified=True)
+    card = rec.Hardware(os_name="Linux", ram_gb=64, gpu_vendor="nvidia", vram_gb=16)
+    assert rec.usable_budget(apple) < rec.usable_budget(card)
+
+
+def test_the_real_gemma4_e4b_entry_does_not_fit_8gb():
+    """Regression on the actual catalogue entry, not a fixture."""
+    hw = rec.Hardware(os_name="Darwin", ram_gb=8, gpu_vendor="apple", vram_gb=8, unified=True)
+    entry = next(t for t in rec._LOCAL_TIERS if t.tag == "gemma4:e4b")
+    assert entry.size_gb >= 9.0, "measured at 9.6 GB on disk"
+    assert rec.fits_hardware(hw, entry) is False

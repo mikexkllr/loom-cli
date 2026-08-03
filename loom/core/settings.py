@@ -95,20 +95,29 @@ class MCPServer(BaseModel):
 
 
 class UISettings(BaseModel):
-    theme: str = "auto"  # auto | dark | light | mono
+    # loom | loom-light | phosphor | mono, plus the legacy aliases
+    # auto/dark/light that older settings.json files still carry.
+    theme: str = "auto"
     streaming: bool = True
     show_tool_calls: bool = True
     show_thinking: bool = True
     show_fleet_panel: bool = True
-    prompt_symbol: str = ">"
+    prompt_symbol: str = ""  # empty = the theme's own caret
     banner: bool = True
+    # Rail-prefixed transcript (the weave). Off renders flat bullet lines,
+    # which is what you want when piping a session into a file.
+    weave: bool = True
+    compact: bool = False  # drop the welcome card's fleet roster and blank lines
 
     @field_validator("theme")
     @classmethod
     def _valid_theme(cls, v: str) -> str:
-        allowed = {"auto", "dark", "light", "mono"}
-        if v not in allowed:
-            raise ValueError(f"ui.theme must be one of {allowed}")
+        # Imported lazily: loom.ui.theme imports this module.
+        from loom.ui.theme import ALIASES, THEME_NAMES
+
+        if ALIASES.get(v, v) not in THEME_NAMES:
+            allowed = ", ".join(sorted({*THEME_NAMES, *ALIASES}))
+            raise ValueError(f"ui.theme must be one of: {allowed}")
         return v
 
 

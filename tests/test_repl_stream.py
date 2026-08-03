@@ -95,6 +95,12 @@ def test_local_model_tags_lists_subagent_models(tmp_path):
     assert set(s.local_model_tags()) == remaining
 
 
+def _plain(console, renderable) -> str:
+    with console.capture() as cap:
+        console.print(renderable)
+    return cap.get()
+
+
 def test_banner_and_toolbar_show_local_models(tmp_path):
     from loom.ui.repl import _banner, _toolbar
 
@@ -102,8 +108,10 @@ def test_banner_and_toolbar_show_local_models(tmp_path):
     cfg = s.settings.models
     tags = s.local_model_tags()
     assert tags, "default config should assign local models to subagents"
-    banner_out = _banner(s).renderable.plain
-    toolbar_out = _toolbar(s)
+    s.console.width = 200  # the welcome card lists models; don't let it wrap
+    banner_out = _plain(s.console, _banner(s))
+    # The status line is prompt_toolkit fragments, not a string.
+    toolbar_out = "".join(text for _, text in _toolbar(s))
     for out in (banner_out, toolbar_out):
         assert "⌂" in out
         assert tags[0] in out
@@ -208,11 +216,25 @@ def test_role_label_locality(tmp_path):
 
 
 def test_tool_calls_are_always_attributed(tmp_path, capsys):
+    """A call names its caller whenever the caller changed — the rail carries
+    the attribution in between, but it must never be silent about a switch."""
     s = _session(tmp_path)
     s._print_tool_call({"name": "read_file", "args": {"path": "x"}}, "model")
-    assert "[orchestrator]" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "orchestrator" in out and "read_file" in out
+
     s._print_tool_call({"name": "read_file", "args": {"path": "x"}}, "model", source="editor · q (⌂ local)")
-    assert "editor · q (⌂ local)" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "editor" in out and "q" in out
+    # A delegated caller is indented under the thread that spawned it.
+    assert out.splitlines()[-1].startswith(("╎", ":"))
+
+
+def test_repeated_calls_from_one_caller_do_not_repeat_the_header(tmp_path, capsys):
+    s = _session(tmp_path)
+    for _ in range(3):
+        s._print_tool_call({"name": "read_file", "args": {"path": "x"}}, "model")
+    assert capsys.readouterr().out.count("orchestrator") == 1
 
 
 def test_turn_complete_marker_prints(tmp_path, capsys):

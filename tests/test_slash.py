@@ -118,8 +118,15 @@ def test_unknown_command_is_handled(tmp_path, capsys):
     assert "unknown command" in capsys.readouterr().out
 
 
-def test_default_prompt_symbol_is_claude_code_style():
-    assert st.UISettings().prompt_symbol == ">"
+def test_prompt_symbol_defaults_to_the_theme_caret():
+    """Empty means "use the theme's caret" (❯, or > on an ASCII terminal);
+    setting it explicitly still wins."""
+    from loom.ui import prompt as prompt_mod
+
+    assert st.UISettings().prompt_symbol == ""
+    assert prompt_mod.caret("loom", "")[0][1] == "❯ "
+    assert prompt_mod.caret("ascii", "")[0][1] == "> "
+    assert prompt_mod.caret("loom", "$")[0][1] == "$ "
 
 
 def test_model_no_args_shows_roles(tmp_path, capsys):

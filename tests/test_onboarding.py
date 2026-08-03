@@ -35,8 +35,18 @@ def test_default_role_plan_mixes_local_and_cloud():
         assert plan[role] == "ollama/qwen2.5-coder:32b"
     assert plan["orchestrator"] == "anthropic:claude-sonnet-5"
     assert plan["advisor"] == "anthropic:claude-opus-4-8"  # flagship tier
-    assert plan["reviewer"] == "anthropic:claude-haiku-4-5"  # light tier
     assert plan["escalation"] == "anthropic:claude-sonnet-5"  # main tier
+
+
+def test_quick_setup_sends_only_the_three_whole_task_roles_to_the_cloud():
+    """Loom's argument is that everything touching raw file content, shell
+    output or test logs stays local — only the roles that reason across the
+    whole task are worth paying for. `reviewer` reads diffs, so it is local."""
+    assert set(ob._DEFAULT_CLOUD_ROLES) == {"orchestrator", "advisor", "escalation"}
+    plan = ob.default_role_plan(HW, "qwen2.5-coder:32b", prov.get("anthropic"))
+    for role in ("reviewer", "explorer", "editor", "bash", "searcher", "general-purpose", "tester"):
+        assert plan[role] == "ollama/qwen2.5-coder:32b", f"{role} should be local in quick setup"
+    assert set(ob._DEFAULT_LOCAL_ROLES) | set(ob._DEFAULT_CLOUD_ROLES) == set(ob.ALL_ROLES)
 
 
 def test_default_role_plan_tier_models_overrides_provider_defaults():
@@ -44,7 +54,6 @@ def test_default_role_plan_tier_models_overrides_provider_defaults():
     plan = ob.default_role_plan(HW, "qwen2.5-coder:32b", prov.get("anthropic"), tier_models)
     assert plan["orchestrator"] == "anthropic:claude-haiku-4-5"  # main tier, overridden
     assert plan["escalation"] == "anthropic:claude-haiku-4-5"  # main tier, overridden
-    assert plan["reviewer"] == "anthropic:claude-sonnet-5"  # light tier, overridden
     assert plan["advisor"] == "anthropic:claude-opus-4-8"  # flagship tier, untouched
 
 
@@ -54,7 +63,6 @@ def test_default_role_plan_tier_models_partial_falls_back_per_tier():
     plan = ob.default_role_plan(HW, "qwen2.5-coder:32b", prov.get("anthropic"), {"main": "claude-sonnet-4-6"})
     assert plan["orchestrator"] == "anthropic:claude-sonnet-4-6"  # main — overridden
     assert plan["advisor"] == "anthropic:claude-opus-4-8"  # flagship — provider default, no override given
-    assert plan["reviewer"] == "anthropic:claude-haiku-4-5"  # light — provider default, no override given
 
 
 def test_apply_plan_user_scope_writes_and_reloads(tmp_path):
@@ -145,3 +153,81 @@ def test_needs_onboarding_false_after_project_settings_written(tmp_path):
     assert ob.needs_onboarding(tmp_path) is True
     ob.apply_plan(tmp_path, "project", {"orchestrator": "anthropic:claude-sonnet-4-6"}, {})
     assert ob.needs_onboarding(tmp_path) is False
+
+
+# ---------------------------------------------------------------------------
+# a save that another layer overrides
+# ---------------------------------------------------------------------------
+
+
+def _pin_project(root, models):
+    import json
+
+    target = settings_mod.project_settings_paths(root)[0]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({"models": models}))
+
+
+def test_a_user_save_shadowed_by_the_project_is_detected(tmp_path):
+    """The report: quick setup saved go:glm-5 to the user layer, said "saved —
+    reload complete", and the next turn ran on the project layer's Anthropic
+    models. Writing has to be checked against what actually resolves."""
+    _pin_project(tmp_path, {"orchestrator": "anthropic:claude-sonnet-5"})
+    plan = {"orchestrator": "go:glm-5", "editor": "ollama/qwen3.5:2b"}
+    settings = ob.apply_plan(tmp_path, "user", plan, {})
+
+    assert settings.models.orchestrator == "anthropic:claude-sonnet-5"  # the write did nothing
+    shadowed = ob.shadowed_roles(plan, settings)
+    assert "orchestrator" in shadowed
+    assert shadowed["orchestrator"] == ("go:glm-5", "anthropic:claude-sonnet-5")
+    # A role the project doesn't pin still lands normally.
+    assert "editor" not in shadowed
+
+
+def test_saving_to_the_winning_layer_clears_the_shadow(tmp_path):
+    _pin_project(tmp_path, {"orchestrator": "anthropic:claude-sonnet-5"})
+    plan = {"orchestrator": "go:glm-5"}
+    settings = ob.apply_plan(tmp_path, "project", plan, {})
+    assert settings.models.orchestrator == "go:glm-5"
+    assert ob.shadowed_roles(plan, settings) == {}
+
+
+def test_nothing_is_reported_when_the_save_takes_effect(tmp_path):
+    plan = {"orchestrator": "go:glm-5", "editor": "ollama/qwen3.5:2b"}
+    settings = ob.apply_plan(tmp_path, "user", plan, {})
+    assert ob.shadowed_roles(plan, settings) == {}
+
+
+def test_effective_model_covers_every_role_shape(tmp_path):
+    """orchestrator/advisor are attributes, escalation is renamed, subagents
+    live in a dict — a role read the wrong way would look permanently shadowed."""
+    plan = {role: "ollama/qwen3.5:2b" for role in ob.ALL_ROLES}
+    settings = ob.apply_plan(tmp_path, "user", plan, {})
+    for role in ob.ALL_ROLES:
+        assert ob.effective_model(role, settings) == "ollama/qwen3.5:2b", role
+    assert ob.shadowed_roles(plan, settings) == {}
+
+
+def test_quick_setup_points_the_fallback_at_the_chosen_provider():
+    """When Ollama is down every local role runs on cloud_fallback. Leaving it
+    on whatever a previous config named meant one dead daemon produced
+    "OPENCODE_ZEN_API_KEY is not set" for someone who only ever set up Go."""
+    plan = ob.default_role_plan(HW, "qwen3.5:2b", prov.get("anthropic"))
+    assert plan[ob.FALLBACK_KEY].startswith("anthropic:")
+    # And it is the cheap tier — a fallback is a stopgap, not the main model.
+    assert plan[ob.FALLBACK_KEY] == "anthropic:claude-haiku-4-5"
+
+
+def test_local_only_setup_leaves_the_fallback_alone():
+    """No cloud provider was chosen, so there is nothing to point it at."""
+    plan = ob.default_role_plan(HW, "qwen3.5:2b", None)
+    assert ob.FALLBACK_KEY not in plan
+
+
+def test_the_fallback_is_written_as_a_top_level_key(tmp_path):
+    plan = {"orchestrator": "go:glm-5", ob.FALLBACK_KEY: "go:glm-5-air"}
+    settings = ob.apply_plan(tmp_path, "user", plan, {})
+    assert settings.models.cloud_fallback == "go:glm-5-air"
+    # ...and not mistaken for a subagent named "cloud_fallback".
+    assert ob.FALLBACK_KEY not in settings.models.subagents
+    assert ob.shadowed_roles(plan, settings) == {}

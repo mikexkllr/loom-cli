@@ -27,6 +27,20 @@ def _console() -> Console:
     return Console(file=io.StringIO(), force_terminal=False)
 
 
+def _as_confirm(scripted):
+    """Adapt a _Scripted queue to render.confirm's signature.
+
+    The wizard's yes/no questions go through render.confirm now — it swallows
+    EOF so a piped or CI run declines instead of crashing — so the scripts
+    drive that rather than rich's Confirm directly.
+    """
+
+    def _confirm(_console, _question, **_kwargs):
+        return scripted()
+
+    return _confirm
+
+
 class _Scripted:
     """Feeds a fixed sequence of answers to Prompt.ask/Confirm.ask, in call
     order, regardless of the prompt text — mirrors piping fixed input lines
@@ -93,7 +107,7 @@ def test_prompt_local_model_picks_installed_by_number(monkeypatch):
 
 def test_prompt_local_model_custom_tag_offers_pull(monkeypatch, _no_real_ollama):
     monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(["qwen2.5-coder:32b"]))}))
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([True]))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([True])))
     tag = ob.prompt_local_model(_console(), HW)
     assert tag == "qwen2.5-coder:32b"
     assert _no_real_ollama == ["qwen2.5-coder:32b"]
@@ -101,7 +115,7 @@ def test_prompt_local_model_custom_tag_offers_pull(monkeypatch, _no_real_ollama)
 
 def test_prompt_local_model_declines_pull(monkeypatch, _no_real_ollama):
     monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(["qwen2.5-coder:32b"]))}))
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([False]))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([False])))
     tag = ob.prompt_local_model(_console(), HW)
     assert tag == "qwen2.5-coder:32b"
     assert _no_real_ollama == []  # declined — nothing pulled
@@ -137,21 +151,21 @@ def test_prompt_credentials_keeps_preexisting_value_on_confirm(monkeypatch):
         raise AssertionError("kept the existing value — must not prompt for a new one")
 
     monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_boom)}))
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([True]))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([True])))
     env = ob.prompt_credentials(_console(), prov.get("anthropic"), {}, {"ANTHROPIC_API_KEY": "old-key"})
     assert env == {"ANTHROPIC_API_KEY": "old-key"}
 
 
 def test_prompt_credentials_overwrites_preexisting_value_on_decline(monkeypatch):
     monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(["rotated-key"]))}))
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([False]))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([False])))
     env = ob.prompt_credentials(_console(), prov.get("anthropic"), {}, {"ANTHROPIC_API_KEY": "old-key"})
     assert env == {"ANTHROPIC_API_KEY": "rotated-key"}
 
 
 def test_prompt_credentials_blank_after_decline_keeps_old_value(monkeypatch):
     monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted([""]))}))
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([False]))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([False])))
     env = ob.prompt_credentials(_console(), prov.get("anthropic"), {}, {"ANTHROPIC_API_KEY": "old-key"})
     assert env == {"ANTHROPIC_API_KEY": "old-key"}
 
@@ -163,14 +177,14 @@ def test_rerun_offers_overwrite_of_saved_key(monkeypatch, tmp_path):
     # First run: quick setup with cloud, key "first-key".
     # Confirms in order: use cloud provider? yes · customize models per tier? no.
     monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(["quick", "1", "1", "first-key", "user"]))}))
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([True, False]))}))
-    ob.run(_console(), root=tmp_path)
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([True, False])))
+    ob.run(_console(), root=tmp_path, verify=False)
 
     # Second run: same flow, but decline the keep and enter a rotated key.
     monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(["quick", "1", "1", "second-key", "user"]))}))
     # Confirms in order: use cloud provider? yes · keep existing key? no · customize models per tier? no.
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([True, False, False]))}))
-    settings = ob.run(_console(), root=tmp_path)
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([True, False, False])))
+    settings = ob.run(_console(), root=tmp_path, verify=False)
     assert settings.env["ANTHROPIC_API_KEY"] == "second-key"
 
 
@@ -212,9 +226,9 @@ def test_run_quick_setup_local_only(monkeypatch, tmp_path):
     monkeypatch.setattr(ob.rec, "detect_hardware", lambda: HW)
     answers = ["quick", "1", "user"]  # mode, local model#, scope (Confirm handles the cloud toggle)
     monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(answers))}))
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([False]))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([False])))
 
-    settings = ob.run(_console(), root=tmp_path)
+    settings = ob.run(_console(), root=tmp_path, verify=False)
     assert settings.models.orchestrator == "ollama/qwen3:14b"
     assert settings.models.subagents["editor"] == "ollama/qwen3:14b"
 
@@ -224,12 +238,13 @@ def test_run_quick_setup_with_cloud_provider(monkeypatch, tmp_path):
     answers = ["quick", "1", "1", "test-key", "user"]  # mode, local#, provider#, key, scope
     # use cloud provider? yes · customize models per tier? no (recommended defaults).
     monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(answers))}))
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([True, False]))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([True, False])))
 
-    settings = ob.run(_console(), root=tmp_path)
+    settings = ob.run(_console(), root=tmp_path, verify=False)
     assert settings.models.orchestrator == "anthropic:claude-sonnet-5"
     assert settings.models.advisor == "anthropic:claude-opus-4-8"
-    assert settings.models.subagents["reviewer"] == "anthropic:claude-haiku-4-5"
+    # reviewer reads diffs, so quick setup keeps it local like the rest of the fleet
+    assert settings.models.subagents["reviewer"] == "ollama/qwen3:14b"
     assert settings.models.subagents["editor"] == "ollama/qwen3:14b"
     assert settings.env["ANTHROPIC_API_KEY"] == "test-key"
 
@@ -243,18 +258,19 @@ def test_run_quick_setup_with_per_tier_model_customization(monkeypatch, tmp_path
         "1", "test-key",  # provider#, key
         "claude-haiku-4-5",  # main tier override (orchestrator + escalation) — default would be sonnet
         "",  # flagship tier — accept default (opus)
-        "claude-sonnet-5",  # light tier override (reviewer) — default would be haiku
         "user",  # scope
     ]
     monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(answers))}))
     # use cloud provider? yes · customize models per tier? yes.
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([True, True]))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([True, True])))
 
-    settings = ob.run(_console(), root=tmp_path)
+    settings = ob.run(_console(), root=tmp_path, verify=False)
     assert settings.models.orchestrator == "anthropic:claude-haiku-4-5"
     assert settings.models.escalation_model == "anthropic:claude-haiku-4-5"
     assert settings.models.advisor == "anthropic:claude-opus-4-8"  # accepted default
-    assert settings.models.subagents["reviewer"] == "anthropic:claude-sonnet-5"
+    # Only tiers a cloud role actually uses are asked about — no "light" prompt
+    # now that reviewer is local, which the answer queue above depends on.
+    assert settings.models.subagents["reviewer"] == "ollama/qwen3:14b"
 
 
 def test_run_respects_explicit_scope_skips_prompt(monkeypatch, tmp_path):
@@ -263,9 +279,9 @@ def test_run_respects_explicit_scope_skips_prompt(monkeypatch, tmp_path):
     # despite `scope="project"`, this would raise EOFError.
     answers = ["quick", "1", "n"]
     monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(answers))}))
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([False]))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([False])))
 
-    settings = ob.run(_console(), root=tmp_path, scope="project")
+    settings = ob.run(_console(), root=tmp_path, verify=False, scope="project")
     project_file = settings_mod.project_settings_paths(tmp_path)[0]
     assert project_file.exists()
     assert settings.models.orchestrator == "ollama/qwen3:14b"
@@ -284,9 +300,9 @@ def test_run_advanced_setup_per_role(monkeypatch, tmp_path):
         "user",
     ]
     monkeypatch.setattr(ob, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(answers))}))
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([]))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([])))
 
-    settings = ob.run(_console(), root=tmp_path, roles=("orchestrator", "editor"))
+    settings = ob.run(_console(), root=tmp_path, verify=False, roles=("orchestrator", "editor"))
     assert settings.models.orchestrator == "anthropic:claude-sonnet-4-6"
     assert settings.models.subagents["editor"] == "ollama/qwen3:14b"
     assert settings.env["ANTHROPIC_API_KEY"] == "test-key"
@@ -319,7 +335,7 @@ def test_maybe_setup_playwright_hints_when_npx_missing(monkeypatch, tmp_path):
     def boom(*a, **k):
         raise AssertionError("must not prompt Confirm when npx is missing")
 
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(boom)}))
+    monkeypatch.setattr(ob.render, "confirm", boom)
     settings = settings_mod.load_settings(tmp_path)
     ob.maybe_setup_playwright(_console(), settings)
 
@@ -332,7 +348,7 @@ def test_maybe_setup_playwright_noop_when_already_installed(monkeypatch, tmp_pat
     def boom(*a, **k):
         raise AssertionError("must not prompt Confirm when browsers are already installed")
 
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(boom)}))
+    monkeypatch.setattr(ob.render, "confirm", boom)
     settings = settings_mod.load_settings(tmp_path)
     ob.maybe_setup_playwright(_console(), settings)
 
@@ -343,7 +359,7 @@ def test_maybe_setup_playwright_installs_on_confirm(monkeypatch, tmp_path):
     monkeypatch.setattr(pw_mod, "status", lambda: pw_mod.PlaywrightStatus(True, False, tmp_path))
     installed = []
     monkeypatch.setattr(pw_mod, "install_browsers", lambda console: installed.append(True) or 0)
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([True]))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([True])))
     settings = settings_mod.load_settings(tmp_path)
     ob.maybe_setup_playwright(_console(), settings)
     assert installed == [True]
@@ -358,6 +374,6 @@ def test_maybe_setup_playwright_declines_confirm(monkeypatch, tmp_path):
         raise AssertionError("must not install when declined")
 
     monkeypatch.setattr(pw_mod, "install_browsers", boom)
-    monkeypatch.setattr(ob, "Confirm", type("C", (), {"ask": staticmethod(_Scripted([False]))}))
+    monkeypatch.setattr(ob.render, "confirm", _as_confirm(_Scripted([False])))
     settings = settings_mod.load_settings(tmp_path)
     ob.maybe_setup_playwright(_console(), settings)

@@ -34,16 +34,31 @@ class LocalModelRec:
     tag: str  # ollama pull tag, e.g. "qwen2.5-coder:32b"
     min_gb: float  # minimum unified RAM (Apple) or VRAM (NVIDIA) / RAM (CPU) to run comfortably
     blurb: str
+    # Approximate download size at the default quant, when known. The daemon
+    # reports the true figure once a model is installed (`installed_sizes`);
+    # this is only so the picker can warn *before* a multi-gigabyte download.
+    size_gb: float = 0.0
 
 
 # Ordered smallest -> largest. min_gb is the "runs comfortably at 4-bit quant"
 # threshold; pick the largest entry whose min_gb fits the detected hardware.
+#
+# min_gb is the whole machine's memory, not the weights: a model has to share
+# with the OS, the KV cache and everything else running. `gemma4:e4b` was
+# listed at 8 GB on the strength of its "effective-4B" name and turned out to
+# download 9.6 GB — larger than the entire machine it was being recommended
+# for. Where a real measurement exists, size_gb records it.
 _LOCAL_TIERS: tuple[LocalModelRec, ...] = (
     LocalModelRec("qwen3.5:2b", 4, "tiny — CPU-only laptops, fast but weak"),
-    LocalModelRec("gemma4:e4b", 8, "Gemma 4 effective-4B — non-Qwen small option for ~8GB devices"),
     LocalModelRec("qwen3.5:4b", 8, "small — good recon/chat on 8GB machines"),
     LocalModelRec("gemma4:12b", 12, "Gemma 4 mid — strong all-rounder, big coding jump over Gemma 3"),
     LocalModelRec("qwen3.5:9b", 12, "current small-model sweet spot on 12-16GB"),
+    LocalModelRec(
+        "gemma4:e4b",
+        16,
+        "Gemma 4 effective-4B — 4B active params but ~9.6GB of weights, so it needs a 16GB machine",
+        size_gb=9.6,
+    ),
     LocalModelRec("devstral-small-2:24b", 24, "agent-first Mistral coder — 68% SWE-bench Verified, 384K ctx"),
     LocalModelRec("qwen3-coder:30b-a3b", 24, "MoE — 3B active params, fast agentic coding"),
     LocalModelRec("glm-4.7-flash", 24, "30B-A3B MoE — strongest 30B class, fast agentic tool use, 200K ctx"),
@@ -188,10 +203,44 @@ def all_local_models() -> tuple[LocalModelRec, ...]:
     return _LOCAL_TIERS
 
 
+# A model never gets the whole machine. On unified memory the OS, the browser
+# you left open and the KV cache all come out of the same pool, so treating
+# "8GB of RAM" as "8GB for weights" recommends models that cannot load. A
+# discrete card is closer to dedicated, so it keeps more of its budget.
+_UNIFIED_USABLE = 0.65
+_DISCRETE_USABLE = 0.90
+
+
+def usable_budget(hw: Hardware) -> float | None:
+    """Memory actually available to a model, in GB.
+
+    Apple reports its unified pool as ``vram_gb`` too, so the vendor has to be
+    checked before that figure is treated as a dedicated card's.
+    """
+    shared = hw.unified or hw.gpu_vendor == "apple"
+    pool = hw.vram_gb or hw.ram_gb
+    if not pool:
+        return None
+    return pool * (_UNIFIED_USABLE if shared else _DISCRETE_USABLE)
+
+
 def fits_hardware(hw: Hardware, model: LocalModelRec) -> bool:
-    """True if ``model`` comfortably fits the detected VRAM/RAM budget."""
+    """True if ``model`` comfortably fits the detected VRAM/RAM budget.
+
+    Two ways to fail, and the old check applied neither strictly enough:
+    the machine has to meet the model's stated minimum, *and* — where the
+    download size is known — the weights have to fit in what is actually
+    usable. ``min_gb <= budget`` alone let an 8 GB entry pass on an 8 GB
+    machine with nothing left for the OS.
+    """
     budget = hw.vram_gb or hw.ram_gb
-    return budget is not None and model.min_gb <= budget
+    if budget is None or model.min_gb > budget:
+        return False
+    if model.size_gb:
+        usable = usable_budget(hw)
+        if usable is not None and model.size_gb > usable:
+            return False
+    return True
 
 
 # GPU-addressable memory (GB) -> how big a context window to let a local model

@@ -13,6 +13,7 @@ from __future__ import annotations
 import functools
 import json
 import shutil
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -104,14 +105,74 @@ def missing_models(config: LoomConfig) -> list[str]:
     return [m for m in required_local_models(config) if not is_served(m, have)]
 
 
-def pull(model_tag: str, endpoint: str = DEFAULT_ENDPOINT, console: "Console | None" = None) -> int:
-    """Download ``model_tag`` through the Ollama daemon's HTTP API, streaming
-    per-layer progress bars to ``console``.
+PULL_ATTEMPTS = 4
+RETRYABLE = 75  # EX_TEMPFAIL: the transfer dropped, but trying again can work
+
+# Ollama surfaces its own exhausted retries as an `error` event whose text is
+# the underlying network failure. Only these are worth another attempt — a
+# missing manifest or a bad tag will fail identically forever.
+_TRANSIENT = (
+    "connection reset",
+    "max retries exceeded",
+    "unexpected eof",
+    "timeout",
+    "timed out",
+    "connection refused by peer",
+    "broken pipe",
+    "temporary failure",
+)
+
+
+def _is_transient(message: str) -> bool:
+    text = message.lower()
+    return any(marker in text for marker in _TRANSIENT)
+
+
+def pull(
+    model_tag: str,
+    endpoint: str = DEFAULT_ENDPOINT,
+    console: "Console | None" = None,
+    *,
+    attempts: int = PULL_ATTEMPTS,
+) -> int:
+    """Download ``model_tag`` through the Ollama daemon, with retries.
+
+    Model weights run to several gigabytes, so a single dropped connection is
+    an ordinary event rather than an exceptional one — and giving up on it
+    threw away everything downloaded so far from the user's point of view.
+    Ollama keeps completed blobs, so a retry resumes rather than restarting;
+    what looks like lost progress is only the layer that was in flight.
 
     Talks to ``endpoint`` (the configured ``ollama_endpoint``), so pulls land
     on the daemon Loom actually uses — local or remote — and the ``ollama``
     CLI binary is never required. Returns 0 on success, non-zero on failure.
     """
+    from loom.ui.theme import theme_of
+
+    last = 1
+    for attempt in range(1, max(1, attempts) + 1):
+        last = _pull_once(model_tag, endpoint, console)
+        if last == 0:
+            return 0
+        # Only a dropped transfer is worth repeating. An unreachable daemon or
+        # a tag that doesn't exist will fail the same way every time, and
+        # retrying it just makes the user wait to hear the same thing.
+        if last != RETRYABLE or attempt == attempts:
+            return 1 if last == RETRYABLE else last
+        if console is not None:
+            from loom.ui.glyphs import glyphs
+
+            g = glyphs(theme_of(console).unicode)
+            console.print(
+                f"[loom.warn]{g.warn}[/loom.warn] [loom.muted]connection dropped — "
+                f"retrying ({attempt + 1}/{attempts}); finished layers are kept[/loom.muted]"
+            )
+        time.sleep(min(2**attempt, 8))
+    return 1
+
+
+def _pull_once(model_tag: str, endpoint: str, console: "Console | None") -> int:
+    """One download attempt. Returns 0 on success, 130 if interrupted."""
     from rich.console import Console as RichConsole
     from rich.progress import (
         BarColumn,
@@ -122,6 +183,11 @@ def pull(model_tag: str, endpoint: str = DEFAULT_ENDPOINT, console: "Console | N
     )
 
     console = console or RichConsole()
+    # A caller-supplied console may be a plain Rich one; theme_of adopts it so
+    # the `loom.*` names below resolve instead of raising MissingStyle.
+    from loom.ui.theme import theme_of
+
+    theme_of(console)
     try:
         with httpx.stream(
             "POST",
@@ -131,8 +197,8 @@ def pull(model_tag: str, endpoint: str = DEFAULT_ENDPOINT, console: "Console | N
         ) as resp:
             resp.raise_for_status()
             with Progress(
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
+                TextColumn("[loom.muted]{task.description}"),
+                BarColumn(complete_style="loom.local", finished_style="loom.good", pulse_style="loom.line"),
                 DownloadColumn(),
                 TransferSpeedColumn(),
                 console=console,
@@ -145,8 +211,8 @@ def pull(model_tag: str, endpoint: str = DEFAULT_ENDPOINT, console: "Console | N
                         continue
                     event = json.loads(line)
                     if event.get("error"):
-                        console.print(f"[red]pull failed:[/red] {event['error']}")
-                        return 1
+                        console.print(f"[loom.bad.b]pull failed:[/loom.bad.b] {event['error']}")
+                        return RETRYABLE if _is_transient(str(event["error"])) else 1
                     state = event.get("status", "")
                     digest = event.get("digest")
                     if digest and event.get("total"):
@@ -157,29 +223,74 @@ def pull(model_tag: str, endpoint: str = DEFAULT_ENDPOINT, console: "Console | N
                             tasks[digest] = task_id
                         progress.update(task_id, completed=event.get("completed", 0))
                     elif state and state != last_status:
-                        console.print(f"[dim]{state}[/dim]")
+                        console.print(f"[loom.muted]{state}[/loom.muted]")
                         last_status = state
                     if state == "success":
                         return 0
-    except httpx.HTTPError as exc:
-        console.print(f"[red]pull failed:[/red] {daemon_hint(endpoint)} ({exc})")
+    except httpx.ConnectError as exc:
+        console.print(f"[loom.bad.b]pull failed:[/loom.bad.b] {daemon_hint(endpoint)} ({exc})")
         return 1
+    except httpx.HTTPError as exc:
+        # The stream had started, so the daemon is there — the transfer broke.
+        console.print(f"[loom.bad.b]pull failed:[/loom.bad.b] {' '.join(str(exc).split()) or type(exc).__name__}")
+        return RETRYABLE
+    except KeyboardInterrupt:
+        console.print("[loom.warn]pull interrupted — finished layers are kept, re-run to resume[/loom.warn]")
+        return 130
     return 1  # stream ended without a success event
+
+
+def remove(model_tag: str, endpoint: str = DEFAULT_ENDPOINT) -> tuple[bool, str]:
+    """Delete ``model_tag`` from the daemon. Returns (ok, message).
+
+    Through the HTTP API like :func:`pull`, so it works against a remote
+    ``ollama_endpoint`` and needs no ``ollama`` binary.
+    """
+    try:
+        resp = httpx.request(
+            "DELETE", f"{endpoint}/api/delete", json={"model": model_tag}, timeout=30
+        )
+    except httpx.HTTPError as exc:
+        return False, f"{daemon_hint(endpoint)} ({exc})"
+    if resp.status_code == 404:
+        return False, f"`{model_tag}` isn't installed"
+    if resp.status_code >= 400:
+        return False, " ".join(resp.text.split())[:200] or f"HTTP {resp.status_code}"
+    return True, f"removed {model_tag}"
+
+
+def installed_sizes(config: LoomConfig) -> dict[str, int]:
+    """Installed tag -> size in bytes, as the daemon reports it.
+
+    The catalogue's RAM figures are hand-maintained estimates; this is ground
+    truth, and it is free — the tag listing already carries it.
+    """
+    try:
+        resp = httpx.get(f"{config.ollama_endpoint}/api/tags", timeout=3)
+        resp.raise_for_status()
+        return {m["name"]: int(m.get("size") or 0) for m in resp.json().get("models", [])}
+    except (httpx.HTTPError, KeyError, ValueError, TypeError):
+        return {}
+
+
+def human_size(size_bytes: float) -> str:
+    return f"{size_bytes / 1e9:.1f} GB" if size_bytes >= 1e8 else f"{size_bytes / 1e6:.0f} MB"
 
 
 def daemon_hint(endpoint: str) -> str:
     """One-line remedy for an unreachable daemon at ``endpoint``."""
     return (
-        f"the Ollama daemon isn't reachable at {endpoint} — start it "
-        "(`ollama serve`, or open the Ollama app) or point `ollama_endpoint` "
-        "at a reachable host"
+        f"the Ollama daemon isn't reachable at {endpoint} — `loom models serve` "
+        "starts it for you (or run `ollama serve` yourself), or point "
+        "`ollama_endpoint` at a reachable host"
     )
 
 
 INSTALL_HINT = (
-    "Ollama is not installed and no daemon is reachable. Install it from "
+    "Ollama is not installed and no daemon is reachable. `loom models install` "
+    "does the whole thing — installs it with your package manager, starts the "
+    "daemon, and pulls your configured models. To do it by hand instead: "
     "https://ollama.com/download (macOS: `brew install ollama`; Linux: "
     "`curl -fsSL https://ollama.com/install.sh | sh`), or set "
-    "`ollama_endpoint` to a remote daemon. Then `loom models pull` fetches "
-    "the local models from your config."
+    "`ollama_endpoint` to a remote daemon."
 )

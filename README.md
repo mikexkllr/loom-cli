@@ -44,7 +44,21 @@ code**:
 | Linux / Windows (AMD) | ROCm | Ollama uses the ROCm backend automatically on supported GPUs |
 | Any | CPU fallback | automatic |
 
-Installing and running a model is one command (`loom models pull`). If you'd
+Loom sets Ollama up for you. `loom models install` — or just answering yes in
+the setup wizard — installs it with your platform's package manager
+(Homebrew on macOS, winget on Windows, the vendor's script on Linux), starts
+the daemon, and pulls the models your config names. It always shows the exact
+command before running it, and never runs `sudo` itself: where root is needed
+the vendor's own installer asks, in your terminal.
+
+| Command | What it does |
+|---|---|
+| `loom models install` | install Ollama + start the daemon + pull your models |
+| `loom models serve` | start the daemon in the background and wait for it |
+| `loom models pull` | fetch any configured model that isn't downloaded |
+| `/ollama install` | the same setup, from inside the REPL |
+
+If you'd
 rather run models *natively* through MLX on a Mac, install the optional `mlx`
 extra — but Ollama already gives you Metal acceleration out of the box, so this
 is rarely needed.
@@ -143,6 +157,22 @@ model the moment you pick it.
 
 ## Setup wizard
 
+Before it finishes, the wizard **calls every model you configured** — one tiny
+prompt each — and reports what came back. A key being valid and a model being
+callable are different things: wrong region, not opted in, not on your plan,
+retired, or simply misspelt all pass a credentials check and then fail on your
+first real task. Anything that doesn't answer, you can re-pick on the spot;
+local models that just aren't downloaded yet, it offers to pull.
+
+Re-check any time without redoing setup:
+
+```bash
+loom doctor --probe
+```
+
+or `/doctor probe` in the REPL. Probes are real (billed) calls, so roles
+sharing a model are probed once, not once each.
+
 `loom setup` (or `/setup` in the REPL) walks through every model role —
 `orchestrator`, `advisor`, `escalation`, and each subagent — and writes the
 result straight to `settings.json`, reloading it live. No manual YAML/JSON
@@ -211,28 +241,71 @@ custom:my-self-hosted-model  # any OpenAI-compatible endpoint
 
 ### Interactive UI (the REPL)
 
-Run `loom` with no task to drop into the in-terminal chat UI, styled after
-Claude Code / opencode: a compact welcome box, a bare `>` prompt, `⏺` bullets
-for assistant text and tool calls, `⎿` lines for tool results, and a live
-status toolbar:
+Run `loom` with no task to drop into the in-terminal chat UI:
 
 ```
 $ loom
-╭──────────────────────────────────────────────────╮
-│ ✻ Welcome to Loom!  v0.2.0                       │
-│                                                  │
-│   /help for help, /status for your current setup │
-│                                                  │
-│   model: claude-sonnet-4-6 · advisor: opus-4-8   │
-│   cwd: /path/to/project                          │
-╰──────────────────────────────────────────────────╯
-> add a health-check endpoint to the API
-⏺ I'll add the endpoint and verify it end-to-end.
-⏺ task(subagent: editor, add /health route)
-  ⎿ added GET /health to src/api/routes.py … +2 lines
-⏺ task(subagent: tester, verify http://localhost:3000/health)
-  ⎿ PASS — page shows {"status":"ok"}
+╭─ loom ─────────────────────────────────────────────────────────╮
+│ █    ▄▀▀▄ ▄▀▀▄ █▄  ▄█                                          │
+│ █    █▚▞█ █▚▞█ █ ▀▀ █                                          │
+│ ▀▀▀▀  ▀▀   ▀▀  ▀    ▀                                          │
+│                                                                │
+│   v0.2.0 · hybrid local/cloud agent fleet                      │
+│                                                                │
+│ orchestrator   ☁   claude-sonnet-5                             │
+│ advisor        ☁   claude-opus-4-8                             │
+│ fleet          ⌂   qwen3.5:9b · qwen3.6:27b   7 roles          │
+│                                                                │
+│ ❯ ~/projects/api                                               │
+╰────────────────────────────────────────────────────────────────╯
+  /help · /status · shift+tab modes · ctrl+c interrupt
+
+❯ add a health-check endpoint to the API
 ```
+
+Two colours carry meaning everywhere in the UI, so you never have to ask what
+a run is costing you:
+
+- **warm `⌂`** — runs on this machine, free
+- **cool `☁`** — runs in the cloud, billed
+
+Under the input line sits a status bar with the driving model, the local
+fleet, any armed mode, and the running spend. **Shift+Tab** cycles modes;
+it goes loud and inverse-video the moment a mode can act without asking.
+
+#### The weave
+
+Loom is a *fleet*, so its transcript is drawn as one. The orchestrator holds a
+rail down the left gutter; every subagent it delegates to opens its own
+indented rail beside it, in its own colour, and the rail is warm or cool
+depending on where that work is running. The shape of a turn — who did what,
+where, and what came back — is legible before you read a word of it:
+
+```
+◆ orchestrator  ☁ claude-sonnet-5
+│ I'll add the endpoint, then have a local model verify it.
+├─ read_file  src/api/routes.py
+│  ⤷ 214 lines … +30 lines
+├─ task  editor  → ⌂ qwen3.6:27b
+╎ ◆ editor  ⌂ qwen3.6:27b
+╎ │ Added a GET /health route returning {"status":"ok"}.
+╎ ╰─ context dropped, summary returned
+│  ⤷ added GET /health to src/api/routes.py
+├─ task  tester  → ⌂ qwen3.5:9b
+╎ ◆ tester  ⌂ qwen3.5:9b
+╎ ╰─ context dropped, summary returned
+│  ⤷ PASS — page shows {"status":"ok"}
+│ Done. The endpoint is live and verified.
+╰─ ✔ turn complete · 4.2k in / 812 out · $0.012 · 71% local
+```
+
+That `╰─ context dropped, summary returned` is the whole thesis on screen: the
+subagent's file reads and logs died with its context window, and only the
+summary crossed back to the orchestrator.
+
+Set `"weave": false` under `ui` for flat output when piping a session to a
+file, or `LOOM_ASCII=1` on a terminal that can't render box-drawing glyphs.
+Themes: `loom`, `loom-light`, `phosphor`, `mono` — `/theme` to switch.
 
 Slash commands (Claude Code-compatible where it makes sense):
 
@@ -260,7 +333,9 @@ Slash commands (Claude Code-compatible where it makes sense):
 | `/memory` | show the project memory file |
 | `/export [path]` | save the transcript to markdown |
 | `/doctor` | health-check your setup (ollama, keys, npx, MCP) |
-| `/theme`, `/vim` | UI theme · vim editing mode |
+| `/doctor probe` | call every configured model once and report what answered |
+| `/theme` | show or set the theme: `loom` · `loom-light` · `phosphor` · `mono` |
+| `/vim` | vim editing mode for the input line |
 | `/mode [m]` | mode: default / accept-edits / plan / yolo (Shift+Tab cycles) |
 | `/loop [N] <task>` | iterate until done — optional `--until "pytest -q"` gate |
 | `/plan`, `/local`, `/yolo` | toggle plan / local-only / full auto-approve |
@@ -500,7 +575,7 @@ wins:
     "post_tool_use": [{ "matcher": "write_file", "command": "black -q ." }]
   },
   "env": { "ANTHROPIC_API_KEY": "…" },
-  "ui": { "theme": "dark", "streaming": true, "prompt_symbol": ">" },
+  "ui": { "theme": "loom", "streaming": true, "weave": true },
   "mcp_servers": {
     "playwright": { "command": "npx", "args": ["@playwright/mcp@latest"] }
   }
@@ -521,7 +596,14 @@ wins:
   `escalation_model`, `subagents: {...}`); deep-merges on top of it regardless
   of layer. This is what [`/setup`](#setup-wizard) writes — role assignments
   work identically whether they land in the user or project layer.
-- **ui** — theme, streaming, tool-call visibility, prompt symbol, banner.
+- **ui** — how Loom looks. `theme` is `loom` (default), `loom-light`,
+  `phosphor`, or `mono` (no colour — for pipes, CI logs, `NO_COLOR`, and
+  `TERM=dumb`, all of which select it automatically). `weave` draws the
+  transcript as rails (see [The weave](#the-weave)); turn it off for flat
+  output. `compact` drops the welcome card's fleet roster. Plus `streaming`,
+  `show_tool_calls`, `show_thinking`, `show_fleet_panel`, `prompt_symbol`
+  (empty = the theme's own `❯`), and `banner`. Set `LOOM_ASCII=1` to replace
+  every box-drawing and block glyph with an ASCII equivalent.
 - **mcp_servers** — MCP servers to connect (stdio subprocess or
   `streamable_http`/`sse` via `url`). Sessions are held open for the whole
   process on a background event loop, so stateful servers — the bundled
@@ -656,7 +738,11 @@ loom/
 ├── ui/
 │   ├── repl.py             # interactive terminal chat loop
 │   ├── slash.py            # /command registry
-│   └── theme.py            # Rich themes from ui settings
+│   ├── render.py           # drawing primitives + the weave (transcript rails)
+│   ├── theme.py            # palettes; warm = local/free, cool = cloud/billed
+│   ├── glyphs.py           # unicode set + ASCII fallback
+│   ├── banner.py           # wordmark + welcome card
+│   └── prompt.py           # input line + status bar (prompt_toolkit)
 ├── cli/main.py             # Typer app + Rich streaming + loom doctor
 ├── config/
 │   ├── default_config.yaml   # model routing defaults
