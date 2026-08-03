@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.9 — 2026-08-03
+
+### Fixed
+
+- **Loom stopped telling you about updates.** The startup check cached its
+  *answer* — the latest release's checksum — for six hours and compared
+  against that. But "you are up to date" is a claim about what GitHub has
+  published, and it expires the moment the next release lands. Since this repo
+  publishes a release on every push to `main`, someone who started Loom once
+  was told nothing for the next six hours while several builds shipped. Now
+  only *failures* are cached (30-minute backoff), so an offline start still
+  doesn't pay the timeout on every launch, but an online one always gets the
+  truth. The check costs roughly 0.15s: a small CDN-served text file plus a
+  local hash.
+- **`loom chat` never checked for updates at all.** It is a subcommand, and the
+  callback returns before the check for anything with a subcommand — so the
+  one command whose help text says "same as running `loom` with no task"
+  behaved differently from it. It checks now.
+
 ## 0.2.8 — 2026-08-03
 
 ### Added

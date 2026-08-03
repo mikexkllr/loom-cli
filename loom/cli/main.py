@@ -137,6 +137,9 @@ def chat(
     root: str = typer.Option(".", "--root"),
 ) -> None:
     """Open the interactive Loom REPL (same as running `loom` with no task)."""
+    # "same as running `loom` with no task" has to include the update check —
+    # this is a subcommand, so the callback returns before reaching it.
+    _maybe_offer_update()
     sandbox.set_root(root)
     from loom.ui import repl
 

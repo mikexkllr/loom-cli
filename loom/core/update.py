@@ -106,37 +106,48 @@ def _save_cache(data: dict) -> None:
         pass  # best-effort — a failed cache write just means we re-check sooner
 
 
-def check_for_startup(min_interval_hours: float = 6.0) -> UpdateCheck | None:
-    """Best-effort, throttled update check for use at app startup.
+def check_for_startup(retry_after_failure_minutes: float = 30.0) -> UpdateCheck | None:
+    """Best-effort update check for use at app startup.
 
     Never raises and never blocks long: a broken network, an unpublished
     release, or a slow GitHub response must not get in the way of starting
-    the app. Returns None if up to date, unreachable, or checked recently
-    (cached in `CACHE_PATH`) — the caller shouldn't distinguish those cases.
+    the app. Returns None if up to date or unreachable — the caller shouldn't
+    distinguish those cases.
+
+    Only *failures* are cached. This used to reuse a successful answer for six
+    hours, which quietly defeated the whole feature: "you are up to date" is a
+    claim about what GitHub has published, and it expires the instant the next
+    release lands. Since this repo publishes a release on every push to main,
+    a freshly-installed binary would be told nothing for six hours while
+    several builds went by. The check itself is cheap — a small CDN-served
+    text file plus a local hash, ~0.15s combined — so when it can run, it
+    runs. What is genuinely expensive is an *offline* start, which pays the
+    full timeout; that is what the backoff is for.
     """
     if not is_frozen():
         return None
+    asset = ""
     try:
         asset = asset_name()
         cache = _load_cache()
         now = time.time()
-        cache_fresh = (
-            cache.get("asset") == asset
-            and cache.get("latest_sha256")
-            and now - cache.get("checked_at", 0) < min_interval_hours * 3600
-        )
-        if cache_fresh:
-            latest_sha = cache["latest_sha256"]
-        else:
-            latest_sha = _fetch_latest_sha(asset, timeout=STARTUP_CHECK_TIMEOUT)
-            if latest_sha is None:
-                return None
-            _save_cache({"checked_at": now, "asset": asset, "latest_sha256": latest_sha})
+        if cache.get("asset") == asset and now - cache.get("failed_at", 0) < retry_after_failure_minutes * 60:
+            return None  # recently unreachable — don't pay the timeout again
+
+        latest_sha = _fetch_latest_sha(asset, timeout=STARTUP_CHECK_TIMEOUT)
+        if latest_sha is None:
+            _save_cache({"failed_at": now, "asset": asset})
+            return None
+        _save_cache({"checked_at": now, "asset": asset, "latest_sha256": latest_sha})
 
         running = Path(sys.executable).resolve()
         result = UpdateCheck(asset=asset, current_sha256=_sha256(running), latest_sha256=latest_sha)
         return None if result.up_to_date else result
     except Exception:
+        # Network error, unreadable binary, unsupported platform — back off so
+        # an offline start doesn't pay STARTUP_CHECK_TIMEOUT on every launch.
+        if asset:
+            _save_cache({"failed_at": time.time(), "asset": asset})
         return None
 
 

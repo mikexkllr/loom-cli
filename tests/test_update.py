@@ -10,6 +10,8 @@ import pytest
 
 pytest.importorskip("httpx")
 
+import httpx
+
 from loom.core import update
 
 
@@ -56,29 +58,62 @@ def test_check_for_startup_never_raises_on_network_failure(monkeypatch):
     assert update.check_for_startup() is None
 
 
-def test_check_for_startup_uses_cache_within_window(tmp_path, monkeypatch):
+def test_check_for_startup_rechecks_instead_of_trusting_a_stale_answer(tmp_path, monkeypatch):
+    """"You are up to date" is a claim about what GitHub has published, and it
+    expires the moment the next release lands. Caching it for six hours meant a
+    user who started Loom once was told nothing for six hours while several
+    builds shipped — the exact symptom of "it never offers me an update"."""
     monkeypatch.setattr(update, "is_frozen", lambda: True)
     monkeypatch.setattr(update, "CACHE_PATH", tmp_path / "update_check.json")
     asset = update.asset_name()
 
+    latest = "sha-v1"
     calls = []
 
     def fake_fetch(_asset, *, timeout):
         calls.append(_asset)
-        return "same-sha"
+        return latest
 
     monkeypatch.setattr(update, "_fetch_latest_sha", fake_fetch)
-    monkeypatch.setattr(update, "_sha256", lambda _path: "same-sha")
+    monkeypatch.setattr(update, "_sha256", lambda _path: "sha-v1")  # the running binary
     monkeypatch.setattr(sys, "executable", str(tmp_path / "loom"))
     (tmp_path / "loom").write_bytes(b"binary")
 
-    # First call: cache miss, hits the network, and (same-sha) reports up to date.
+    # First start: up to date, nothing to report.
     assert update.check_for_startup() is None
     assert calls == [asset]
 
-    # Second call within the throttle window: cache hit, no second network call.
+    # A new release lands. The very next start must notice it.
+    latest = "sha-v2"
+    result = update.check_for_startup()
+    assert calls == [asset, asset], "a successful check must not be cached"
+    assert result is not None and result.latest_sha256 == "sha-v2"
+
+
+def test_check_for_startup_backs_off_after_a_failure(tmp_path, monkeypatch):
+    """The expensive case is an *offline* start, which pays the full timeout.
+    That, and only that, is worth caching."""
+    monkeypatch.setattr(update, "is_frozen", lambda: True)
+    monkeypatch.setattr(update, "CACHE_PATH", tmp_path / "update_check.json")
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "loom"))
+    (tmp_path / "loom").write_bytes(b"binary")
+
+    calls = []
+
+    def failing_fetch(_asset, *, timeout):
+        calls.append(_asset)
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr(update, "_fetch_latest_sha", failing_fetch)
+
     assert update.check_for_startup() is None
-    assert calls == [asset]
+    assert len(calls) == 1
+    assert update.check_for_startup() is None
+    assert len(calls) == 1, "a recent failure must not be retried on every launch"
+
+    # Once the backoff expires, it tries again.
+    assert update.check_for_startup(retry_after_failure_minutes=0) is None
+    assert len(calls) == 2
 
 
 def test_check_for_startup_reports_stale_binary(tmp_path, monkeypatch):
