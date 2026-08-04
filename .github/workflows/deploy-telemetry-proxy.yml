@@ -42,6 +42,11 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: telemetry-proxy
+          # Pinned, and not optional: the action defaults to wrangler v3, which
+          # cannot read wrangler.jsonc and fails with a misleading "Missing
+          # entry-point" instead of a config-format error. This is the version
+          # the worker was developed and tested against.
+          wranglerVersion: "4.118.0"
 
       - name: Verify the deployed worker answers
         # A deploy that reports success but serves 500s is the failure mode
