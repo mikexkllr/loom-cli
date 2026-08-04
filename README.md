@@ -24,6 +24,7 @@ own context windows and return only summaries.
 - [Usage](#usage)
 - [Configuration](#configuration)
 - [Settings (`settings.json`)](#settings-settingsjson)
+- [Privacy and telemetry](TELEMETRY.md) — what Loom sends, and why nothing does by default
 - [The fleet](#the-fleet)
 - [How it stays clean](#how-it-stays-clean)
 - [Architecture](#architecture)

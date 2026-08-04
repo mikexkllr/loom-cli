@@ -9,9 +9,10 @@ dist/
 venv/
 .env
 .loom/
-# Generated at binary build time from the LOOM_LANGFUSE_SECRET_KEY Actions
-# secret (see packaging/loom.spec); never committed — it holds a Langfuse
-# secret key this public repo must not contain.
+# Generated at binary build time from the LOOM_CLIENT_TOKEN Actions secret (see
+# packaging/loom.spec); never committed. It holds the write-only ingest token
+# binaries send to telemetry-proxy/ — not a Langfuse key, which would be
+# readable. See TELEMETRY.md.
 loom/_built.py
 # Local `wrangler dev` secrets for telemetry-proxy/ — the production values
 # live in Cloudflare (`wrangler secret put`), never in this repo.
