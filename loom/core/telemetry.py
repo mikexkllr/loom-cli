@@ -70,7 +70,10 @@ MODES: tuple[Mode, ...] = (
         blurb="crashes only — the stack trace, scrubbed",
         sends=("exception type + message", "stack trace (no local variables)", "Loom version, OS, python version"),
         never=("your prompts", "your code", "file paths outside Loom itself", "environment variables", "hostname"),
-        needs=("SENTRY_DSN",),
+        # No credential the user has to supply: a bundled DSN ships with Loom
+        # (and the wizard never asks for one when a default exists). A user who
+        # wants their *own* Sentry project supplies it via /privacy setup.
+        needs=(),
     ),
     Mode(
         id="full",
@@ -82,6 +85,10 @@ MODES: tuple[Mode, ...] = (
             "tool calls, delegations, token counts and latencies",
         ),
         never=("anything, if you pick a different mode later — but past traces stay sent",),
+        # Conceptual: the bundled DSN + bundled Langfuse keys cover a binary
+        # install; a source install without the baked Langfuse secret needs the
+        # user's own. `_baked_credential` is what makes the set_mode/doctor
+        # "still needs" warning fire only when no layer provides the key.
         needs=("SENTRY_DSN", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"),
     ),
 )
@@ -95,6 +102,54 @@ DEFAULT_MODE = "none"
 ENV_OVERRIDE = "LOOM_TELEMETRY"
 
 STORE_VERSION = 1
+
+# ----------------------------------------------------------------------------
+# Bundled defaults — credentials that ship with Loom so a mode someone picks
+# in setup actually works without them owning an account. These are the
+# *public*, write-only kind: a Sentry DSN only ingests events; a Langfuse
+# public key only labels them. Both are safe to publish (they let strangers
+# *add* data to your project, never read it), so they live here as constants.
+#
+# The Langfuse *secret* key is not safe to publish, so it is not here. Source
+# installs never have it; the frozen binary bakes it at build time via a
+# generated loom/_built.py (see packaging/loom.spec), and the import below
+# picks it up. A source or dev build resolves to "" and full mode falls back
+# to the user's own keys via /privacy setup.
+# ----------------------------------------------------------------------------
+
+try:  # generated at binary build time; absent in source and dev builds
+    from loom._built import LANGFUSE_SECRET_KEY as _BUILT_LANGFUSE_SECRET
+
+    _BUILT_LANGFUSE_SECRET = _BUILT_LANGFUSE_SECRET or ""
+except ImportError:
+    _BUILT_LANGFUSE_SECRET = ""
+
+DEFAULT_SENTRY_DSN = "https://8d27208a70141fd3f278c6b50280322b@o4511155358334976.ingest.de.sentry.io/4511851069374544"
+DEFAULT_LANGFUSE_PUBLIC_KEY = ""  # set when the Loom Langfuse project exists
+DEFAULT_LANGFUSE_SECRET_KEY = _BUILT_LANGFUSE_SECRET
+DEFAULT_LANGFUSE_HOST = "https://cloud.langfuse.com"
+
+
+def _baked_credential(key: str, consent: "Consent | None" = None) -> bool:
+    """Whether a credential is available from *any* layer — env, the user's
+    consent record, or the bundle baked into this build. Used by /privacy and
+    /doctor to warn only when a chosen mode genuinely cannot work."""
+    if os.environ.get(key):
+        return True
+    if consent is not None:
+        if key == "SENTRY_DSN" and consent.sentry_dsn:
+            return True
+        if key == "LANGFUSE_PUBLIC_KEY" and consent.langfuse_public_key:
+            return True
+        if key == "LANGFUSE_SECRET_KEY" and consent.langfuse_secret_key:
+            return True
+    if key == "SENTRY_DSN" and DEFAULT_SENTRY_DSN:
+        return True
+    if key == "LANGFUSE_PUBLIC_KEY" and DEFAULT_LANGFUSE_PUBLIC_KEY:
+        return True
+    if key == "LANGFUSE_SECRET_KEY" and DEFAULT_LANGFUSE_SECRET_KEY:
+        return True
+    return False
 
 
 def mode_info(mode_id: str) -> Mode:
@@ -416,7 +471,7 @@ def _init_sentry(consent: Consent) -> bool:
     global _sentry_ready
     if _sentry_ready:
         return True
-    dsn = os.environ.get("SENTRY_DSN") or consent.sentry_dsn
+    dsn = os.environ.get("SENTRY_DSN") or consent.sentry_dsn or DEFAULT_SENTRY_DSN
     if not dsn:
         return False
     try:
@@ -452,9 +507,9 @@ def _init_langfuse(consent: Consent) -> Any:
     global _langfuse_handler, _langfuse_failed
     if _langfuse_handler is not None or _langfuse_failed:
         return _langfuse_handler
-    public = os.environ.get("LANGFUSE_PUBLIC_KEY") or consent.langfuse_public_key
-    secret = os.environ.get("LANGFUSE_SECRET_KEY") or consent.langfuse_secret_key
-    host = os.environ.get("LANGFUSE_HOST") or consent.langfuse_host
+    public = os.environ.get("LANGFUSE_PUBLIC_KEY") or consent.langfuse_public_key or DEFAULT_LANGFUSE_PUBLIC_KEY
+    secret = os.environ.get("LANGFUSE_SECRET_KEY") or consent.langfuse_secret_key or DEFAULT_LANGFUSE_SECRET_KEY
+    host = os.environ.get("LANGFUSE_HOST") or consent.langfuse_host or DEFAULT_LANGFUSE_HOST
     if not (public and secret):
         _langfuse_failed = True
         return None

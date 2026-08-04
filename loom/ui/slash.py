@@ -541,7 +541,7 @@ def _privacy(session: "Session", args: str) -> bool:
         return True
     if verb == "setup":
         try:
-            privacy_mod.run(console, session.cwd)
+            privacy_mod.run(console, session.cwd, force_credentials=True)
         except (KeyboardInterrupt, EOFError):
             render.note(console, "cancelled — privacy left as it was")
             return True

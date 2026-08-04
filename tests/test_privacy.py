@@ -77,14 +77,28 @@ def test_run_none_records_a_real_answer(monkeypatch, tmp_path):
     assert consent.projects == {}  # nothing to share, no project recorded
 
 
-def test_run_errors_collects_a_dsn_and_shares_here(monkeypatch, tmp_path):
+def test_run_errors_collects_a_dsn_only_when_no_default(monkeypatch, tmp_path):
+    """With a bundled DSN, point 2 collects nothing — the user is never sent
+    to a dashboard for a project they didn't ask to own. ``force_credentials``
+    (`/privacy setup`) is the override that re-prompts to use their own."""
+    prompted = []
+    monkeypatch.setattr(priv, "prompt_sentry_dsn", lambda *a, **k: prompted.append(1) or "https://k@o/1")
     monkeypatch.setattr(priv, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(["2"]))}))
-    monkeypatch.setattr(priv, "prompt_sentry_dsn", lambda console, current="": "https://k@o/1")
+
+    # Default present: no prompt, the bundled DSN covers it.
+    monkeypatch.setattr(priv.tel, "DEFAULT_SENTRY_DSN", "https://x@y/2")
     consent = priv.run(_console(), tmp_path)
-    assert consent.mode == "errors"
-    assert consent.sentry_dsn == "https://k@o/1"
-    # The directory setup ran in plainly consented — don't re-ask immediately.
+    assert prompted == []
+    assert consent.mode == "errors" and consent.sentry_dsn == ""
     assert consent.projects[tel.project_key(tmp_path)]["share"] is True
+
+    # force_credentials re-prompts even with a default, so a user can point
+    # crashes at their own Sentry project.
+    prompted.clear()
+    monkeypatch.setattr(priv, "Prompt", type("P", (), {"ask": staticmethod(_Scripted(["2"]))}))
+    consent = priv.run(_console(), tmp_path, force_credentials=True)
+    assert prompted == [1]
+    assert consent.sentry_dsn == "https://k@o/1"
 
 
 def test_run_full_requires_a_second_explicit_yes(monkeypatch, tmp_path):
@@ -161,12 +175,29 @@ def test_set_mode_rejects_unknown_modes(tmp_path):
     assert tel.load().decided is False  # nothing recorded
 
 
-def test_set_mode_persists_and_warns_about_missing_credentials(tmp_path, monkeypatch):
+def test_set_mode_errors_needs_no_credential_when_default_bundled(tmp_path):
+    """Point 2 works zero-setup — the bundled DSN means set errors never
+    warns it can't honour the choice."""
     console = _console()
     assert priv.set_mode(console, "errors", tmp_path) is True
     consent = tel.load()
     assert consent.mode == "errors" and consent.decided is True
-    assert "SENTRY_DSN" in console.file.getvalue()  # warned it can't work yet
+    assert "still needs" not in console.file.getvalue()
+
+
+def test_set_mode_persists_and_warns_about_missing_credentials(tmp_path, monkeypatch):
+    """Full mode in a source build: the bundled DSN covers Sentry, but with
+    no baked Langfuse secret, the warning names only the Langfuse keys — so a
+    user isn't left with a silent no-op."""
+    monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_PUBLIC_KEY", "")
+    monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_SECRET_KEY", "")
+    console = _console()
+    assert priv.set_mode(console, "full", tmp_path) is True
+    consent = tel.load()
+    assert consent.mode == "full" and consent.decided is True
+    out = console.file.getvalue()
+    assert "SENTRY_DSN" not in out          # bundled default covers it
+    assert "LANGFUSE" in out                # only the missing keys are named
 
 
 def test_set_mode_none_needs_no_credentials(tmp_path):
@@ -184,11 +215,17 @@ def test_doctor_row_none_mode(tmp_path):
 
 
 def test_doctor_row_warns_when_mode_cannot_work(tmp_path, monkeypatch):
+    """The bundled DSN makes errors-mode work; the warning now fires only for
+    a mode no layer can satisfy — full with no baked Langfuse secret and no
+    user keys."""
+    monkeypatch.setattr(tel, "DEFAULT_SENTRY_DSN", "")
+    monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_PUBLIC_KEY", "")
+    monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_SECRET_KEY", "")
     for key in ("SENTRY_DSN",):
         monkeypatch.delenv(key, raising=False)
-    tel.save(tel.Consent(mode="errors", decided=True))
+    tel.save(tel.Consent(mode="full", decided=True))
     ok, _, detail = priv.doctor_row(tmp_path)
-    assert ok is None and "SENTRY_DSN" in detail
+    assert ok is None and "LANGFUSE" in detail
 
 
 def test_doctor_row_reports_project_gate(tmp_path):

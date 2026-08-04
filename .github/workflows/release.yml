@@ -44,6 +44,12 @@ jobs:
         run: uv sync --locked --group build
 
       - name: Freeze binary
+        # packaging/loom.spec bakes the Langfuse secret (a repo Actions secret,
+        # never in source) into a generated module so point 3 works for every
+        # install with no account setup. Absent on dev/PR builds — full mode
+        # then falls back to the user's own keys via /privacy setup.
+        env:
+          LOOM_LANGFUSE_SECRET_KEY: ${{ secrets.LOOM_LANGFUSE_SECRET_KEY }}
         run: uv run pyinstaller packaging/loom.spec --noconfirm --clean
 
       - name: Stage asset + checksum (macOS/Linux)

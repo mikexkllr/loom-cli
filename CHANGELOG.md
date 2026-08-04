@@ -7,13 +7,22 @@
 - **Privacy modes, asked — never assumed.** Setup (quick *and* advanced) now
   ends with one explicit question: what, if anything, may Loom send off this
   machine? Three modes. `none` — the default: no SDK is imported, no socket
-  opened. `errors`: crashes only, reported to your own Sentry project —
-  exception type, message and stack trace, scrubbed of paths, locals, argv
-  and hostname; never a prompt, never a line of your code. `full`: crashes
-  plus complete LLM traces to your own Langfuse project — prompts,
-  completions, tool calls, delegations, tokens and timings — the training
-  corpus for a future distilled local orchestrator, and a deliberate,
-  separately-confirmed opt-in because traces necessarily contain source code.
+  opened. `errors`: crashes only, reported to Sentry — exception type,
+  message and stack trace, scrubbed of paths, locals, argv and hostname;
+  never a prompt, never a line of your code. `full`: crashes plus complete
+  LLM traces to Langfuse — prompts, completions, tool calls, delegations,
+  tokens and timings — the training corpus for a future distilled local
+  orchestrator, and a deliberate, separately-confirmed opt-in because traces
+  necessarily contain source code.
+- **Zero-setup for every user.** A Loom-owned Sentry project is bundled as the
+  default, so picking "bug reports" just works — no account, no DSN to paste.
+  `/privacy setup` still lets anyone point crashes at their *own* Sentry
+  project (the `sentry` CLI fetches or creates it). A Loom-owned Langfuse
+  project is wired the same way for full tracing: the public key ships in
+  source, the secret key is injected into the frozen binary at release time
+  from a GitHub Actions secret (`LOOM_LANGFUSE_SECRET_KEY`) — never in the
+  public repo. Source/dev builds with no injected secret fall back to the
+  user's own Langfuse keys via `/privacy setup`.
 - **Two consent gates, both required.** The global mode is chosen once;
   separately, the first time Loom starts in a new directory or git repo it
   asks whether that project may share — agreeing to send crash reports from a
@@ -30,13 +39,12 @@
   what's actually wired up; `set none|errors|full` changes the mode, `here`
   re-answers for the current project, `setup` re-runs the interactive step.
   `/doctor` and `loom doctor` report the mode and warn when a chosen mode
-  can't work (e.g. `errors` with no DSN anywhere).
+  can't work (e.g. `full` with no Langfuse keys available anywhere).
 - **The `sentry` and `langfuse` CLIs do the tedious part.** When the `sentry`
-  CLI is installed and authenticated, the wizard offers to list your orgs and
-  projects, create a project, and fetch the (public) DSN itself; Langfuse key
-  pairs are verified against the server on entry, over the CLI or plain HTTP.
-  Every path degrades to "paste it yourself" — the helpers are conveniences,
-  never requirements.
+  CLI is installed and authenticated, the override prompt lists your orgs and
+  projects, creates a project, and fetches the (public) DSN itself; Langfuse
+  key pairs are verified against the server on entry, over the CLI or plain
+  HTTP. Every path degrades to "paste it yourself".
 - **Telemetry that can never break the tool it reports on.** SDKs are
   imported lazily and only after both gates pass; every reporter call is
   wrapped so a telemetry bug cannot crash a session. When sharing is active,

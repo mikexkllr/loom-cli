@@ -826,7 +826,7 @@ def privacy_cmd(
         elif verb == "here":
             privacy_mod.ask_project(console, root)
         elif verb == "setup":
-            privacy_mod.run(console, root)
+            privacy_mod.run(console, root, force_credentials=True)
         elif verb in ("", "status"):
             privacy_mod.describe(console, root)
         else:

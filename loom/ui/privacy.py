@@ -240,16 +240,31 @@ def _mask_dsn(dsn: str) -> str:
 # ----------------------------------------------------------------------------
 
 
-def run(console: Console, root: str | Path = ".", *, consent: Consent | None = None) -> Consent:
+def run(
+    console: Console,
+    root: str | Path = ".",
+    *,
+    consent: Consent | None = None,
+    force_credentials: bool = False,
+) -> Consent:
     """The privacy step of setup. Always records a decision, including "none"
-    — a stored ``none`` is an answer, and stops Loom asking again."""
+    — a stored ``none`` is an answer, and stops Loom asking again.
+
+    ``force_credentials`` re-prompts for a Sentry DSN / Langfuse keys even when
+    a bundled default exists — `/privacy setup` uses it so someone who wants
+    crashes to go to *their* project can replace the Loom default, while the
+    first-run wizard skips the question entirely (point 2/3 just work)."""
     consent = consent if consent is not None else tel.load()
     mode = prompt_mode(console, consent.mode)
     consent.mode = mode
     consent.decided = True
 
     if mode in ("errors", "full"):
-        consent.sentry_dsn = prompt_sentry_dsn(console, consent.sentry_dsn) or consent.sentry_dsn
+        # A bundled DSN means point 2 just works — only ask for one when there
+        # is nothing to fall back on, or when the user explicitly re-ran
+        # /privacy setup to point at their own project.
+        if force_credentials or not (tel.DEFAULT_SENTRY_DSN or consent.sentry_dsn):
+            consent.sentry_dsn = prompt_sentry_dsn(console, consent.sentry_dsn) or consent.sentry_dsn
     if mode == "full":
         console.print()
         console.print(
@@ -270,15 +285,23 @@ def run(console: Console, root: str | Path = ".", *, consent: Consent | None = N
             )
         )
         if not render.confirm(console, "  send full traces?", default=False):
-            consent.mode = "errors" if consent.sentry_dsn else "none"
+            consent.mode = "errors" if (consent.sentry_dsn or tel.DEFAULT_SENTRY_DSN) else "none"
             render.note(console, f"kept at [loom.warp]{tel.mode_info(consent.mode).label}[/loom.warp]")
         else:
-            public, secret, host = prompt_langfuse(console, consent)
-            consent.langfuse_public_key = public
-            consent.langfuse_secret_key = secret
-            consent.langfuse_host = host
-            if not (public and secret):
-                consent.mode = "errors" if consent.sentry_dsn else "none"
+            # Skip the credential prompt only when defaults already cover it
+            # and the user didn't ask to override; otherwise collect/verify.
+            if force_credentials or not (
+                tel.DEFAULT_LANGFUSE_PUBLIC_KEY and tel.DEFAULT_LANGFUSE_SECRET_KEY
+            ):
+                public, secret, host = prompt_langfuse(console, consent)
+                consent.langfuse_public_key = public
+                consent.langfuse_secret_key = secret
+                consent.langfuse_host = host
+            if not (
+                (consent.langfuse_public_key and consent.langfuse_secret_key)
+                or (tel.DEFAULT_LANGFUSE_PUBLIC_KEY and tel.DEFAULT_LANGFUSE_SECRET_KEY)
+            ):
+                consent.mode = "errors" if (consent.sentry_dsn or tel.DEFAULT_SENTRY_DSN) else "none"
 
     # The project Loom is being set up in has plainly consented — recording it
     # here means setup doesn't hand straight over to a second consent prompt
@@ -302,6 +325,17 @@ def _report(console: Console, consent: Consent) -> None:
             f"privacy: [loom.warp]{mode.label}[/loom.warp] — {mode.blurb}",
             kind="good",
         )
+        # Say where the data goes. A bundled default is what makes "all users"
+        # work with no account; the user should still know it's Loom's project,
+        # not theirs, and how to swap in their own.
+        if consent.mode in ("errors", "full") and not consent.sentry_dsn and tel.DEFAULT_SENTRY_DSN:
+            render.note(console, "crashes go to Loom's project by default — [loom.warp]/privacy setup[/loom.warp] to use your own", kind="tip")
+        if (
+            consent.mode == "full"
+            and not (consent.langfuse_public_key and consent.langfuse_secret_key)
+            and tel.DEFAULT_LANGFUSE_PUBLIC_KEY and tel.DEFAULT_LANGFUSE_SECRET_KEY
+        ):
+            render.note(console, "traces go to Loom's Langfuse project by default — [loom.warp]/privacy setup[/loom.warp] to use your own", kind="tip")
     render.note(console, f"stored in {tel.store_path()} {ink(console).dot} change it any time with [loom.warp]/privacy[/loom.warp]")
 
 
@@ -389,13 +423,21 @@ def describe(console: Console, root: str | Path = ".") -> None:
     if effective != configured:
         rows.append(("in effect", Text(tel.mode_info(effective).label, style="loom.warn")))
     if configured in ("errors", "full"):
-        dsn = consent.sentry_dsn
-        rows.append(("sentry", Text(_mask_dsn(dsn) if dsn else "no DSN — crashes go nowhere", style="loom.muted" if dsn else "loom.warn")))
+        dsn = consent.sentry_dsn or tel.DEFAULT_SENTRY_DSN
+        if dsn:
+            label = "Loom's project (default)" if not consent.sentry_dsn else _mask_dsn(dsn)
+            rows.append(("sentry", Text(label, style="loom.muted")))
+        else:
+            rows.append(("sentry", Text("no DSN — crashes go nowhere", style="loom.warn")))
     if configured == "full":
-        keys = consent.langfuse_public_key and consent.langfuse_secret_key
-        rows.append(
-            ("langfuse", Text(consent.langfuse_host if keys else "no keys — traces go nowhere", style="loom.muted" if keys else "loom.warn"))
-        )
+        own = consent.langfuse_public_key and consent.langfuse_secret_key
+        baked = tel.DEFAULT_LANGFUSE_PUBLIC_KEY and tel.DEFAULT_LANGFUSE_SECRET_KEY
+        if own:
+            rows.append(("langfuse", Text(consent.langfuse_host, style="loom.muted")))
+        elif baked:
+            rows.append(("langfuse", Text("Loom's project (default)", style="loom.muted")))
+        else:
+            rows.append(("langfuse", Text("no keys — traces go nowhere", style="loom.warn")))
     rows.append(("stored", Text(str(tel.store_path()), style="loom.muted")))
     console.print(render.kv(rows))
     console.print()
@@ -451,14 +493,8 @@ def doctor_row(root: str | Path = ".") -> tuple[bool | None, str, str]:
 
 
 def _have_credential(key: str, consent: Consent) -> bool:
-    import os
-
-    if os.environ.get(key):
-        return True
-    return bool(
-        {
-            "SENTRY_DSN": consent.sentry_dsn,
-            "LANGFUSE_PUBLIC_KEY": consent.langfuse_public_key,
-            "LANGFUSE_SECRET_KEY": consent.langfuse_secret_key,
-        }.get(key)
-    )
+    """Whether a credential is resolvable from any layer: the process env, the
+    user's own consent record, or the bundle baked into this build. A mode that
+    the user picked but no layer can satisfy is the one case /privacy and
+    /doctor warn about."""
+    return tel._baked_credential(key, consent)

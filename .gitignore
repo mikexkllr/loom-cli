@@ -9,6 +9,10 @@ dist/
 venv/
 .env
 .loom/
+# Generated at binary build time from the LOOM_LANGFUSE_SECRET_KEY Actions
+# secret (see packaging/loom.spec); never committed — it holds a Langfuse
+# secret key this public repo must not contain.
+loom/_built.py
 .pytest_cache/
 .ruff_cache/
 .playwright-mcp/
