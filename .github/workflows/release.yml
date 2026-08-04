@@ -44,12 +44,15 @@ jobs:
         run: uv sync --locked --group build
 
       - name: Freeze binary
-        # packaging/loom.spec bakes the Langfuse secret (a repo Actions secret,
-        # never in source) into a generated module so point 3 works for every
-        # install with no account setup. Absent on dev/PR builds — full mode
-        # then falls back to the user's own keys via /privacy setup.
+        # packaging/loom.spec bakes the write-only ingest token (a repo Actions
+        # secret, never in source) into a generated module so point 3 works for
+        # every install with no account setup. This is NOT a Langfuse key —
+        # traces go through telemetry-proxy/, which holds the real credentials
+        # server-side, because a Langfuse key pair can read traces as well as
+        # write them and would be extractable from the binary. Absent on
+        # dev/PR builds — full mode then falls back to the user's own keys.
         env:
-          LOOM_LANGFUSE_SECRET_KEY: ${{ secrets.LOOM_LANGFUSE_SECRET_KEY }}
+          LOOM_CLIENT_TOKEN: ${{ secrets.LOOM_CLIENT_TOKEN }}
         run: uv run pyinstaller packaging/loom.spec --noconfirm --clean
 
       - name: Stage asset + checksum (macOS/Linux)

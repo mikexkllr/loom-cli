@@ -1,0 +1,59 @@
+name: Deploy telemetry proxy
+
+# The ingest proxy that stands between Loom binaries and Langfuse — see
+# telemetry-proxy/README.md. Deploys only when the worker itself changes, so an
+# ordinary code change never touches production infrastructure.
+#
+# Secrets (LOOM_CLIENT_TOKEN, LANGFUSE_*) are NOT managed here. They live in
+# Cloudflare and are set once with `wrangler secret put`; `wrangler deploy`
+# leaves existing secrets alone. Keeping them out of this workflow means a
+# repo-token compromise cannot read them back out of a workflow log.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "telemetry-proxy/**"
+      - ".github/workflows/deploy-telemetry-proxy.yml"
+  # Deploy a fix without an empty commit.
+  workflow_dispatch:
+
+concurrency:
+  # Never let two deploys race for the same worker.
+  group: telemetry-proxy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Without a token the deploy step fails with an auth error that reads like
+    # a broken worker; skip cleanly instead so a fork's CI stays green.
+    if: github.repository == 'mikexkllr/loom-cli'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Deploy worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: telemetry-proxy
+
+      - name: Verify the deployed worker answers
+        # A deploy that reports success but serves 500s is the failure mode
+        # worth catching here: every full-tracing user's traces go through it.
+        run: |
+          set -euo pipefail
+          url="https://loom-telemetry.telemetry-proxy.workers.dev/health"
+          for attempt in 1 2 3 4 5; do
+            code=$(curl -s -o /tmp/health.json -w '%{http_code}' --max-time 20 "$url" || echo 000)
+            echo "attempt $attempt: $code"
+            if [ "$code" = "200" ]; then cat /tmp/health.json; exit 0; fi
+            sleep 10
+          done
+          echo "worker did not return 200 after deploy" >&2
+          exit 1

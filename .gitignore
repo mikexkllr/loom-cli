@@ -13,6 +13,11 @@ venv/
 # secret (see packaging/loom.spec); never committed — it holds a Langfuse
 # secret key this public repo must not contain.
 loom/_built.py
+# Local `wrangler dev` secrets for telemetry-proxy/ — the production values
+# live in Cloudflare (`wrangler secret put`), never in this repo.
+.dev.vars
+telemetry-proxy/node_modules/
+telemetry-proxy/.wrangler/
 .pytest_cache/
 .ruff_cache/
 .playwright-mcp/

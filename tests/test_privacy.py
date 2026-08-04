@@ -188,7 +188,13 @@ def test_set_mode_errors_needs_no_credential_when_default_bundled(tmp_path):
 def test_set_mode_persists_and_warns_about_missing_credentials(tmp_path, monkeypatch):
     """Full mode in a source build: the bundled DSN covers Sentry, but with
     no baked Langfuse secret, the warning names only the Langfuse keys — so a
-    user isn't left with a silent no-op."""
+    user isn't left with a silent no-op.
+
+    All three bundled credentials are set here rather than inherited: conftest
+    blanks them for every test (the real DSN is Loom's production project), so
+    a test about bundled-vs-missing has to state both halves itself.
+    """
+    monkeypatch.setattr(tel, "DEFAULT_SENTRY_DSN", "https://bundled@example.invalid/2")
     monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_PUBLIC_KEY", "")
     monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_SECRET_KEY", "")
     console = _console()

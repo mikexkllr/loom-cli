@@ -238,9 +238,15 @@ def test_activate_errors_without_dsn_degrades_to_none(tmp_path, monkeypatch):
     assert tel.activate(tmp_path) == "none"
 
 
-def test_bundled_dsn_lets_errors_mode_work_without_a_user_key(tmp_path):
+def test_bundled_dsn_lets_errors_mode_work_without_a_user_key(tmp_path, monkeypatch):
     """Point 2 just works: a user who consented to bug reports needs no
-    account — the bundled default DSN ships with Loom."""
+    account — the bundled default DSN ships with Loom.
+
+    The DSN here is a deliberate fake. conftest blanks the real bundled one for
+    every test, because this call really does start a Sentry client and the
+    shipped default points at Loom's production project.
+    """
+    monkeypatch.setattr(tel, "DEFAULT_SENTRY_DSN", "https://bundled@example.invalid/2")
     tel.save(tel.Consent(mode="errors", decided=True, projects={tel.project_key(tmp_path): {"share": True, "at": 1}}))
     pytest.importorskip("sentry_sdk")
     assert tel.activate(tmp_path) == "errors"

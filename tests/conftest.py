@@ -24,6 +24,37 @@ os.environ.setdefault("LOOM_HOME", os.path.join(tempfile.mkdtemp(prefix="loom-",
 
 
 @pytest.fixture(autouse=True)
+def _no_real_telemetry(monkeypatch):
+    """Blank the credentials Loom ships with, for every test.
+
+    Two separate hazards, one fix.
+
+    The bundled Sentry DSN points at Loom's real project, so any test that
+    reaches ``telemetry.activate()`` starts a live client against production —
+    which happened: the suite opened a session there on every full run and
+    printed Sentry's atexit banner over the summary.
+
+    The Langfuse secret is baked into ``loom/_built.py`` at binary-build time
+    and is gitignored, so it exists on a machine that has built a release and
+    nowhere else. Tests that branch on "is a bundled key available" therefore
+    passed in CI and failed locally. Deciding that from a file that may or may
+    not be present is exactly the class of bug ``_isolate_project_settings``
+    below exists to stop.
+
+    Tests that are *about* the bundled defaults set them back explicitly to
+    obvious fakes (see tests/test_telemetry.py).
+    """
+    from loom.core import telemetry as tel
+
+    monkeypatch.setattr(tel, "DEFAULT_SENTRY_DSN", "", raising=False)
+    monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_PUBLIC_KEY", "", raising=False)
+    monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_SECRET_KEY", "", raising=False)
+    tel._reset_for_tests()
+    yield
+    tel._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_project_settings(monkeypatch):
     """Hide the repo's own ``.loom/settings.json`` from tests.
 

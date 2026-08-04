@@ -19,11 +19,18 @@
   "full tracing" just works — no account, no keys to paste. `/privacy setup`
   still lets anyone route crashes/traces to their *own* Sentry/Langfuse project
   (the `sentry` CLI fetches or creates it; Langfuse keys are verified on entry).
-  The Sentry DSN and Langfuse public key ship in source (both public,
-  write-only); the Langfuse *secret* key is injected into the frozen binary at
-  release time from a GitHub Actions secret (`LOOM_LANGFUSE_SECRET_KEY`) — never
-  in the public repo. Source/dev builds with no injected secret fall back to the
-  user's own Langfuse keys via `/privacy setup`.
+  The Sentry DSN ships in source — a DSN ingests events and cannot read them,
+  so it is safe to publish. Langfuse has no such credential: its API has one
+  auth scheme and a project key pair grants reads as well as writes, so a key
+  baked into a public binary would let anyone who downloaded Loom read every
+  full-tracing user's prompts and source. Traces therefore go through an ingest
+  proxy (`telemetry-proxy/`, a Cloudflare Worker) that holds the real Langfuse
+  credentials server-side and forwards; binaries carry only a write-only
+  `lct_…` token, injected at release time from the `LOOM_CLIENT_TOKEN` Actions
+  secret. That token is extractable and is meant to be — it authorises writes
+  and nothing else, and rotating the worker's secret retires it. Source/dev
+  builds with no injected token fall back to the user's own Langfuse keys via
+  `/privacy setup`.
 - **Two consent gates, both required.** The global mode is chosen once;
   separately, the first time Loom starts in a new directory or git repo it
   asks whether that project may share — agreeing to send crash reports from a

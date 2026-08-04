@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "loom-telemetry",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-01",
+  "observability": { "enabled": true },
+
+  // Upstream only. Every credential is a secret, set with `wrangler secret put`
+  // and never written to this file — it is committed to a public repo.
+  "vars": {
+    "LANGFUSE_HOST": "https://cloud.langfuse.com"
+  },
+
+  // Per-IP write throttle. The endpoint is deliberately public (a binary
+  // cannot hold a real secret), so volume is the abuse to bound, not identity.
+  // 600 requests / minute is far above a real Loom session and far below what
+  // would cost anything.
+  "unsafe": {
+    "bindings": [
+      {
+        "name": "RATE_LIMITER",
+        "type": "ratelimit",
+        "namespace_id": "1001",
+        "simple": { "limit": 600, "period": 60 }
+      }
+    ]
+  }
+}

@@ -104,30 +104,43 @@ ENV_OVERRIDE = "LOOM_TELEMETRY"
 STORE_VERSION = 1
 
 # ----------------------------------------------------------------------------
-# Bundled defaults — credentials that ship with Loom so a mode someone picks
-# in setup actually works without them owning an account. These are the
-# *public*, write-only kind: a Sentry DSN only ingests events; a Langfuse
-# public key only labels them. Both are safe to publish (they let strangers
-# *add* data to your project, never read it), so they live here as constants.
+# Bundled defaults — credentials that ship with Loom so a mode someone picks in
+# setup actually works without them owning an account. Every one of them is
+# write-only, and that is the whole design.
 #
-# The Langfuse *secret* key is not safe to publish, so it is not here. Source
-# installs never have it; the frozen binary bakes it at build time via a
-# generated loom/_built.py (see packaging/loom.spec), and the import below
-# picks it up. A source or dev build resolves to "" and full mode falls back
-# to the user's own keys via /privacy setup.
+# A Sentry DSN is safe to publish by construction: it ingests events and cannot
+# read them. Langfuse has no such credential — its API has a single auth scheme
+# and a project key pair is read *and* write, so a key baked into a public
+# binary would let anyone who downloads Loom read every full-tracing user's
+# prompts and source code. So Loom does not ship one.
+#
+# Instead traces go to an ingest proxy (telemetry-proxy/, a Cloudflare Worker)
+# that holds the real Langfuse key server-side and forwards. Loom sends it a
+# `lct_…` client token in the secret-key position. That token is extractable
+# from the binary and is *meant* to be: it grants writes only, and rotating the
+# worker's LOOM_CLIENT_TOKEN retires it. A leaked write token means spam; a
+# leaked Langfuse secret key means someone reads your users' code.
+#
+# The token is not in source. The frozen binary bakes it at build time into a
+# generated loom/_built.py (see packaging/loom.spec); a source or dev build
+# resolves to "" and full mode falls back to the user's own Langfuse keys via
+# /privacy setup, which still work because env and the consent record both take
+# precedence over these defaults.
 # ----------------------------------------------------------------------------
 
 try:  # generated at binary build time; absent in source and dev builds
-    from loom._built import LANGFUSE_SECRET_KEY as _BUILT_LANGFUSE_SECRET
+    from loom._built import LOOM_CLIENT_TOKEN as _BUILT_CLIENT_TOKEN
 
-    _BUILT_LANGFUSE_SECRET = _BUILT_LANGFUSE_SECRET or ""
+    _BUILT_CLIENT_TOKEN = _BUILT_CLIENT_TOKEN or ""
 except ImportError:
-    _BUILT_LANGFUSE_SECRET = ""
+    _BUILT_CLIENT_TOKEN = ""
 
 DEFAULT_SENTRY_DSN = "https://8d27208a70141fd3f278c6b50280322b@o4511155358334976.ingest.de.sentry.io/4511851069374544"
-DEFAULT_LANGFUSE_PUBLIC_KEY = "pk-lf-93e8a0b2-6b7a-4327-9903-edb6cdc858e1"
-DEFAULT_LANGFUSE_SECRET_KEY = _BUILT_LANGFUSE_SECRET
-DEFAULT_LANGFUSE_HOST = "https://cloud.langfuse.com"
+# Cosmetic: the proxy authenticates on the token alone, but the SDK sends basic
+# auth and wants a username, and a recognisable one makes proxy logs readable.
+DEFAULT_LANGFUSE_PUBLIC_KEY = "pk-lf-loom-ingest"
+DEFAULT_LANGFUSE_SECRET_KEY = _BUILT_CLIENT_TOKEN
+DEFAULT_LANGFUSE_HOST = "https://loom-telemetry.telemetry-proxy.workers.dev"
 
 
 def _baked_credential(key: str, consent: "Consent | None" = None) -> bool:
@@ -354,6 +367,9 @@ def active_mode(root: str | Path = ".", consent: Consent | None = None) -> str:
 # A bug report needs none of them; every one of them leaks something.
 _DROP_EVENT_KEYS = ("server_name", "user", "request", "modules")
 _DROP_EXTRA_KEYS = ("sys.argv",)
+# Per-frame fields that carry code rather than location. `vars` is the locals;
+# the three context fields are the source lines the SDK reads off disk.
+_DROP_FRAME_KEYS = ("vars", "pre_context", "context_line", "post_context")
 
 _SECRET_MARKERS = (
     "api_key", "apikey", "secret", "token", "password", "passwd",
@@ -438,11 +454,22 @@ def scrub_event(event: dict[str, Any], _hint: Any = None) -> dict[str, Any] | No
         for key in _DROP_EXTRA_KEYS:
             extra.pop(key, None)
 
-    # Local variables are off in init too; this is the belt to that's braces,
-    # because one frame carrying `content=<the whole file>` undoes everything.
+    # Frames are where a crash report turns into a code leak, in two ways.
+    #
+    # `vars` is the repr of every local — one frame holding `content=<the
+    # whole file>` undoes everything else on this page. It is off in init too;
+    # this is the belt to those braces.
+    #
+    # `context_line`/`pre_context`/`post_context` are the *source lines around
+    # the crash*, which the SDK reads off disk and attaches by default. On a
+    # source install those are real lines of real code, and on any install they
+    # can come from a user-authored hook. The wizard promises "never: your
+    # code", so they are dropped here as well as disabled at init — a promise
+    # this specific should not rest on one flag being right.
     for exception in (event.get("exception") or {}).get("values") or []:
         for frame in (exception.get("stacktrace") or {}).get("frames") or []:
-            frame.pop("vars", None)
+            for field_name in _DROP_FRAME_KEYS:
+                frame.pop(field_name, None)
 
     return _walk(event, pairs, 0)
 
@@ -479,20 +506,50 @@ def _init_sentry(consent: Consent) -> bool:
     except ImportError:
         return False
 
+    import sys
+
+    # Chosen explicitly rather than left to the defaults. The default set
+    # auto-installs integrations for langchain, langgraph, mcp, httpx and more
+    # — every one of which patches the exact call path Loom uses to talk to
+    # models. Someone who asked for "crashes only" did not ask for their LLM
+    # stack to be instrumented, and a frozen binary makes it worse: a bundled
+    # integration submodule PyInstaller failed to collect raises
+    # ModuleNotFoundError straight out of init(), which the except below would
+    # swallow into "telemetry silently off" in the shipped build.
+    from sentry_sdk.integrations.atexit import AtexitIntegration
+    from sentry_sdk.integrations.dedupe import DedupeIntegration
+    from sentry_sdk.integrations.excepthook import ExcepthookIntegration
+
     try:
         sentry_sdk.init(
             dsn=dsn,
             release=f"loom@{_loom_version()}",
-            environment="binary" if getattr(__import__("sys"), "frozen", False) else "source",
+            environment="binary" if getattr(sys, "frozen", False) else "source",
             # Every one of these defaults would otherwise send something the
             # wizard promised it would not.
             send_default_pii=False,
             include_local_variables=False,
+            # The source lines around the crash, read off disk. On a source
+            # install that is the user's code; scrub_event drops them too.
+            include_source_context=False,
             attach_stacktrace=False,
             max_breadcrumbs=0,
             # Crash reporting only. Performance tracing here would sample real
             # runs, and a span name is a task description.
             traces_sample_rate=0.0,
+            default_integrations=False,
+            auto_enabling_integrations=False,
+            integrations=[
+                # always_run: the default declines to fire under an interactive
+                # interpreter, and Loom's REPL is close enough to one that
+                # crashes there would go unreported.
+                ExcepthookIntegration(always_run=True),
+                # The stock atexit callback prints "Sentry is attempting to
+                # send N pending events / Waiting up to 2 seconds" to stderr,
+                # which lands after the shell prompt returns. Flush silently.
+                AtexitIntegration(callback=lambda _pending, _timeout: None),
+                DedupeIntegration(),
+            ],
             before_send=scrub_event,
             before_send_transaction=lambda *_a, **_k: None,
         )
