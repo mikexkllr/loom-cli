@@ -283,3 +283,69 @@ def test_callbacks_only_in_full_mode_with_handler(monkeypatch):
     assert tel.callbacks() == []  # no handler built yet
     monkeypatch.setattr(tel, "_langfuse_handler", object())
     assert len(tel.callbacks()) == 1
+
+
+# ------------------------------------------------------- reporting call sites
+
+
+def test_report_and_capture_message_are_no_ops_when_off():
+    """The two new entry points are called from ordinary error paths all over
+    Loom, so being off must never be a crash and never be a send."""
+    tel._reset_for_tests()
+    tel.report("tool", RuntimeError("x"), tool="grep")
+    tel.capture_message("tool failed: grep", where="tool.result", tool="grep")
+    assert tel.status() == {"mode": "none", "sentry": False, "langfuse": False}
+
+
+def test_report_reaches_sentry_when_active(monkeypatch):
+    """`report` has to actually hand the exception to the SDK — the bug this
+    guards is a reporting helper that silently drops everything, which looks
+    identical to "no errors happened"."""
+    sent = []
+
+    class _FakeScope:
+        def __init__(self):
+            self.tags = {}
+
+        def set_tag(self, key, value):
+            self.tags[key] = value
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    scope = _FakeScope()
+
+    class _FakeSDK:
+        @staticmethod
+        def new_scope():
+            return scope
+
+        @staticmethod
+        def capture_exception(exc):
+            sent.append(exc)
+
+    monkeypatch.setitem(__import__("sys").modules, "sentry_sdk", _FakeSDK)
+    tel._active_mode = "errors"
+    tel._sentry_ready = True
+    exc = RuntimeError("boom")
+    tel.report("tool", exc, tool="grep")
+    assert sent == [exc]
+    assert scope.tags == {"where": "tool", "tool": "grep"}
+
+
+def test_activate_reports_none_when_sentry_cannot_start(tmp_path, monkeypatch):
+    """Consented to `errors` but nothing initialised: current_mode() has to say
+    "none" rather than claim reporting is on while every capture drops."""
+    tel.save(
+        tel.Consent(
+            mode="errors",
+            decided=True,
+            projects={tel.project_key(tmp_path): {"share": True, "at": 1}},
+        )
+    )
+    monkeypatch.setattr(tel, "_init_sentry", lambda _c: False)
+    assert tel.activate(tmp_path) == "none"
+    assert tel.current_mode() == "none"

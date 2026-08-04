@@ -150,6 +150,15 @@ class MCPManager:
                         async_tools.extend(loaded)
                     except Exception as exc:  # server-level failure: skip it
                         self.errors[name] = f"{type(exc).__name__}: {exc}"
+                        # Skipping a server is how Loom stays usable when one
+                        # MCP command is missing — and also how a broken server
+                        # config goes unnoticed for a whole release.
+                        try:
+                            from loom.core import telemetry
+
+                            telemetry.report("mcp.connect", exc, server=name)
+                        except Exception:
+                            pass
                 ready.set()
                 await self._shutdown.wait()
         finally:

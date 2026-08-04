@@ -22,6 +22,7 @@ from rich.text import Text
 from loom.core import repomap
 from loom.core import sessions as sessions_mod
 from loom.core import settings as settings_mod
+from loom.core import telemetry
 from loom.core import undo
 from loom.core.settings import Settings
 from loom.core.usage import UsageTracker
@@ -261,9 +262,11 @@ class Session:
             bundle = self.ensure_bundle()
         except ModuleNotFoundError as exc:
             self.console.print(f"[loom.bad.b]missing dependency:[/loom.bad.b] {exc} — run `uv sync`")
+            telemetry.report("bundle.dependency", exc)
             return None
         except Exception as exc:
             self.console.print(f"[loom.bad.b]could not start orchestrator:[/loom.bad.b] {exc}")
+            telemetry.report("bundle.build", exc)
             return None
 
         sessions_mod.record(self.cwd, self.thread_id, text)
@@ -299,10 +302,16 @@ class Session:
             )
         except Exception as exc:
             self.weave.aside(Text(f"streaming unavailable ({exc}); running synchronously…", style="loom.warn"))
+            # Reported even though the run recovers: falling back to a
+            # synchronous invoke hides a real provider/transport failure behind
+            # a working turn, which is exactly how a regression here survives
+            # for weeks.
+            telemetry.report("turn.stream", exc)
             try:
                 result = bundle.agent.invoke(inputs, config=run_config)
             except Exception as exc2:
                 self.weave.aside(Text(f"model call failed: {exc2}", style="loom.bad.b"))
+                telemetry.report("turn.invoke", exc2)
                 return None
             final_text = self._absorb_result(result)
         finally:
@@ -1162,8 +1171,16 @@ def _maybe_ask_privacy(session: Session) -> None:
             privacy_mod.maybe_ask_project(session.console, session.cwd)
     except (KeyboardInterrupt, EOFError):
         render.note(session.console, "skipped — nothing is shared until you run /privacy")
-    except Exception:
-        pass  # never let a consent prompt stop Loom from starting
+    except Exception as exc:
+        # Never let a consent prompt stop Loom from starting — but never let it
+        # fail silently either. A swallowed failure here leaves the user at
+        # "none" forever while they believe they answered, which is exactly how
+        # a machine ends up sending nothing and nobody knows why.
+        render.note(
+            session.console,
+            f"couldn't ask about privacy ({type(exc).__name__}) — run [loom.warp]/privacy[/loom.warp] to set it",
+            kind="warn",
+        )
 
 
 def _activate_telemetry(session: Session) -> None:
@@ -1172,11 +1189,14 @@ def _activate_telemetry(session: Session) -> None:
     The line matters: a tool that is uploading your prompts should say it is
     uploading your prompts, every session, not once at setup and never again.
     """
-    from loom.core import telemetry
-
     try:
         mode = telemetry.activate(session.cwd)
-    except Exception:
+    except Exception as exc:
+        render.note(
+            session.console,
+            f"telemetry failed to start ({type(exc).__name__}) — nothing will be reported this session",
+            kind="warn",
+        )
         return
     if mode == "none":
         return
@@ -1237,8 +1257,6 @@ def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yol
         if session.plan and reply and not session._interrupted:
             session.offer_plan_execution()
 
-    from loom.core import telemetry
-
     telemetry.flush()
 
 
@@ -1248,10 +1266,8 @@ def _report_crash(session: Session, exc: BaseException, where: str) -> None:
     A crash inside one command should not end the session — the transcript is
     usually the most valuable thing in the room when something breaks.
     """
-    from loom.core import telemetry
-
     render.note(session.console, f"{where} failed: {type(exc).__name__}: {exc}", kind="bad")
-    telemetry.capture_exception(exc)
+    telemetry.capture_exception(exc, where)
     if telemetry.current_mode() == "none":
         from loom.core import update as update_mod
 

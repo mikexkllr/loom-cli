@@ -172,3 +172,68 @@ def test_run_turn_survives_model_connection_error(tmp_path, monkeypatch, capsys)
     assert result is None
     out = capsys.readouterr().out
     assert "model call failed" in out
+
+
+def test_tool_crash_is_reported(tmp_path, monkeypatch):
+    """A tool that raises is the most common error a user sees, and until the
+    policy wrapper caught it nothing reached the crash reporter: LangChain
+    turns tool exceptions into an error ToolMessage inside the tool node, so
+    they never reach the REPL's handler."""
+    from loom.core import telemetry
+
+    seen = []
+    monkeypatch.setattr(telemetry, "report", lambda where, exc, **tags: seen.append((where, exc, tags)))
+
+    settings = st.Settings(permissions=st.Permissions(default_mode="allow"))
+    mw = PolicyMiddleware(settings, cwd=str(tmp_path))
+    boom = RuntimeError("tool exploded")
+
+    def handler(_req):
+        raise boom
+
+    with pytest.raises(RuntimeError):
+        mw.wrap_tool_call(SimpleNamespace(call={"name": "grep", "args": {}, "id": "x"}), handler)
+    assert seen == [("tool", boom, {"tool": "grep"})]
+
+
+def test_tool_error_result_is_reported_without_its_body(tmp_path, monkeypatch):
+    """Tools usually *return* their failure rather than raising. Report it —
+    but send only the tool name and the exception class, never the message,
+    which routinely quotes a path or a line of the user's file."""
+    from loom.core import telemetry
+
+    seen = []
+    monkeypatch.setattr(
+        telemetry, "capture_message", lambda msg, where="", **tags: seen.append((msg, where, tags))
+    )
+
+    policy._reported_tool_errors.clear()
+    settings = st.Settings(permissions=st.Permissions(default_mode="allow"))
+    mw = PolicyMiddleware(settings, cwd=str(tmp_path))
+    result = SimpleNamespace(status="error", content="FileNotFoundError: /Users/someone/secret.py")
+    mw.wrap_tool_call(SimpleNamespace(call={"name": "read_file", "args": {}, "id": "x"}), lambda _r: result)
+
+    (msg, where, tags) = seen[0]
+    assert msg == "tool failed: read_file" and where == "tool.result"
+    assert tags == {"tool": "read_file", "error_type": "FileNotFoundError"}
+    assert "secret.py" not in str(seen)
+
+    # A coding agent misses on paths constantly; the repeats carry no new
+    # information and would bury the real failures.
+    mw.wrap_tool_call(SimpleNamespace(call={"name": "read_file", "args": {}, "id": "y"}), lambda _r: result)
+    assert len(seen) == 1
+
+
+def test_tool_success_is_not_reported(tmp_path, monkeypatch):
+    from loom.core import telemetry
+
+    seen = []
+    monkeypatch.setattr(telemetry, "capture_message", lambda *a, **k: seen.append(a))
+    policy._reported_tool_errors.clear()
+    settings = st.Settings(permissions=st.Permissions(default_mode="allow"))
+    mw = PolicyMiddleware(settings, cwd=str(tmp_path))
+    mw.wrap_tool_call(
+        SimpleNamespace(call={"name": "grep", "args": {}, "id": "x"}),
+        lambda _r: SimpleNamespace(status="success", content="3 matches"),
+    )
+    assert seen == []

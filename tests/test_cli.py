@@ -138,6 +138,7 @@ def test_doctor_reports_the_privacy_mode(tmp_path, monkeypatch):
     from loom.core import telemetry as tel
 
     monkeypatch.setattr(tel, "store_path", lambda: tmp_path / "telemetry.json")
+    tel.save(tel.Consent(mode="none", decided=True))
     out = _doctor_on(tmp_path, monkeypatch, _all_cloud())
     assert "privacy" in out and "nothing leaves this machine" in out
 

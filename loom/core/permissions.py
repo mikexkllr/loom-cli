@@ -8,8 +8,9 @@ Rule syntax (Claude Code-flavored):
     "write_file(src/**)"   -> write_file whose path matches "src/**"
     "*"                    -> matches every tool call
 
-Evaluation precedence: deny > allow > ask > default_mode. The first list (in
-that priority order) that yields a match wins.
+Evaluation precedence: deny > ALWAYS_ALLOWED > allow > ask > default_mode. The
+first of those (in that priority order) that yields a match wins — so an
+explicit ``deny`` still overrides everything, including the always-allowed set.
 """
 
 from __future__ import annotations
@@ -35,13 +36,31 @@ _SPECIFIER_FIELD = {
 }
 
 
-# Coordination tools that never stall on an approval prompt: spawning
-# subagents (task), tracking the plan (write_todos), consulting the advisor.
-# They only orchestrate — the real side effects (file writes, shell) are
-# gated per-call by these same rules. A user settings.json that overrides
-# `permissions.allow` replaces the packaged list wholesale (lists don't
-# merge), which used to silently re-gate these; an explicit deny still wins.
-ALWAYS_ALLOWED = frozenset({"task", "write_todos", "consult"})
+# Tools that never stall on an approval prompt.
+#
+# Two groups, one rule. The coordination tools (spawning subagents, tracking
+# the plan, consulting the advisor) only orchestrate — the real side effects
+# they set up are gated per-call by these same rules when they happen. The
+# read-only filesystem tools navigate and read and mutate nothing: `ls`,
+# `glob` and `grep` cannot change a byte on disk, cannot run a command, and
+# cannot leave the sandbox root, so an approval prompt for one buys no safety
+# and costs the thing approval prompts are for — a user who reads them.
+# Prompting on recon is also what trains someone to hit "yes, don't ask again"
+# on the shell prompt that actually mattered.
+#
+# `read_file` is deliberately *not* here: it is the one read that a `deny`
+# rule is routinely written for (`read_file(.env)`, `read_file(secrets/**)`),
+# and that has to keep working. Deny is checked before this set, so a deny
+# rule still wins over everything below — this only removes `ask`.
+#
+# The packaged defaults already allow all of these. This set is what makes it
+# hold when they are *not* the active defaults: a user or project
+# settings.json that sets `permissions.allow` replaces the packaged list
+# wholesale (lists don't merge on load), which silently re-gated the
+# coordination tools once already and would do the same to recon.
+_COORDINATION_TOOLS = frozenset({"task", "write_todos", "consult"})
+READ_ONLY_TOOLS = frozenset({"ls", "glob", "grep"})
+ALWAYS_ALLOWED = _COORDINATION_TOOLS | READ_ONLY_TOOLS
 
 
 class Decision(str, Enum):

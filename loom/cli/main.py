@@ -230,11 +230,23 @@ def _run_task(
 ) -> None:
     """Headless task run — same Session engine (rendering, receipts, loop) as
     the REPL, minus the input loop."""
+    from loom.core import telemetry
     from loom.ui.repl import Session
 
     settings.apply_env()
     if advisor_threshold is not None:
         settings.models = settings.models.model_copy(update={"advisor_threshold": advisor_threshold})
+
+    # Same consent, same reporting as the REPL. This used to be REPL-only, so
+    # every crash in a headless run — CI, scripts, `loom "task"`, and every
+    # `--loop` iteration — was dropped on the floor no matter what mode the
+    # user had chosen. Consent is *read* here and never asked for: a
+    # non-interactive run has nobody to answer, and an unanswered store still
+    # means "none".
+    try:
+        telemetry.activate(root)
+    except Exception:
+        pass
 
     session = Session(settings, cwd=root, plan=plan, local_only=local_only, yolo=yolo, airgap=airgap)
     session.accept_edits = accept_edits
@@ -246,15 +258,21 @@ def _run_task(
 
         fix = "reinstall Loom" if update.is_frozen() else "install with `uv sync`"
         render.note(session.console, f"missing dependency: {exc} — {fix}", kind="bad")
+        telemetry.report("startup.dependency", exc)
+        telemetry.flush()
         raise typer.Exit(1)
     except ImportError as exc:
         # The parent class, deliberately: an optional provider that isn't
         # installed raises ImportError with its own guidance already attached.
         # Catching only ModuleNotFoundError let those escape as a traceback.
         render.note(session.console, str(exc), kind="bad")
+        telemetry.report("startup.import", exc)
+        telemetry.flush()
         raise typer.Exit(1)
     except RuntimeError as exc:  # e.g. local-only without Ollama
         render.note(session.console, str(exc), kind="bad")
+        telemetry.report("startup.runtime", exc)
+        telemetry.flush()
         raise typer.Exit(1)
 
     out = session.console
@@ -267,10 +285,22 @@ def _run_task(
     out.print(render.kv([("", Text(prompt, style="loom.bright"))]))
     out.print()
 
-    if loop > 0:
-        session.run_loop(prompt, max_iters=loop, until=until)
-    else:
-        session.run_turn(prompt)
+    try:
+        if loop > 0:
+            session.run_loop(prompt, max_iters=loop, until=until)
+        else:
+            session.run_turn(prompt)
+    except KeyboardInterrupt:
+        render.note(session.console, "interrupted", kind="warn")
+    except Exception as exc:
+        # A headless crash printed a bare traceback and exited 0-ish through
+        # Typer. Report it, say it plainly, and fail the exit code so a script
+        # or CI job notices.
+        render.note(session.console, f"task failed: {type(exc).__name__}: {exc}", kind="bad")
+        telemetry.report("task", exc)
+        raise typer.Exit(1)
+    finally:
+        telemetry.flush()
 
 
 def _fleet_rows(config: cfg.LoomConfig, bundle):
@@ -803,7 +833,9 @@ def update() -> None:
 @app.command("privacy")
 def privacy_cmd(
     action: Optional[str] = typer.Argument(
-        None, help="Nothing: show state. `set <none|errors|full>`, `here`, or `setup` (interactive, collects keys)."
+        None,
+        help="Nothing: show state. `set <none|errors|full>`, `here`, `setup` "
+        "(interactive, collects keys), or `test` (send one real event end to end).",
     ),
     mode: Optional[str] = typer.Argument(None, help="Mode for `set`: none | errors | full."),
     root: str = typer.Option(".", "--root"),
@@ -827,10 +859,13 @@ def privacy_cmd(
             privacy_mod.ask_project(console, root)
         elif verb == "setup":
             privacy_mod.run(console, root, force_credentials=True)
+        elif verb == "test":
+            if not privacy_mod.send_test_event(console, root):
+                raise typer.Exit(1)
         elif verb in ("", "status"):
             privacy_mod.describe(console, root)
         else:
-            console.print(f"[loom.bad.b]unknown action:[/loom.bad.b] {verb} (set | here | setup)")
+            console.print(f"[loom.bad.b]unknown action:[/loom.bad.b] {verb} (set | here | setup | test)")
             raise typer.Exit(1)
     except (KeyboardInterrupt, EOFError):
         console.print("\n[loom.muted]cancelled — privacy left as it was[/loom.muted]")

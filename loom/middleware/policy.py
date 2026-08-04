@@ -57,6 +57,32 @@ auto_approve_edits: Slot[bool] = Slot(False)
 _EDIT_TOOLS = {"write_file", "edit_file"}
 
 
+def _leading_error_type(content: Any) -> str:
+    """``"FileNotFoundError"`` out of ``"FileNotFoundError: /Users/…/x.py"``.
+
+    A deliberately narrow read: the token must look like a Python exception
+    class name (CamelCase, ends in Error/Exception) before it is sent, so a
+    tool whose error message starts with a path or a snippet of the user's code
+    contributes nothing rather than leaking its first word. The bare words
+    ``Error``/``Exception`` pass that shape test but name nothing, so they read
+    as unknown too.
+    """
+    head = str(content or "").strip().split(":", 1)[0].strip()
+    if not head or len(head) > 60 or not head.isidentifier() or not head[0].isupper():
+        return "unknown"
+    if head in ("Error", "Exception"):
+        return "unknown"
+    return head if head.endswith(("Error", "Exception")) else "unknown"
+
+
+# One report per (tool, error class) per process. A coding agent guesses paths
+# and greps for things that aren't there — routinely, by design — so reporting
+# every error result would bury the one genuine failure under a thousand
+# "file not found"s and burn the user's Sentry quota doing it. The first of
+# each kind is the one that carries information; the repeats only carry volume.
+_reported_tool_errors: set[tuple[str, str]] = set()
+
+
 def _normalize_path_arg(args: dict, cwd: str) -> dict:
     """Normalize the path argument for permission, /undo, and diff preview hooks.
 
@@ -101,7 +127,12 @@ class PolicyMiddleware(AgentMiddleware):
         if gate is not None:
             return gate  # blocked/denied → short-circuit with a ToolMessage
         self._snapshot(request)
-        result = handler(request)
+        try:
+            result = handler(request)
+        except Exception as exc:
+            self._report(request, exc)
+            raise
+        self._report_result(request, result)
         self._post(request)
         return result
 
@@ -110,9 +141,55 @@ class PolicyMiddleware(AgentMiddleware):
         if gate is not None:
             return gate
         self._snapshot(request)
-        result = await handler(request)
+        try:
+            result = await handler(request)
+        except Exception as exc:
+            self._report(request, exc)
+            raise
+        self._report_result(request, result)
         self._post(request)
         return result
+
+    # --- crash reporting ---
+    #
+    # This wrapper is the only chokepoint every tool call passes through, and
+    # a tool failure is the single most common error a Loom user actually sees.
+    # LangChain catches tool exceptions inside the tool node and hands the model
+    # an error ToolMessage, so nothing propagates to the REPL's crash handler:
+    # without these two hooks, "the grep tool blew up" was visible in the
+    # transcript and nowhere else.
+    def _report(self, request: Any, exc: BaseException) -> None:
+        """An exception that escaped the tool itself — report it with its stack."""
+        name, _, _ = self._extract(request)
+        try:
+            from loom.core import telemetry
+
+            telemetry.report("tool", exc, tool=name or "?")
+        except Exception:
+            pass
+
+    def _report_result(self, request: Any, result: Any) -> None:
+        """A tool that returned an error ToolMessage instead of raising.
+
+        Only the tool name and the leading ``SomeError:`` class name are sent —
+        never the message body, which routinely quotes a path or a line of the
+        user's file and would break the promise the setup wizard makes.
+        """
+        if str(getattr(result, "status", "")) != "error":
+            return
+        name, _, _ = self._extract(request)
+        kind = (name or "?", _leading_error_type(getattr(result, "content", "")))
+        if kind in _reported_tool_errors:
+            return
+        _reported_tool_errors.add(kind)
+        try:
+            from loom.core import telemetry
+
+            telemetry.capture_message(
+                f"tool failed: {kind[0]}", where="tool.result", tool=kind[0], error_type=kind[1]
+            )
+        except Exception:
+            pass
 
     def _snapshot(self, request: Any) -> None:
         """Record the pre-write file state so /undo can roll the turn back.

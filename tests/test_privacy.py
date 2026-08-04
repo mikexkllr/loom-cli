@@ -216,8 +216,18 @@ def test_set_mode_none_needs_no_credentials(tmp_path):
 
 
 def test_doctor_row_none_mode(tmp_path):
+    """An explicit "none" is a real answer and reports clean."""
+    tel.save(tel.Consent(mode="none", decided=True))
     ok, label, detail = priv.doctor_row(tmp_path)
     assert ok is True and "nothing leaves" in detail
+
+
+def test_doctor_row_flags_a_decision_never_made(tmp_path):
+    """Never answered is not the same as answered "none", and doctor has to
+    say so: a user who believes they enabled crash reports must not see a
+    green tick on the store that never recorded their answer."""
+    ok, _label, detail = priv.doctor_row(tmp_path)
+    assert ok is None and "never answered" in detail
 
 
 def test_doctor_row_warns_when_mode_cannot_work(tmp_path, monkeypatch):

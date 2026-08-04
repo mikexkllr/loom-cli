@@ -170,16 +170,65 @@ should not rest on one flag being right):
 - `$HOME` and the username redacted from every string
 - any dict key matching `_SECRET_MARKERS` replaced with `<redacted>`
 
-Only three Sentry integrations are enabled — `excepthook` (with
+Only four Sentry integrations are enabled — `excepthook` (with
 `always_run=True`, since the REPL looks interactive), `atexit` (with a silent
-callback), and `dedupe`. The defaults would auto-enable `langchain`,
-`langgraph`, `mcp` and `httpx`, patching the exact path Loom uses to call
-models, for a user who asked for crashes only.
+callback), `dedupe`, and `threading` (LangGraph runs tool calls on worker
+threads, where `sys.excepthook` never fires). The defaults would auto-enable
+`langchain`, `langgraph`, `mcp` and `httpx`, patching the exact path Loom uses
+to call models, for a user who asked for crashes only.
 
 That explicit set is also the PyInstaller-safe one: a bundled integration
 submodule that failed to collect raises `ModuleNotFoundError` out of `init()`,
 which the surrounding `except` would swallow into "telemetry silently off" in
 the shipped binary.
+
+---
+
+## What actually gets reported
+
+Loom swallows almost everything so that one broken thing never ends a session.
+The cost is that a caught error is invisible to whoever has to fix it, so every
+such site reports on the way past via `telemetry.report(where, exc)`. The
+`where` tag is a fixed label chosen in the source, never user content.
+
+| `where` | Site |
+| --- | --- |
+| `turn`, `/<command>` | REPL turn and slash-command crashes (`_report_crash`) |
+| `turn.stream`, `turn.invoke` | streaming failed; the synchronous retry failed too |
+| `bundle.build`, `bundle.dependency` | the orchestrator could not be constructed |
+| `startup.*`, `task` | the headless `loom "task"` path |
+| `tool` | an exception escaped a tool (`PolicyMiddleware.wrap_tool_call`) |
+| `tool.result` | a tool returned an error `ToolMessage` instead of raising |
+| `mcp.connect` | an MCP server failed to start and was skipped |
+| `compact` | `/compact` could not summarise the transcript |
+| `privacy.test` | the synthetic event `/privacy test` sends |
+
+`tool.result` carries only the tool name and the leading exception class name —
+never the message body, which routinely quotes a path or a line of the user's
+file — and reports once per `(tool, error class)` per process. A coding agent
+guesses paths and greps for things that aren't there by design; without that
+cap the real failures drown.
+
+Two things had to be true before any of this reached Sentry, and neither was:
+
+- **Telemetry has to be activated.** It was REPL-only, so every headless run
+  (`loom "task"`, `--loop`, CI, scripts) reported nothing no matter what mode
+  the user had chosen. `_run_task` now activates and flushes like the REPL.
+- **The user has to have answered.** With no `telemetry.json` the mode is
+  `none` and nothing is sent — correctly, but indistinguishably from "reporting
+  is on and nothing broke". `/doctor` now separates *never answered* from
+  *answered none*, and the startup consent prompt no longer fails silently.
+
+### Verify it end to end
+
+```
+loom privacy test
+```
+
+Activates, captures a real `RuntimeError`, flushes, and says which link is
+missing when it can't: mode `none`, project not opted in, or an SDK that never
+initialised. It is the only check that exercises the whole path — a
+configuration screen can only report the first two.
 
 ---
 
@@ -304,6 +353,8 @@ accumulate indefinitely.
 | `loom/ui/privacy.py` | the wizard step, per-project gate, `/privacy` rendering |
 | `loom/ui/onboarding.py` | calls the privacy step in quick *and* advanced setup |
 | `loom/ui/repl.py` | "run setup now?", per-directory ask, activation, callbacks, crash capture, flush |
+| `loom/cli/main.py` | the same activation/capture/flush for headless `loom "task"` runs |
+| `loom/middleware/policy.py` | reports tool crashes and error results — the only chokepoint every tool call passes |
 | `telemetry-proxy/` | the Cloudflare Worker, its config and README |
 | `packaging/loom.spec` | bakes `LOOM_CLIENT_TOKEN` into `loom/_built.py` at freeze time |
 | `.github/workflows/deploy-telemetry-proxy.yml` | auto-deploy on worker changes |

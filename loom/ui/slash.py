@@ -514,7 +514,7 @@ def _permissions(session: "Session", args: str) -> bool:
     return True
 
 
-@command("privacy", "What Loom may share: /privacy [set none|errors|full] [here] [setup]")
+@command("privacy", "What Loom may share: /privacy [set none|errors|full] [here] [setup] [test]")
 def _privacy(session: "Session", args: str) -> bool:
     from loom.core import telemetry as tel
     from loom.ui import privacy as privacy_mod
@@ -546,6 +546,9 @@ def _privacy(session: "Session", args: str) -> bool:
             render.note(console, "cancelled — privacy left as it was")
             return True
         _reactivate_telemetry(session)
+        return True
+    if verb == "test":
+        privacy_mod.send_test_event(console, session.cwd)
         return True
     if verb and verb != "status":
         render.note(console, f"unknown /privacy verb {verb!r} — try [loom.warp]/privacy[/loom.warp]", kind="warn")
@@ -1170,6 +1173,9 @@ def _compact(session: "Session", args: str) -> bool:
         )
     except Exception as exc:
         session.console.print(f"[loom.bad.b]compact failed:[/loom.bad.b] {exc}")
+        from loom.core import telemetry
+
+        telemetry.report("compact", exc)
         return True
     session.reset()
     session.pending_context = summary

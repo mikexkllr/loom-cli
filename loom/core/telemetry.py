@@ -519,6 +519,7 @@ def _init_sentry(consent: Consent) -> bool:
     from sentry_sdk.integrations.atexit import AtexitIntegration
     from sentry_sdk.integrations.dedupe import DedupeIntegration
     from sentry_sdk.integrations.excepthook import ExcepthookIntegration
+    from sentry_sdk.integrations.threading import ThreadingIntegration
 
     try:
         sentry_sdk.init(
@@ -549,6 +550,10 @@ def _init_sentry(consent: Consent) -> bool:
                 # which lands after the shell prompt returns. Flush silently.
                 AtexitIntegration(callback=lambda _pending, _timeout: None),
                 DedupeIntegration(),
+                # LangGraph runs tool calls — and therefore most of Loom — on
+                # worker threads. sys.excepthook never fires there, so without
+                # this every crash below the graph boundary was invisible.
+                ThreadingIntegration(propagate_scope=True),
             ],
             before_send=scrub_event,
             before_send_transaction=lambda *_a, **_k: None,
@@ -606,6 +611,10 @@ def activate(root: str | Path = ".") -> str:
     if not _init_sentry(consent) and mode == "errors":
         # Consented, but there is nowhere to send. Not an error worth
         # interrupting anyone over — /privacy and /doctor both report it.
+        # `_active_mode` has to come back down with the return value: leaving
+        # it at "errors" made current_mode() claim reporting was on while
+        # every capture silently dropped on the `_sentry_ready` check.
+        _active_mode = "none"
         return "none"
     if mode == "full":
         _init_langfuse(consent)
@@ -625,16 +634,80 @@ def callbacks() -> list[Any]:
     return [_langfuse_handler]
 
 
-def capture_exception(exc: BaseException) -> None:
-    """Report a crash, if the user asked us to. Never raises."""
+def capture_exception(exc: BaseException, where: str = "", **tags: Any) -> None:
+    """Report a crash, if the user asked us to. Never raises.
+
+    ``where`` names the call site ("turn", "tool:execute", "mcp") and lands as
+    a Sentry tag, because most of what Loom catches is caught *somewhere
+    specific* — an exception type alone doesn't say whether the model call
+    failed, a tool blew up, or an MCP server never came up. It is a fixed
+    label chosen at the call site, never user content.
+    """
     if _active_mode == "none" or not _sentry_ready:
         return
     try:
         import sentry_sdk
 
-        sentry_sdk.capture_exception(exc)
+        with sentry_sdk.new_scope() as scope:
+            if where:
+                scope.set_tag("where", where)
+            for key, value in tags.items():
+                scope.set_tag(key, str(value)[:200])
+            sentry_sdk.capture_exception(exc)
     except Exception:
         pass
+
+
+def report(where: str, exc: BaseException, **tags: Any) -> None:
+    """``capture_exception`` with the call site first, for the many places that
+    catch an exception, show it, and carry on.
+
+    Loom deliberately swallows almost everything — a failed MCP server, a
+    failed compaction, a failed stream — so that one broken thing never ends a
+    session. The cost of that is that a caught error is invisible to whoever
+    has to fix it, so every one of those sites reports here on the way past.
+    """
+    capture_exception(exc, where, **tags)
+
+
+def capture_message(message: str, where: str = "", level: str = "error", **tags: Any) -> None:
+    """Report a failure that never produced an exception object — a subprocess
+    that exited non-zero, a provider that answered with an error body. Never
+    raises.
+
+    ``message`` must be a fixed string written here in the source, not user
+    content: this bypasses the exception path but not the promise made in the
+    setup wizard.
+    """
+    if _active_mode == "none" or not _sentry_ready:
+        return
+    try:
+        import sentry_sdk
+
+        with sentry_sdk.new_scope() as scope:
+            if where:
+                scope.set_tag("where", where)
+            for key, value in tags.items():
+                scope.set_tag(key, str(value)[:200])
+            sentry_sdk.capture_message(message, level=level)
+    except Exception:
+        pass
+
+
+def status() -> dict[str, Any]:
+    """What activation actually achieved this process — for /doctor and
+    /privacy, which until now could only report what was *configured*.
+
+    The gap between the two is the whole bug class this exists to surface: a
+    consent record saying "errors" and a process where the SDK never
+    initialised look identical from the outside, and only one of them sends
+    anything.
+    """
+    return {
+        "mode": _active_mode,
+        "sentry": _sentry_ready,
+        "langfuse": _langfuse_handler is not None,
+    }
 
 
 def flush(timeout: float = 2.0) -> None:

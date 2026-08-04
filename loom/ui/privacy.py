@@ -470,6 +470,62 @@ def set_mode(console: Console, mode_id: str, root: str | Path = ".") -> bool:
     return True
 
 
+def send_test_event(console: Console, root: str | Path = ".") -> bool:
+    """``/privacy test`` — send one real crash report and say what happened.
+
+    "I see errors in Loom but nothing in Sentry" has half a dozen causes that
+    look identical from the terminal: no consent record, a project that
+    declined, a mode the SDK could not initialise, a DSN that ingests nowhere.
+    Configuration screens can only report the first two. This exercises the
+    whole path — activate, capture, flush — and reports which link is missing.
+    """
+    consent = tel.load()
+    configured = tel.global_mode(consent)
+
+    console.print()
+    render.rule(console, "privacy test")
+
+    if configured == tel.DEFAULT_MODE:
+        render.note(
+            console,
+            "privacy is [loom.warp]none[/loom.warp] — nothing is sent, by design. "
+            "[loom.warp]/privacy set errors[/loom.warp] turns crash reports on.",
+            kind="warn",
+        )
+        return False
+    if tel.project_share(root, consent) is not True:
+        render.note(
+            console,
+            f"this project has not opted in ({tel.project_key(root)}) — "
+            "[loom.warp]/privacy here[/loom.warp] to change that",
+            kind="warn",
+        )
+        return False
+
+    mode = tel.activate(root)
+    state = tel.status()
+    if mode == "none" or not state["sentry"]:
+        render.note(
+            console,
+            "the Sentry SDK did not start — no DSN, or the package is missing from this build",
+            kind="bad",
+        )
+        return False
+
+    tel.capture_exception(
+        RuntimeError("loom privacy test — this event is expected"), "privacy.test"
+    )
+    tel.flush(timeout=10.0)
+    render.note(console, "sent a test crash report", kind="good")
+    render.note(
+        console,
+        "it appears in Sentry as [loom.warp]RuntimeError: loom privacy test[/loom.warp] within a minute or two; "
+        "if it doesn't, the DSN points somewhere else",
+        kind="tip",
+    )
+    return True
+
+
 def doctor_row(root: str | Path = ".") -> tuple[bool | None, str, str]:
     """One ``(ok, label, detail)`` line for ``/doctor`` and ``loom doctor``.
 
@@ -481,6 +537,12 @@ def doctor_row(root: str | Path = ".") -> tuple[bool | None, str, str]:
     mode = tel.global_mode(consent)
     info = tel.mode_info(mode)
     if mode == tel.DEFAULT_MODE:
+        # "Never answered" and "answered none" are both silent, and only one of
+        # them is what the user meant. Someone who believes they turned crash
+        # reporting on needs to see that no answer was ever recorded, not a
+        # green tick.
+        if tel.needs_decision(consent):
+            return None, "privacy", "never answered — nothing is sent; /privacy to choose"
         return True, "privacy", "none — nothing leaves this machine"
     missing = [k for k in info.needs if not _have_credential(k, consent)]
     if missing:
