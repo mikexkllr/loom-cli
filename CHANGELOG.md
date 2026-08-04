@@ -14,14 +14,15 @@
   tokens and timings — the training corpus for a future distilled local
   orchestrator, and a deliberate, separately-confirmed opt-in because traces
   necessarily contain source code.
-- **Zero-setup for every user.** A Loom-owned Sentry project is bundled as the
-  default, so picking "bug reports" just works — no account, no DSN to paste.
-  `/privacy setup` still lets anyone point crashes at their *own* Sentry
-  project (the `sentry` CLI fetches or creates it). A Loom-owned Langfuse
-  project is wired the same way for full tracing: the public key ships in
-  source, the secret key is injected into the frozen binary at release time
-  from a GitHub Actions secret (`LOOM_LANGFUSE_SECRET_KEY`) — never in the
-  public repo. Source/dev builds with no injected secret fall back to the
+- **Zero-setup for every user.** A Loom-owned Sentry project and a Loom-owned
+  Langfuse project are both bundled as defaults, so picking "bug reports" or
+  "full tracing" just works — no account, no keys to paste. `/privacy setup`
+  still lets anyone route crashes/traces to their *own* Sentry/Langfuse project
+  (the `sentry` CLI fetches or creates it; Langfuse keys are verified on entry).
+  The Sentry DSN and Langfuse public key ship in source (both public,
+  write-only); the Langfuse *secret* key is injected into the frozen binary at
+  release time from a GitHub Actions secret (`LOOM_LANGFUSE_SECRET_KEY`) — never
+  in the public repo. Source/dev builds with no injected secret fall back to the
   user's own Langfuse keys via `/privacy setup`.
 - **Two consent gates, both required.** The global mode is chosen once;
   separately, the first time Loom starts in a new directory or git repo it
