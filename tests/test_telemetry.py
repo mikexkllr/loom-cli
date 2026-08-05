@@ -349,3 +349,94 @@ def test_activate_reports_none_when_sentry_cannot_start(tmp_path, monkeypatch):
     monkeypatch.setattr(tel, "_init_sentry", lambda _c: False)
     assert tel.activate(tmp_path) == "none"
     assert tel.current_mode() == "none"
+
+
+# ---------------------------------------------- langfuse credentials are a set
+
+
+def test_bundled_langfuse_credentials_go_to_the_proxy(monkeypatch):
+    """The bug that silently dropped every full-tracing user's traces.
+
+    `Consent.langfuse_host` used to default to cloud.langfuse.com for
+    *everyone*, so it shadowed the bundled proxy host while the keys still
+    fell through to the bundled pair — sending the proxy's write-only token
+    to the public API, which rejects it, from a background thread where the
+    401 was never seen.
+    """
+    for key in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_PUBLIC_KEY", "pk-lf-loom-ingest")
+    monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_SECRET_KEY", "lct_baked")
+
+    consent = tel.Consent(mode="full", decided=True)
+    assert tel.langfuse_credentials(consent) == (
+        "pk-lf-loom-ingest", "lct_baked", tel.DEFAULT_LANGFUSE_HOST,
+    )
+
+
+def test_a_stored_cloud_host_does_not_redirect_bundled_credentials(monkeypatch):
+    """Records written by older builds all carry the cloud host. Without keys
+    beside it that is a default, not a decision, and must not win."""
+    for key in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_PUBLIC_KEY", "pk-lf-loom-ingest")
+    monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_SECRET_KEY", "lct_baked")
+
+    tel.save(tel.Consent(mode="full", decided=True))
+    raw = json.loads(tel.store_path().read_text())
+    raw["langfuse"]["host"] = "https://cloud.langfuse.com"  # what old builds wrote
+    tel.store_path().write_text(json.dumps(raw))
+
+    _public, _secret, host = tel.langfuse_credentials(tel.load())
+    assert host == tel.DEFAULT_LANGFUSE_HOST
+
+
+def test_the_users_own_keys_keep_their_own_host(monkeypatch):
+    for key in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"):
+        monkeypatch.delenv(key, raising=False)
+    consent = tel.Consent(
+        mode="full", decided=True,
+        langfuse_public_key="pk-lf-mine", langfuse_secret_key="sk-lf-mine",
+        langfuse_host="https://langfuse.internal",
+    )
+    assert tel.langfuse_credentials(consent) == (
+        "pk-lf-mine", "sk-lf-mine", "https://langfuse.internal",
+    )
+    # Own keys, no host named: their keys belong to Langfuse Cloud, never to
+    # Loom's proxy — the proxy would reject them.
+    consent.langfuse_host = ""
+    assert tel.langfuse_credentials(consent)[2] == tel.LANGFUSE_CLOUD_HOST
+
+
+def test_credentials_are_never_mixed_across_sources(monkeypatch):
+    """Half a pair in the environment must not be paired with a secret from
+    somewhere else — that combination authenticates nowhere."""
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-stray")
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_HOST", raising=False)
+    monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_PUBLIC_KEY", "pk-lf-loom-ingest")
+    monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_SECRET_KEY", "lct_baked")
+
+    public, secret, host = tel.langfuse_credentials(tel.Consent(mode="full", decided=True))
+    assert (public, secret, host) == ("pk-lf-loom-ingest", "lct_baked", tel.DEFAULT_LANGFUSE_HOST)
+
+
+def test_env_host_still_overrides_for_local_testing(monkeypatch):
+    for key in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("LANGFUSE_HOST", "http://127.0.0.1:9932")
+    monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_PUBLIC_KEY", "pk-lf-loom-ingest")
+    monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_SECRET_KEY", "lct_baked")
+    assert tel.langfuse_credentials(tel.Consent(mode="full", decided=True))[2] == "http://127.0.0.1:9932"
+
+
+def test_no_langfuse_credentials_at_all():
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        for key in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_PUBLIC_KEY", "")
+        monkeypatch.setattr(tel, "DEFAULT_LANGFUSE_SECRET_KEY", "")
+        assert tel.langfuse_credentials(tel.Consent(mode="full", decided=True)) is None
+    finally:
+        monkeypatch.undo()

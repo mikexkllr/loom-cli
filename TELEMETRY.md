@@ -225,10 +225,46 @@ Two things had to be true before any of this reached Sentry, and neither was:
 loom privacy test
 ```
 
-Activates, captures a real `RuntimeError`, flushes, and says which link is
-missing when it can't: mode `none`, project not opted in, or an SDK that never
-initialised. It is the only check that exercises the whole path — a
-configuration screen can only report the first two.
+Activates, captures a real `RuntimeError`, flushes, and — in `full` mode —
+authenticates against the trace endpoint too. It says which link is missing
+when it can't: mode `none`, project not opted in, an SDK that never
+initialised, or credentials the host refuses. It is the only check that
+exercises the whole path — a configuration screen can only report the first
+two.
+
+The trace check is not redundant. The Langfuse SDK uploads on a background
+thread and logs **nothing** at any level when the endpoint answers 401, so a
+rejected trace and a delivered trace are indistinguishable from the terminal.
+
+### Keys and host are one credential
+
+`langfuse_credentials()` resolves the public key, secret key and host together
+and never mixes sources, because they are not independent:
+
+| Credential | Valid only at |
+| --- | --- |
+| bundled `pk-lf-loom-ingest` + `lct_…` | Loom's ingest proxy |
+| a user's own Langfuse pair | Langfuse Cloud, or their self-hosted instance |
+
+Resolving them field by field produced the one combination that authenticates
+nowhere. `Consent.langfuse_host` defaulted to `https://cloud.langfuse.com` and
+was written into every consent record — including those of users who supplied
+no keys at all — so it shadowed the proxy host while the keys still fell
+through to the bundle. Every full-tracing user was posting the proxy's
+write-only token to the public API, which rejected it:
+
+```
+$ curl https://cloud.langfuse.com/api/public/projects -H "authorization: Basic <bundled>"
+{"message":"Invalid credentials. Confirm that you've configured the correct host."}   # 401
+
+$ curl -X POST https://loom-telemetry.telemetry-proxy.workers.dev/api/public/otel/v1/traces …
+200
+```
+
+`LANGFUSE_HOST` in the environment still overrides in every branch — that is
+how the proxy gets pointed at a local capture server under test. A stored
+`cloud.langfuse.com` with no keys beside it is read as unset, so records
+written by older builds heal on load rather than needing a reset.
 
 ---
 

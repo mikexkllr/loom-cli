@@ -30,6 +30,19 @@
   pipe can be checked rather than assumed. Because the update crash happened
   before the REPL started, it also meant the privacy question was never
   reached — so consent was never recorded and nothing *could* be sent.
+- **Full tracing sent every trace to a host that rejects it.** The bundled
+  `pk-lf-loom-ingest` + `lct_…` pair only authenticates against Loom's ingest
+  proxy, but `Consent.langfuse_host` defaulted to `https://cloud.langfuse.com`
+  and was written into every consent record — including for users who supplied
+  no Langfuse keys at all — so it shadowed the proxy host while the keys still
+  fell through to the bundle. The public API answered `401 Invalid
+  credentials`, and because the Langfuse SDK uploads on a background thread and
+  logs nothing when it is rejected, the traces vanished with no error anywhere.
+  Keys and host are now resolved together as one credential, never field by
+  field; a stored cloud host with no keys beside it reads as unset, so existing
+  records heal on load. `/privacy test` now authenticates against the trace
+  endpoint as well as sending a crash report, because that 401 is otherwise
+  invisible.
 - **`ls`, `glob` and `grep` no longer ask for approval.** They mutate nothing
   and cannot leave the sandbox root. The packaged defaults already allowed
   them, but any `settings.json` setting `permissions.allow` replaces that list

@@ -430,14 +430,18 @@ def describe(console: Console, root: str | Path = ".") -> None:
         else:
             rows.append(("sentry", Text("no DSN — crashes go nowhere", style="loom.warn")))
     if configured == "full":
-        own = consent.langfuse_public_key and consent.langfuse_secret_key
-        baked = tel.DEFAULT_LANGFUSE_PUBLIC_KEY and tel.DEFAULT_LANGFUSE_SECRET_KEY
-        if own:
-            rows.append(("langfuse", Text(consent.langfuse_host, style="loom.muted")))
-        elif baked:
-            rows.append(("langfuse", Text("Loom's project (default)", style="loom.muted")))
-        else:
+        # The host the SDK will actually use, not the one on file. Keys and
+        # host are one credential (tel.langfuse_credentials); showing them
+        # apart is how "traces go to Loom's project" managed to be printed
+        # while the keys were being sent somewhere that rejects them.
+        resolved = tel.langfuse_credentials(consent)
+        if resolved is None:
             rows.append(("langfuse", Text("no keys — traces go nowhere", style="loom.warn")))
+        else:
+            public, _secret, host = resolved
+            own = bool(consent.langfuse_public_key and consent.langfuse_secret_key) or public != tel.DEFAULT_LANGFUSE_PUBLIC_KEY
+            label = host if own else f"Loom's project (default) {g.dot} {host}"
+            rows.append(("langfuse", Text(label, style="loom.muted")))
     rows.append(("stored", Text(str(tel.store_path()), style="loom.muted")))
     console.print(render.kv(rows))
     console.print()
@@ -523,7 +527,33 @@ def send_test_event(console: Console, root: str | Path = ".") -> bool:
         "if it doesn't, the DSN points somewhere else",
         kind="tip",
     )
-    return True
+
+    if configured != "full":
+        return True
+
+    # The trace leg needs its own check, and needs one badly: the Langfuse SDK
+    # uploads on a background thread and logs *nothing* when the endpoint
+    # answers 401. Rejected traces and working traces look identical from the
+    # terminal, which is how the bundled credentials spent their whole life
+    # pointed at a host that refuses them without anyone noticing.
+    resolved = tel.langfuse_credentials(consent)
+    if resolved is None:
+        render.note(console, "full tracing is on but there are no Langfuse keys — traces go nowhere", kind="bad")
+        return False
+    public, secret, host = resolved
+    ok, detail = tsetup.langfuse_verify(public, secret, host)
+    if ok:
+        render.note(console, f"traces accepted by [loom.warp]{host}[/loom.warp]", kind="good")
+        return True
+    render.note(console, f"traces rejected by {host} — {detail}", kind="bad")
+    render.note(
+        console,
+        "the key pair and the host are one credential: Loom's bundled token is only valid at its "
+        "ingest proxy, and your own Langfuse keys are only valid at your own host "
+        "([loom.warp]/privacy setup[/loom.warp] to re-enter them)",
+        kind="tip",
+    )
+    return False
 
 
 def doctor_row(root: str | Path = ".") -> tuple[bool | None, str, str]:

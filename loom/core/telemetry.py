@@ -141,6 +141,9 @@ DEFAULT_SENTRY_DSN = "https://8d27208a70141fd3f278c6b50280322b@o4511155358334976
 DEFAULT_LANGFUSE_PUBLIC_KEY = "pk-lf-loom-ingest"
 DEFAULT_LANGFUSE_SECRET_KEY = _BUILT_CLIENT_TOKEN
 DEFAULT_LANGFUSE_HOST = "https://loom-telemetry.telemetry-proxy.workers.dev"
+# Where a *user's own* key pair goes when they didn't name a host. Never a
+# fallback for the bundled credentials — see `langfuse_credentials`.
+LANGFUSE_CLOUD_HOST = "https://cloud.langfuse.com"
 
 
 def _baked_credential(key: str, consent: "Consent | None" = None) -> bool:
@@ -187,6 +190,22 @@ def store_path() -> Path:
     return cfg.USER_CONFIG_DIR / "telemetry.json"
 
 
+def _meant_host(stored: str, public_key: str, secret_key: str) -> str:
+    """Migration for consent records written before the host was resolved as
+    part of a credential set.
+
+    Every such record stored ``https://cloud.langfuse.com``, whether or not
+    the user had ever seen a Langfuse prompt — so on its own it says nothing.
+    Keep it only when the record also carries the user's own key pair, which
+    is the one case where they can have chosen it; otherwise it is a default
+    masquerading as a decision, and it has to read as unset so the bundled
+    credentials reach the proxy they belong to.
+    """
+    if stored and stored.rstrip("/") == LANGFUSE_CLOUD_HOST and not (public_key and secret_key):
+        return ""
+    return stored
+
+
 @dataclass
 class Consent:
     """The whole of what the user has agreed to, as stored on disk."""
@@ -199,7 +218,10 @@ class Consent:
     sentry_dsn: str = ""
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
-    langfuse_host: str = "https://cloud.langfuse.com"
+    # Empty means "the user never named one", which is not the same as
+    # "cloud.langfuse.com". Storing the latter for everybody is what silently
+    # redirected the bundled proxy credentials at the public API.
+    langfuse_host: str = ""
     # project key -> {"share": bool, "at": epoch seconds}
     projects: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -231,7 +253,14 @@ class Consent:
             sentry_dsn=str(sentry.get("dsn") or ""),
             langfuse_public_key=str(langfuse.get("public_key") or ""),
             langfuse_secret_key=str(langfuse.get("secret_key") or ""),
-            langfuse_host=str(langfuse.get("host") or "https://cloud.langfuse.com"),
+            # A record written by an older build stored the cloud host for
+            # everyone. Read it as "unset" unless the user also has their own
+            # keys, which is the only case where they can have meant it.
+            langfuse_host=_meant_host(
+                str(langfuse.get("host") or ""),
+                str(langfuse.get("public_key") or ""),
+                str(langfuse.get("secret_key") or ""),
+            ),
             projects=dict(data.get("projects") or {}),
         )
 
@@ -564,22 +593,65 @@ def _init_sentry(consent: Consent) -> bool:
     return True
 
 
+def langfuse_credentials(consent: Consent) -> tuple[str, str, str] | None:
+    """``(public_key, secret_key, host)`` as a *set*, or None if full tracing
+    has nothing to send with.
+
+    Resolved as a unit, never field by field. A key pair and a host are one
+    credential: the bundled ``pk-lf-loom-ingest`` + ``lct_…`` pair only
+    authenticates against Loom's ingest proxy, and a user's own Langfuse pair
+    only authenticates against their own Langfuse.
+
+    Picking each field independently produced the one combination that cannot
+    work. `Consent.langfuse_host` was *always* populated — it defaulted to
+    ``https://cloud.langfuse.com`` for everyone, including users who supplied
+    no keys at all — so it shadowed the bundled proxy host while the keys
+    still fell through to the bundled pair. Every full-tracing user was
+    therefore sending the proxy's write token straight to cloud.langfuse.com,
+    which rejected it, and the traces were dropped in a background thread
+    where nobody saw the 401:
+
+        Startup: Langfuse tracer successfully initialized
+        | public_key=pk-lf-loom-ingest | base_url=https://cloud.langfuse.com
+
+    ``LANGFUSE_HOST`` from the environment still overrides in every branch —
+    that is how the proxy itself gets pointed at a local server under test.
+    """
+    env_public = os.environ.get("LANGFUSE_PUBLIC_KEY") or ""
+    env_secret = os.environ.get("LANGFUSE_SECRET_KEY") or ""
+    env_host = os.environ.get("LANGFUSE_HOST") or ""
+
+    # A complete pair from the environment, then from the user's own record.
+    # Both are "their Langfuse", so both take the host they configured.
+    for public, secret in ((env_public, env_secret),
+                           (consent.langfuse_public_key, consent.langfuse_secret_key)):
+        if public and secret:
+            return public, secret, env_host or consent.langfuse_host or LANGFUSE_CLOUD_HOST
+
+    # The bundle. Its token is only valid at the proxy, so the stored host —
+    # which the user never chose — must not be allowed to redirect it.
+    if DEFAULT_LANGFUSE_PUBLIC_KEY and DEFAULT_LANGFUSE_SECRET_KEY:
+        return DEFAULT_LANGFUSE_PUBLIC_KEY, DEFAULT_LANGFUSE_SECRET_KEY, env_host or DEFAULT_LANGFUSE_HOST
+    return None
+
+
 def _init_langfuse(consent: Consent) -> Any:
     """Build the Langfuse LangChain callback handler, or None."""
     global _langfuse_handler, _langfuse_failed
     if _langfuse_handler is not None or _langfuse_failed:
         return _langfuse_handler
-    public = os.environ.get("LANGFUSE_PUBLIC_KEY") or consent.langfuse_public_key or DEFAULT_LANGFUSE_PUBLIC_KEY
-    secret = os.environ.get("LANGFUSE_SECRET_KEY") or consent.langfuse_secret_key or DEFAULT_LANGFUSE_SECRET_KEY
-    host = os.environ.get("LANGFUSE_HOST") or consent.langfuse_host or DEFAULT_LANGFUSE_HOST
-    if not (public and secret):
+    resolved = langfuse_credentials(consent)
+    if resolved is None:
         _langfuse_failed = True
         return None
-    # The SDK reads these from the environment; setting them here keeps the
-    # keys out of every call site and matches how Settings.apply_env works.
-    os.environ.setdefault("LANGFUSE_PUBLIC_KEY", public)
-    os.environ.setdefault("LANGFUSE_SECRET_KEY", secret)
-    os.environ.setdefault("LANGFUSE_HOST", host)
+    public, secret, host = resolved
+    # Assigned, not `setdefault`-ed: the SDK reads these back out of the
+    # environment, so a stray half-configured `LANGFUSE_PUBLIC_KEY` left in a
+    # shell would otherwise survive and be paired with a secret from a
+    # different credential set — the same mixing this function exists to stop.
+    os.environ["LANGFUSE_PUBLIC_KEY"] = public
+    os.environ["LANGFUSE_SECRET_KEY"] = secret
+    os.environ["LANGFUSE_HOST"] = host
     try:
         from langfuse.langchain import CallbackHandler
     except ImportError:
