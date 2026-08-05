@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **"Yes, update me" ended in a traceback.** Accepting the update downloaded
+  and installed the new build correctly, then crashed on its way out with
+  `zlib.error: Error -3 while decompressing data: incorrect header check`. A
+  PyInstaller onefile binary reads its module archive out of `sys.executable`
+  on demand, so once `os.replace` had put a *different* build at that path,
+  the very next lazy import — `console.print` reaching for
+  `rich._unicode_data` — decompressed another build's bytes at this build's
+  offsets. The swap is now the last thing the process does: everything is
+  printed and computed before it, and nothing but the `exec`/`exit` syscall
+  runs after. Because the update had already landed, the next launch worked,
+  which made a broken teardown look like a broken install.
+- **The relaunch then failed to start the new build.** With the crash above
+  out of the way, `exec` handed the new binary the `_PYI_*` variables that
+  tell a onefile child where its bundle lives. The new bootloader trusted
+  them, skipped unpacking, and died on `Failed to load Python shared library
+  '…/_MEIxxxxxx/Python'`. Those variables are now stripped before the exec.
+- **Neither crash was reported, and neither was anything else.** Telemetry was
+  activated only in the REPL, so headless runs (`loom "task"`, `--loop`, CI)
+  reported nothing; and `capture_exception` had a single call site, so every
+  error Loom catches and prints — tool failures, stream failures, MCP servers
+  that never came up, `/compact` — was invisible. All of those now report,
+  tool errors report through the policy middleware (the one chokepoint every
+  tool call passes), and `/privacy test` sends a real event end to end so the
+  pipe can be checked rather than assumed. Because the update crash happened
+  before the REPL started, it also meant the privacy question was never
+  reached — so consent was never recorded and nothing *could* be sent.
+- **`ls`, `glob` and `grep` no longer ask for approval.** They mutate nothing
+  and cannot leave the sandbox root. The packaged defaults already allowed
+  them, but any `settings.json` setting `permissions.allow` replaces that list
+  wholesale, which silently re-gated them; they are now unconditionally
+  allowed, and an explicit `deny` still wins.
+
 ## 0.3.0 — 2026-08-03
 
 ### Added

@@ -183,25 +183,92 @@ def _download_to_tmp(result: UpdateCheck, running: Path, *, console) -> Path:
         raise
 
 
+def _swap_and_leave(tmp_path: Path, running: Path, argv: list[str] | None) -> None:
+    """Replace the running binary and immediately leave this process image.
+
+    **Nothing may run between the replace and the exec/exit** — not a print,
+    not an f-string that touches a lazily-imported module. A PyInstaller
+    onefile binary reads its module archive out of ``sys.executable`` on
+    demand, so the instant that path holds a *different* build, the next
+    not-yet-imported module decompresses another build's bytes at this
+    build's offsets:
+
+        zlib.error: Error -3 while decompressing data: incorrect header check
+
+    That is what turned "yes, update me" into a traceback. `os.replace`
+    succeeded, then the very next `console.print` lazily imported
+    `rich._unicode_data` and died inside PyInstaller's archive reader. The
+    update had already landed on disk, so the *next* launch was fine — which
+    made it look like a broken install rather than a broken teardown, and
+    (because the crash happens before the REPL ever starts) meant the user
+    never reached the privacy prompt either.
+
+    `os._exit` is deliberate: a normal return would run interpreter shutdown,
+    which can still import. The onefile temp dir is cleaned up by the
+    bootloader *parent* after this child goes away, so nothing leaks.
+
+    The exec also has to hand the new binary a *clean* environment. A onefile
+    launch is two processes: a bootloader that unpacks the bundle into
+    ``_MEIxxxxxx`` and a child that runs Python, told where its bundle lives
+    through ``_PYI_*`` variables. Those are inherited across ``execv``, so the
+    new build's bootloader reads them, concludes it has already been unpacked,
+    and loads nothing:
+
+        [PYI-…:ERROR] Failed to load Python shared library
+        '/var/folders/…/T/_MEIGYRAgo/Python': … (no such file)
+
+    Dropping them makes the exec'd binary bootstrap from scratch, which is
+    what it is — a different executable, with a different bundle.
+    """
+    # Everything computed up front so the only work left after the replace is
+    # the syscall itself — no string formatting, no dict building, nothing
+    # that could reach for a module this build hasn't loaded yet.
+    target = str(running)
+    exec_args = None if argv is None else [target, *argv]
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("_PYI_") and key != "_MEIPASS2"
+    }
+
+    os.replace(tmp_path, running)
+    if exec_args is None:
+        os._exit(0)
+    else:
+        os.execve(target, exec_args, env)
+
+
 def apply(result: UpdateCheck, *, console) -> None:
     """Download and swap in the new build. Takes effect on the *next*
-    launch — see `apply_and_relaunch` to resume the current session too."""
+    launch — see `apply_and_relaunch` to resume the current session too.
+
+    Does not return on POSIX: the swap is the last thing this process does.
+    """
     running = Path(sys.executable).resolve()
     tmp_path = _download_to_tmp(result, running, console=console)
     try:
         tmp_path.chmod(0o755)
         if platform.system() == "Windows":
+            # The running .exe is locked, so it is never replaced underneath
+            # us — printing after the swap is scheduled is safe here.
             _schedule_windows_swap(tmp_path, running)
             console.print(
                 "[green]update downloaded[/green] — it finishes applying a moment "
                 "after loom exits; run loom again shortly"
             )
-        else:
-            os.replace(tmp_path, running)
-            console.print("[green]updated[/green] — restart loom to run the new build")
+            return
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
+
+    # Said before the swap, because after it this process can no longer render
+    # anything it has not already imported. See _swap_and_leave.
+    console.print("[green]updated[/green] — restart loom to run the new build")
+    try:
+        console.file.flush()
+    except Exception:
+        pass
+    _swap_and_leave(tmp_path, running, None)
 
 
 def apply_and_relaunch(result: UpdateCheck, *, console, argv: list[str]) -> None:
@@ -222,13 +289,22 @@ def apply_and_relaunch(result: UpdateCheck, *, console, argv: list[str]) -> None
             proc = subprocess.Popen([str(tmp_path), *argv])
             code = proc.wait()
             raise SystemExit(code)
-        else:
-            os.replace(tmp_path, running)
-            console.print("[cyan]relaunching on the new build…[/cyan]")
-            os.execv(str(running), [str(running), *argv])
     except SystemExit:
         raise
     except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    console.print("[cyan]relaunching on the new build…[/cyan]")
+    try:
+        console.file.flush()
+    except Exception:
+        pass
+    try:
+        _swap_and_leave(tmp_path, running, argv)
+    except BaseException:
+        # Only reachable if the replace itself failed; once it succeeds this
+        # function does not come back.
         tmp_path.unlink(missing_ok=True)
         raise
 
