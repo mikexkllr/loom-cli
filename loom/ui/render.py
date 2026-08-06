@@ -22,6 +22,7 @@ from rich.cells import cell_len
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
@@ -271,6 +272,28 @@ class Thread:
 
 _WS = re.compile(r"(\s+)")
 
+# Streaming markdown-lite. Real CommonMark rendering (rich.markdown.Markdown)
+# treats every un-fenced newline as a "soft break" and joins it into the
+# surrounding paragraph — correct per spec, but it strips the indentation off
+# any code the model streams without fencing, which is exactly what Gutter
+# exists to preserve. So this stays line-based: recognise structure at the
+# start of a line and inline spans within it, but never join two lines the
+# model actually sent.
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_BULLET_RE = re.compile(r"^([-*+])\s+(.*)$")
+_ORDERED_RE = re.compile(r"^(\d{1,9}[.)])\s+(.*)$")
+# Longest-match-first, so a lone "*" never wins over "**" starting at the same
+# spot. No underscore markers (_x_, __x__): snake_case and dunder identifiers
+# (`foo_bar`, `__init__`) are everywhere in a coding assistant's output, and
+# treating every underscore as a possible emphasis toggle would mangle them.
+_INLINE_MARKERS = ("**", "~~", "`", "*")
+_MARKER_KIND = {"**": "bold", "~~": "strike", "*": "italic"}
+# A span still open after this many words is abandoned rather than styling
+# the rest of the line — protects a lone "*args" or "**kwargs" mentioned in
+# prose (no closing marker is ever coming) from bolding everything after it.
+_SPAN_MAX_AGE = 12
+
 
 class Gutter:
     """Streams text into a rail-prefixed column, wrapping at word boundaries.
@@ -278,17 +301,33 @@ class Gutter:
     Tokens arrive a fragment at a time, so this holds back only the trailing
     partial word — enough to never split a word across a wrap, little enough
     that output still appears as it is generated rather than line by line.
+
+    A light markdown pass runs alongside: headings, list markers, fenced
+    code, and inline emphasis/code spans all render live, word by word, as
+    they arrive — see the module-level note above for why this is line-based
+    rather than a real CommonMark parse.
     """
 
     def __init__(self, console: Console, prefix: Text, *, style: str | None = None) -> None:
         self.console = console
         self.prefix = prefix
         self.style = style
-        self.width = max(20, console.width - cell_len(prefix.plain) - 1)
         self._col = 0
         self._pending = ""
         self._fresh = True  # nothing written on the current line yet
         self._wrapped = False  # ...and we got here by wrapping, not a newline
+        self._at_line_start = True
+        self._in_fence = False
+        self._in_code_span = False
+        self._heading_active = False
+        self._active: dict[str, int] = {}  # span kind -> word index it opened at
+        self._word_index = 0
+
+    @property
+    def width(self) -> int:
+        """Recomputed on every access rather than cached, so a live terminal
+        resize takes effect on the next line instead of the next block."""
+        return max(20, self.console.width - cell_len(self.prefix.plain) - 1)
 
     def write(self, text: str) -> None:
         buf = self._pending + text
@@ -311,6 +350,7 @@ class Gutter:
         self._col = 0
         self._fresh = True
         self._wrapped = False
+        self._reset_line_state()
 
     def blank(self) -> None:
         """An empty rail line — the breathing room between blocks."""
@@ -321,6 +361,7 @@ class Gutter:
         self._col = 0
         self._fresh = True
         self._wrapped = False
+        self._reset_line_state()
 
     def block(self, renderable: RenderableType) -> None:
         """Render a full Rich renderable (markdown, diff, table) inside the rail."""
@@ -348,15 +389,44 @@ class Gutter:
 
     # -- internals
     def _raw(self, chunk: str) -> None:
+        hide_break = False  # the previous line was a fence delimiter, printed nowhere
         for i, line in enumerate(chunk.split("\n")):
             if i:
-                self.console.print()
+                if not hide_break:
+                    self.console.print()
                 self._col = 0
                 self._fresh = True
                 self._wrapped = False  # a real newline — keep this line's indent
-            self._line(line)
+                self._reset_line_state()
+            hide_break = self._line(line)
 
-    def _line(self, line: str) -> None:
+    def _reset_line_state(self) -> None:
+        """A genuine newline starts markdown state fresh — spans never cross a
+        hard line break the model sent, which both matches how emphasis is
+        meant to work and bounds how far a stray marker can bleed. An open
+        fence is the one exception: it spans lines by definition, until its
+        closing marker arrives."""
+        self._at_line_start = True
+        self._heading_active = False
+        self._in_code_span = False
+        self._active = {}
+        self._word_index = 0
+
+    def _line(self, line: str) -> bool:
+        """Prints one source-line fragment. Returns True if the fragment was
+        a fence delimiter that renders nowhere — the caller then knows not to
+        print a blank row for the line break that followed it."""
+        # An empty fragment carries no content to make a start-of-line call
+        # on — it's an artifact of splitting on "\n", not a real line. Tokens
+        # commonly arrive as a lone newline character, which produces exactly
+        # this empty fragment; consuming the flag here would mean the next
+        # *real* line, seconds later, never gets checked for a fence/heading.
+        if self._at_line_start and line:
+            self._at_line_start = False
+            consumed = self._consume_line_start(line)
+            if consumed is None:
+                return True
+            line = consumed
         for word in _WS.split(line):
             if not word:
                 continue
@@ -366,7 +436,15 @@ class Gutter:
             # and eating it reflows every code block the model streams.
             if blank and self._fresh and self._wrapped:
                 continue
-            length = cell_len(word)
+            if self._in_fence:
+                text = Text(word, style=self.console.get_style("loom.tool"))
+            elif blank or self._heading_active:
+                text = Text(word, style=self._base_style())
+            else:
+                self._word_index += 1
+                self._expire_stale_spans()
+                text = self._styled_word(word)
+            length = cell_len(text.plain)
             if not blank and self._col and self._col + length > self.width:
                 self.console.print()
                 self._col = 0
@@ -375,8 +453,109 @@ class Gutter:
             if self._fresh:
                 self.console.print(self.prefix, end="")
                 self._fresh = False
-            self.console.print(word, end="", markup=False, highlight=False, style=self.style, soft_wrap=True)
+            self.console.print(text, end="", soft_wrap=True)
             self._col += length
+        return False
+
+    def _consume_line_start(self, line: str) -> str | None:
+        """Recognise a block-level marker at the start of a genuine source
+        line and strip it. Returns the remaining text to stream normally, or
+        ``None`` if the whole line was consumed (a fence delimiter)."""
+        if _FENCE_RE.match(line):
+            self._in_fence = not self._in_fence
+            self._heading_active = False
+            self._in_code_span = False
+            self._active = {}
+            return None
+        if self._in_fence:
+            return line
+        heading = _HEADING_RE.match(line)
+        if heading:
+            self._heading_active = True
+            return heading.group(2)
+        marker = _BULLET_RE.match(line) or _ORDERED_RE.match(line)
+        if marker:
+            self._emit_bullet(marker.group(1))
+            return marker.group(2)
+        return line
+
+    def _emit_bullet(self, marker: str) -> None:
+        g = ink(self.console)
+        label = f"{g.bullet} " if marker in ("-", "*", "+") else f"{marker} "
+        if self._fresh:
+            self.console.print(self.prefix, end="")
+            self._fresh = False
+        text = Text(label, style=self.console.get_style("loom.muted"))
+        self.console.print(text, end="", soft_wrap=True)
+        self._col += cell_len(label)
+
+    def _base_style(self) -> Style:
+        if self._heading_active:
+            return self.console.get_style("loom.bright") + Style(bold=True)
+        if self.style:
+            return self.console.get_style(self.style)
+        return Style()
+
+    def _expire_stale_spans(self) -> None:
+        stale = [kind for kind, opened in self._active.items() if self._word_index - opened > _SPAN_MAX_AGE]
+        for kind in stale:
+            del self._active[kind]
+
+    def _current_style(self) -> Style:
+        style = self._base_style()
+        if "bold" in self._active:
+            style += Style(bold=True)
+        if "italic" in self._active:
+            style += Style(italic=True)
+        if "strike" in self._active:
+            style += Style(strike=True)
+        return style
+
+    def _styled_word(self, word: str) -> Text:
+        """Strip inline markers (bold/italic/strike/code) as they're found,
+        styling the text between them live — without waiting for whatever
+        later word eventually closes the span."""
+        out = Text()
+        i, n = 0, len(word)
+        while i < n:
+            if self._in_code_span:
+                j = word.find("`", i)
+                code_style = self.console.get_style("loom.tool")
+                if j == -1:
+                    out.append(word[i:], style=code_style)
+                    return out
+                if j > i:
+                    out.append(word[i:j], style=code_style)
+                self._in_code_span = False
+                i = j + 1
+                continue
+            marker, j = self._find_marker(word, i)
+            if marker is None:
+                out.append(word[i:], style=self._current_style())
+                return out
+            if j > i:
+                out.append(word[i:j], style=self._current_style())
+            if marker == "`":
+                self._in_code_span = True
+            else:
+                kind = _MARKER_KIND[marker]
+                if kind in self._active:
+                    del self._active[kind]
+                else:
+                    self._active[kind] = self._word_index
+            i = j + len(marker)
+        return out
+
+    @staticmethod
+    def _find_marker(word: str, start: int) -> tuple[str | None, int]:
+        best: tuple[str, int] | None = None
+        for marker in _INLINE_MARKERS:
+            idx = word.find(marker, start)
+            if idx == -1:
+                continue
+            if best is None or idx < best[1] or (idx == best[1] and len(marker) > len(best[0])):
+                best = (marker, idx)
+        return best if best else (None, -1)
 
 
 @dataclass

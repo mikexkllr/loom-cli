@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 from rich.console import Console
+from rich.text import Text
 
 from loom.core.settings import UISettings
 from loom.ui import banner, render
@@ -272,6 +273,181 @@ def test_local_and_cloud_badges_are_distinct_and_coloured():
     cloud = render.where(console, False)
     assert local.plain != cloud.plain
     assert local.style == "loom.local" and cloud.style == "loom.cloud"
+
+
+# --------------------------------------------------------- streamed markdown
+
+
+def test_inline_bold_strips_markers_and_applies_style():
+    console = _console()
+    g = render.Gutter(console, Text("│ "))
+    text = g._styled_word("**bold**")
+    assert text.plain == "bold"
+    assert text.spans[0].style.bold is True
+
+
+def test_inline_italic_strips_single_asterisk():
+    console = _console()
+    g = render.Gutter(console, Text("│ "))
+    text = g._styled_word("*italic*")
+    assert text.plain == "italic"
+    assert text.spans[0].style.italic is True
+
+
+def test_inline_code_span_strips_backticks():
+    console = _console()
+    g = render.Gutter(console, Text("│ "))
+    text = g._styled_word("`code`")
+    assert text.plain == "code"
+
+
+def test_strikethrough_strips_double_tilde():
+    console = _console()
+    g = render.Gutter(console, Text("│ "))
+    text = g._styled_word("~~gone~~")
+    assert text.plain == "gone"
+    assert text.spans[0].style.strike is True
+
+
+def test_snake_case_and_dunder_identifiers_survive_unmangled():
+    """Underscore emphasis (_x_, __x__) is deliberately unsupported — a
+    coding assistant streams `foo_bar_baz` and `__init__` constantly, and
+    toggling italic/bold on every underscore would mangle both."""
+    console = _console()
+    weave = Weave(console)
+    thread = weave.thread("orchestrator")
+    out = _capture(
+        console,
+        lambda: (weave.open(thread), weave.text("call foo_bar_baz and __init__ please\n"), weave.end_block()),
+    )
+    assert "foo_bar_baz" in out
+    assert "__init__" in out
+
+
+def test_heading_marker_is_stripped():
+    console = _console()
+    weave = Weave(console)
+    thread = weave.thread("orchestrator")
+    out = _capture(
+        console,
+        lambda: (weave.open(thread), weave.text("## Section Title\nbody\n"), weave.end_block()),
+    )
+    assert "## " not in out
+    assert "Section Title" in out
+
+
+def test_bullet_marker_becomes_the_loom_bullet_glyph():
+    console = _console()
+    weave = Weave(console)
+    thread = weave.thread("orchestrator")
+    out = _capture(
+        console,
+        lambda: (weave.open(thread), weave.text("intro\n\n- one\n- two\n"), weave.end_block()),
+    )
+    assert "- one" not in out and "- two" not in out
+    body = "\n".join(line for line in out.splitlines() if "orchestrator" not in line)
+    assert body.count(render.ink(console).bullet) == 2
+
+
+def test_ordered_list_marker_is_kept_verbatim():
+    console = _console()
+    weave = Weave(console)
+    thread = weave.thread("orchestrator")
+    out = _capture(
+        console,
+        lambda: (weave.open(thread), weave.text("1. first\n2. second\n"), weave.end_block()),
+    )
+    assert "1. first" in out
+    assert "2. second" in out
+
+
+def test_fenced_code_hides_delimiters_and_keeps_indentation():
+    console = _console(width=60)
+    weave = Weave(console)
+    thread = weave.thread("orchestrator")
+    code = "before\n\n```python\ndef f(x):\n    return x + 1\n```\n\nafter\n"
+    out = _capture(console, lambda: (weave.open(thread), weave.text(code), weave.end_block()))
+    assert "```" not in out
+    rows = [line.split("│", 1)[-1][1:] for line in out.splitlines() if "│" in line]
+    rows = [r for r in rows if r.strip()]
+    assert any(r.startswith("def f(x):") for r in rows), rows
+    assert any(r.startswith("    return x + 1") for r in rows), rows
+
+
+def test_fence_delimiter_does_not_leave_a_stray_blank_line():
+    console = _console(width=60)
+    weave = Weave(console)
+    thread = weave.thread("orchestrator")
+    code = "before\n\n```\ncode\n```\n\nafter\n"
+    out = _capture(console, lambda: (weave.open(thread), weave.text(code), weave.end_block()))
+    body = [line for line in out.splitlines() if "orchestrator" not in line]
+    blanks = [i for i, line in enumerate(body) if not line.strip()]
+    # exactly the two paragraph gaps (before/code, code/after) — the hidden
+    # fence delimiters must not add extras of their own.
+    assert len(blanks) == 2, body
+
+
+def test_fence_detected_even_when_newlines_arrive_as_lone_tokens():
+    """Real streaming often delivers a lone "\\n" as its own token. A blank
+    line must not eat the start-of-line flag meant for the next real line —
+    that silently defeated fence/heading/list detection whenever one
+    followed a paragraph break."""
+    console = _console(width=60)
+    weave = Weave(console)
+    thread = weave.thread("orchestrator")
+    code = "before\n\n```\ncode\n```\n\n- item\n"
+
+    def draw():
+        weave.open(thread)
+        for ch in code:  # one token at a time, the way tokens really arrive
+            weave.text(ch)
+        weave.end_block()
+
+    out = _capture(console, draw)
+    assert "```" not in out
+    assert render.ink(console).bullet in out
+
+
+def test_span_ages_out_after_max_words():
+    """A lone opening marker with no closer anywhere (e.g. `*args` mentioned
+    in prose) must not stay open, or it bolds/italicises the rest of the
+    line — this caps the damage."""
+    console = _console()
+    g = render.Gutter(console, Text("│ "))
+    g._active["italic"] = 0
+    g._word_index = render._SPAN_MAX_AGE + 1
+    g._expire_stale_spans()
+    assert "italic" not in g._active
+
+
+def test_span_survives_within_max_age():
+    console = _console()
+    g = render.Gutter(console, Text("│ "))
+    g._active["italic"] = 0
+    g._word_index = render._SPAN_MAX_AGE
+    g._expire_stale_spans()
+    assert "italic" in g._active
+
+
+def test_wrap_width_follows_a_live_terminal_resize():
+    """Gutter.width used to be captured once per block; a resize mid-stream
+    had no effect until the next thread/tool-call switch opened a fresh one."""
+    console = _console(width=100)
+    weave = Weave(console)
+    thread = weave.thread("orchestrator")
+
+    def draw():
+        weave.open(thread)
+        weave.text("alpha beta gamma delta epsilon zeta eta ")
+        console.width = 20
+        weave.text("theta iota kappa lambda mu nu xi omicron")
+        weave.end_block()
+
+    out = _capture(console, draw)
+    body = [line for line in out.splitlines() if "│" in line]
+    # the words streamed after the resize must wrap to the new, narrower
+    # width rather than the 100-wide line the block started with.
+    assert max(len(line) for line in body[1:]) < len(body[0])
 
 
 # --------------------------------------------------------------- status line
