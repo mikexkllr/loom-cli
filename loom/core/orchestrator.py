@@ -436,9 +436,16 @@ def _orchestrator_filesystem_middleware(
     constructor requires it — and :class:`ToolExclusionMiddleware` removes it at
     the last mile.
     """
+    # Returning None here does not mean "no filesystem middleware" — it means
+    # deepagents installs its *default* one, with the full toolset the
+    # allowlist exists to withhold. A silent None is the tool quarantine
+    # quietly switching itself off, so both drift guards report.
+    from loom.core import telemetry
+
     try:
         from deepagents.middleware.filesystem import FilesystemMiddleware
-    except Exception:  # pragma: no cover - deepagents API drift
+    except Exception as exc:  # pragma: no cover - deepagents API drift
+        telemetry.report("orchestrator.fs_middleware.import", exc)
         return None
     allowed = _orchestrator_fs_tools(airgap=airgap) | {"read_file"}
     window = config.context_window_for(model_string, default=200_000)
@@ -451,7 +458,8 @@ def _orchestrator_filesystem_middleware(
             # window the whole design exists to protect.
             tool_token_limit_before_evict=max(2_000, min(20_000, window // 10)),
         )
-    except (TypeError, ValueError):  # pragma: no cover - deepagents API drift
+    except (TypeError, ValueError) as exc:  # pragma: no cover - deepagents API drift
+        telemetry.report("orchestrator.fs_middleware.build", exc)
         return None
 
 

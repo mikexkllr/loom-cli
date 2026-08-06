@@ -199,12 +199,13 @@ class PolicyMiddleware(AgentMiddleware):
         """
         name, args, _ = self._extract(request)
         if name in ("write_file", "edit_file", "delete") and args.get("path"):
-            try:
-                from loom.core import undo
+            from loom.core import telemetry, undo
 
+            # Best-effort, but not silent: a snapshot that fails here is a
+            # `/undo` that will not restore this file, and the user finds that
+            # out at the worst possible moment.
+            with telemetry.swallowing("undo.snapshot", tool=name):
                 undo.snapshot(self.cwd, args["path"])
-            except Exception:
-                pass  # snapshots are best-effort; never block the write
 
     # --- shared gate/post logic ---
     def _gate(self, request: Any) -> Any | None:

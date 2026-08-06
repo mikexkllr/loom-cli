@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -764,6 +765,30 @@ def capture_message(message: str, where: str = "", level: str = "error", **tags:
             sentry_sdk.capture_message(message, level=level)
     except Exception:
         pass
+
+
+@contextmanager
+def swallowing(where: str, **tags: Any):
+    """Run a best-effort block: never propagate, but never vanish either.
+
+    Loom swallows a great deal on purpose — a failed repo map, a failed undo
+    snapshot and a failed checkpointer all have to leave the session running.
+    The problem was never the swallowing, it was that `except Exception: pass`
+    makes "nothing went wrong" and "the guarantee you rely on is gone"
+    identical from the outside.
+
+    Use this where the failure silently removes something the user believes
+    they have. Leave a plain `except: pass` where the exception *is* the
+    control flow — a probe that answers "not installed", an `int()` that
+    answers "not a number" — because reporting those is just noise.
+
+    Never use it inside this module: a reporter that reports its own failures
+    recurses.
+    """
+    try:
+        yield
+    except Exception as exc:
+        report(where, exc, **tags)
 
 
 def status() -> dict[str, Any]:

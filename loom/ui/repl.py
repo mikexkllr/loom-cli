@@ -225,12 +225,13 @@ class Session:
                     parts.append(f"[Project memory — {mem.name}]\n{mem.read_text(encoding='utf-8')}")
                 except OSError:
                     pass
-            try:
+            # Losing the repo map costs the orchestrator its one cheap view of
+            # the project, which shows up later as worse routing rather than as
+            # an error — exactly the kind of degradation nobody traces back.
+            with telemetry.swallowing("repl.repo_map"):
                 tree = repomap.repo_map(self.cwd)
                 if tree:
                     parts.append(f"[Repo map]\n{tree}")
-            except Exception:
-                pass
             self._memory_sent = True
         if self.pending_context:
             parts.append(f"[Summary of the compacted earlier conversation]\n{self.pending_context}")
@@ -241,13 +242,13 @@ class Session:
     def transcript(self) -> list:
         """Best-effort transcript: from the graph state if persistent, else local."""
         if self.bundle is not None and self.bundle.persistent:
-            try:
+            # Falling back to the local list silently loses everything the
+            # graph persisted, which is what /compact and /resume read.
+            with telemetry.swallowing("repl.transcript"):
                 state = self.bundle.agent.get_state({"configurable": {"thread_id": self.thread_id}})
                 msgs = (state.values or {}).get("messages") or []
                 if msgs:
                     return list(msgs)
-            except Exception:
-                pass
         return list(self.messages)
 
     # ----- a single turn -----

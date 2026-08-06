@@ -440,3 +440,36 @@ def test_no_langfuse_credentials_at_all():
         assert tel.langfuse_credentials(tel.Consent(mode="full", decided=True)) is None
     finally:
         monkeypatch.undo()
+
+
+def test_swallowing_reports_but_never_propagates(monkeypatch):
+    """The distinction the codebase needed: a block stays best-effort, but
+    stops being indistinguishable from one that succeeded."""
+    seen = []
+    monkeypatch.setattr(tel, "report", lambda where, exc, **tags: seen.append((where, exc, tags)))
+
+    with tel.swallowing("undo.snapshot", tool="write_file"):
+        raise OSError("disk full")
+
+    assert len(seen) == 1
+    where, exc, tags = seen[0]
+    assert where == "undo.snapshot" and isinstance(exc, OSError) and tags == {"tool": "write_file"}
+
+
+def test_swallowing_is_transparent_when_nothing_fails(monkeypatch):
+    seen = []
+    monkeypatch.setattr(tel, "report", lambda *a, **k: seen.append(a))
+    ran = []
+    with tel.swallowing("x"):
+        ran.append(True)
+    assert ran == [True] and seen == []
+
+
+def test_swallowing_lets_control_flow_through(monkeypatch):
+    """KeyboardInterrupt and SystemExit are not exceptions to swallow — ctrl-c
+    inside a best-effort block must still stop the program."""
+    monkeypatch.setattr(tel, "report", lambda *a, **k: None)
+    for control in (KeyboardInterrupt, SystemExit):
+        with pytest.raises(control):
+            with tel.swallowing("x"):
+                raise control()

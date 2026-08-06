@@ -193,6 +193,7 @@ such site reports on the way past via `telemetry.report(where, exc)`. The
 
 | `where` | Site |
 | --- | --- |
+| `cli:<command>` | the top-level net — every subcommand, e.g. `cli:doctor`, `cli:models:pull` |
 | `turn`, `/<command>` | REPL turn and slash-command crashes (`_report_crash`) |
 | `turn.stream`, `turn.invoke` | streaming failed; the synchronous retry failed too |
 | `bundle.build`, `bundle.dependency` | the orchestrator could not be constructed |
@@ -208,6 +209,34 @@ never the message body, which routinely quotes a path or a line of the user's
 file — and reports once per `(tool, error class)` per process. A coding agent
 guesses paths and greps for things that aren't there by design; without that
 cap the real failures drown.
+
+`loom.cli.main:run` is the process entry point (`[project.scripts]` and
+`packaging/entry_point.py` both point at it, not at `app`). Click only handles
+its own exceptions, so before it existed anything escaping a subcommand printed
+a raw traceback and reached no reporter — and telemetry was never activated for
+those commands at all. The label is matched against the app's own registered
+names, so a prompt can never become a tag; the lookup is itself wrapped,
+because code that runs inside a crash handler must not be able to lose the
+crash.
+
+### Swallowed on purpose vs. silently broken
+
+`except Exception: pass` makes "nothing went wrong" and "the guarantee you rely
+on is gone" look identical. `telemetry.swallowing(where)` keeps the block
+best-effort and reports anyway:
+
+```python
+with telemetry.swallowing("undo.snapshot", tool=name):
+    undo.snapshot(self.cwd, args["path"])
+```
+
+Use it where the failure quietly removes something the user believes they have
+— an undo snapshot, the SQLite checkpointer behind `/resume`, the session
+index, the repo map, a tool-allowlisted `FilesystemMiddleware` whose absence
+hands the agent deepagents' unrestricted default. Leave a plain `pass` where
+the exception *is* the control flow: a probe answering "not installed", an
+`int()` answering "not a number". Never use it inside `telemetry.py` — a
+reporter that reports its own failures recurses.
 
 Two things had to be true before any of this reached Sentry, and neither was:
 

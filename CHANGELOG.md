@@ -30,6 +30,22 @@
   pipe can be checked rather than assumed. Because the update crash happened
   before the REPL started, it also meant the privacy question was never
   reached — so consent was never recorded and nothing *could* be sent.
+- **Every command outside the REPL had no crash handler at all.** Click only
+  handles its own exceptions, so anything unexpected escaping `loom doctor`,
+  `loom setup`, `loom models pull` or any other subcommand printed a raw
+  traceback, exited 0-ish, and reached no reporter — telemetry was never even
+  activated for those commands. `loom.cli.main:run` is now the process entry
+  point: one net, every command, tagged `cli:doctor` / `cli:models:pull` from
+  the app's own registered names so a prompt can never become a tag. Ctrl-C
+  exits 130 and `typer.Exit` passes through untouched; neither is a crash.
+- **Silent swallows that hid a lost guarantee now report.** `except Exception:
+  pass` makes "nothing went wrong" indistinguishable from "the thing you rely
+  on is gone". `telemetry.swallowing(where)` keeps those blocks best-effort
+  and reports anyway, and is now used where the failure quietly withdraws a
+  promise: `/undo` snapshots, the SQLite checkpointer behind `/resume`, the
+  session index, the repo map, and the tool-allowlisted `FilesystemMiddleware`
+  whose absence silently hands the agent deepagents' unrestricted default.
+  Probes and coercions that fail as ordinary control flow stay silent.
 - **Full tracing sent every trace to a host that rejects it.** The bundled
   `pk-lf-loom-ingest` + `lct_…` pair only authenticates against Loom's ingest
   proxy, but `Consent.langfuse_host` defaulted to `https://cloud.langfuse.com`

@@ -92,7 +92,7 @@ build = [
 ]
 
 [project.scripts]
-loom = "loom.cli.main:app"
+loom = "loom.cli.main:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["loom"]

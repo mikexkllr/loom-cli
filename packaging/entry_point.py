@@ -4,7 +4,7 @@ Frozen builds have no console-script shim (the one `[project.scripts]`
 generates), so this just imports and runs the Typer app directly.
 """
 
-from loom.cli.main import app
+from loom.cli.main import run
 
 if __name__ == "__main__":
-    app()
+    run()

@@ -165,9 +165,15 @@ def _filesystem_middleware(
     constructor rejects one without it; the ToolExclusionMiddleware alongside
     strips it again when the role really is meant to have none.
     """
+    # As in the orchestrator: None hands this subagent deepagents' default
+    # filesystem middleware — every tool, including the ones this role's
+    # allowlist deliberately withholds. Worth hearing about.
+    from loom.core import telemetry
+
     try:
         from deepagents.middleware.filesystem import FilesystemMiddleware
-    except Exception:  # pragma: no cover - deepagents API drift
+    except Exception as exc:  # pragma: no cover - deepagents API drift
+        telemetry.report("subagent.fs_middleware.import", exc)
         return None
 
     is_local = config.is_local(model_string)
@@ -183,7 +189,8 @@ def _filesystem_middleware(
             grep_max_count=200 if is_local else 1000,
             tool_token_limit_before_evict=max(2_000, window // 8) if is_local else 20_000,
         )
-    except (TypeError, ValueError):  # pragma: no cover - deepagents API drift
+    except (TypeError, ValueError) as exc:  # pragma: no cover - deepagents API drift
+        telemetry.report("subagent.fs_middleware.build", exc)
         return None
 
 

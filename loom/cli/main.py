@@ -888,5 +888,94 @@ def setup(
         raise typer.Exit(1)
 
 
+def _crashed_command() -> str:
+    """The subcommand being run, as a fixed label for the crash tag.
+
+    Matched against the app's own registered names — both flat commands and
+    the `add_typer` groups — so that a prompt, which is the user's own words,
+    can never become a Sentry tag. Anything unrecognised is the implicit task
+    path; no argument at all is the REPL.
+
+    Group subcommands are included (`config:set`, `models:pull`) because
+    "something in `models` broke" is rarely specific enough to act on.
+    """
+    try:
+        return _command_label()
+    except Exception:
+        # This runs *inside* the crash handler. A label is a nicety; losing
+        # the exception it was meant to describe is not.
+        return "unknown"
+
+
+def _command_label() -> str:
+    import sys as _sys
+
+    flat = {command.name for command in app.registered_commands if command.name}
+    groups: dict[str, set[str]] = {}
+    for group in app.registered_groups:
+        instance = getattr(group, "typer_instance", None)
+        name = group.name or (instance.info.name if instance is not None else None)
+        if not name:
+            continue
+        groups[name] = {
+            command.name
+            for command in (instance.registered_commands if instance is not None else [])
+            if command.name
+        }
+
+    # Scanned rather than read positionally: a separated option value
+    # (`--root .`) occupies a positional slot without being one, which is the
+    # same trap `main()` already guards against for prompts.
+    words = [arg for arg in _sys.argv[1:] if not arg.startswith("-")]
+    for index, word in enumerate(words):
+        if word in groups:
+            tail = words[index + 1] if index + 1 < len(words) else ""
+            return f"{word}:{tail if tail in groups[word] else '?'}"
+        if word in flat:
+            return word
+    return "task" if words else "repl"
+
+
+def run() -> None:
+    """Process entry point: the one place every command's crash is caught.
+
+    Click only handles its own exceptions, so anything else escaping a
+    subcommand printed a raw traceback and reached no reporter — `loom
+    doctor`, `loom setup`, `loom models pull` and every other command had no
+    handler at all, and telemetry was never even activated for them. The REPL
+    loop and the headless task path each had their own net; nothing else did.
+
+    Telemetry is activated here rather than at startup so that inspection
+    commands stay fast and offline: a crash is the only moment the reporter is
+    needed, and `activate` is what initialises the SDK.
+    """
+    try:
+        app()
+    except (KeyboardInterrupt, EOFError):
+        console.print("\n[loom.muted]interrupted[/loom.muted]")
+        raise SystemExit(130)
+    except SystemExit:
+        raise  # typer.Exit and friends — a chosen exit code, not a crash
+    except Exception as exc:
+        from loom.core import telemetry
+        from loom.core import update as update_mod
+
+        where = f"cli:{_crashed_command()}"
+        try:
+            telemetry.activate(".")
+            telemetry.report(where, exc)
+            telemetry.flush()
+        except Exception:
+            pass  # a failure to report must not replace the error being reported
+
+        render.note(console, f"{where} crashed — {type(exc).__name__}: {exc}", kind="bad")
+        if telemetry.current_mode() == "none":
+            console.print(
+                f"  [loom.muted]report it at https://github.com/{update_mod.REPO}/issues "
+                "(or /privacy to send crashes automatically)[/loom.muted]"
+            )
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
-    app()
+    run()

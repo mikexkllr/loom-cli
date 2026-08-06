@@ -386,3 +386,112 @@ def test_guard_covers_every_registered_command(monkeypatch):
     for name in names:
         assert runner.invoke(app, ["--root", ".", name]).exit_code == 2, name
     assert ran == []
+
+
+# --------------------------------------------------- the top-level crash net
+
+
+def test_crash_label_never_leaks_the_users_prompt(monkeypatch):
+    """The tag is matched against the app's own command names, so a task —
+    which is the user's own words — can only ever be labelled "task"."""
+    from loom.cli import main as cli
+
+    cases = {
+        ("loom",): "repl",
+        ("loom", "refactor the auth module"): "task",
+        ("loom", "--plan", "add pagination to /users"): "task",
+        ("loom", "doctor"): "doctor",
+        # A separated option value occupies a positional slot without being
+        # one — the same trap `main()` guards against for prompts.
+        ("loom", "--root", ".", "doctor"): "doctor",
+        ("loom", "--root", ".", "models", "pull"): "models:pull",
+        ("loom", "agents", "list"): "agents:list",
+        ("loom", "models", "nonsense"): "models:?",
+    }
+    for argv, expected in cases.items():
+        monkeypatch.setattr(sys, "argv", list(argv))
+        assert cli._crashed_command() == expected, argv
+
+
+def test_every_command_has_a_crash_net(monkeypatch, capsys):
+    """Click only handles its own exceptions. Before this, anything escaping a
+    subcommand printed a raw traceback and reached no reporter — `loom doctor`,
+    `loom setup` and `loom models pull` had no handler at all."""
+    from loom.cli import main as cli
+    from loom.core import telemetry
+
+    sent = []
+    monkeypatch.setattr(telemetry, "report", lambda where, exc, **t: sent.append((where, exc)))
+    monkeypatch.setattr(telemetry, "activate", lambda *a, **k: "errors")
+    monkeypatch.setattr(telemetry, "flush", lambda *a, **k: None)
+    monkeypatch.setattr(telemetry, "current_mode", lambda: "errors")
+
+    boom = RuntimeError("simulated bug")
+    real_app = cli.app
+
+    class _Exploding:
+        """Keeps the real app's command registry — only invocation fails, so
+        the label lookup runs against the same data it does in production."""
+
+        registered_commands = real_app.registered_commands
+        registered_groups = real_app.registered_groups
+
+        def __call__(self):
+            raise boom
+
+    monkeypatch.setattr(cli, "app", _Exploding())
+    monkeypatch.setattr(sys, "argv", ["loom", "doctor"])
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.run()
+    assert exit_info.value.code == 1
+    assert sent == [("cli:doctor", boom)]
+    assert "simulated bug" in capsys.readouterr().out
+
+
+def test_a_chosen_exit_code_is_not_a_crash(monkeypatch):
+    """typer.Exit is how commands report their own failure; reporting those as
+    crashes would bury the real ones."""
+    from loom.cli import main as cli
+    from loom.core import telemetry
+
+    sent = []
+    monkeypatch.setattr(telemetry, "report", lambda *a, **k: sent.append(a))
+
+    def clean_exit():
+        raise SystemExit(2)
+
+    monkeypatch.setattr(cli, "app", clean_exit)
+    monkeypatch.setattr(sys, "argv", ["loom", "doctor"])
+    with pytest.raises(SystemExit) as exit_info:
+        cli.run()
+    assert exit_info.value.code == 2
+    assert sent == []
+
+
+def test_ctrl_c_is_not_a_crash(monkeypatch):
+    from loom.cli import main as cli
+    from loom.core import telemetry
+
+    sent = []
+    monkeypatch.setattr(telemetry, "report", lambda *a, **k: sent.append(a))
+
+    def interrupted():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "app", interrupted)
+    monkeypatch.setattr(sys, "argv", ["loom"])
+    with pytest.raises(SystemExit) as exit_info:
+        cli.run()
+    assert exit_info.value.code == 130
+    assert sent == []
+
+
+def test_a_broken_label_lookup_still_reports_the_crash(monkeypatch):
+    """The label is computed inside the crash handler. If it throws, the
+    original exception must still get out — losing a bug to the code that was
+    supposed to describe it is the worst possible trade."""
+    from loom.cli import main as cli
+
+    monkeypatch.setattr(cli, "_command_label", lambda: 1 / 0)
+    assert cli._crashed_command() == "unknown"

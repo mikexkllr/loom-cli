@@ -37,8 +37,13 @@ def make_checkpointer(cwd: str | Path) -> tuple[Any, bool]:
 
         conn = sqlite3.connect(str(db_path(cwd)), check_same_thread=False)
         return SqliteSaver(conn), True
-    except Exception:
-        pass
+    except Exception as exc:
+        # The fallback still gives a working session, but it stops surviving
+        # restarts — `/resume` will find nothing. That is a promise quietly
+        # withdrawn, so it gets reported even though nothing breaks now.
+        from loom.core import telemetry
+
+        telemetry.report("sessions.checkpointer", exc)
     try:
         from langgraph.checkpoint.memory import InMemorySaver
 
@@ -62,7 +67,13 @@ def load_index(cwd: str | Path) -> list[dict]:
         return []
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
+        # An unreadable index reads as "no sessions", which is indistinguishable
+        # from a fresh project — and hides that the user's session history is
+        # still on disk but no longer listable.
+        from loom.core import telemetry
+
+        telemetry.report("sessions.index", exc)
         return []
 
 
