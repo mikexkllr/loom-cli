@@ -28,6 +28,21 @@ except Exception:  # pragma: no cover
         pass
 
 
+# LangGraph raises these to steer the graph — an `interrupt()` inside a tool, a
+# parent Command. They travel as exceptions but they are control flow, and
+# turning one into a tool result would silently break human-in-the-loop.
+try:
+    from langgraph.errors import GraphBubbleUp
+
+    _CONTROL_FLOW: tuple[type[BaseException], ...] = (GraphBubbleUp,)
+except Exception:  # pragma: no cover - langgraph API drift
+
+    class _NeverRaised(Exception):
+        pass
+
+    _CONTROL_FLOW = (_NeverRaised,)
+
+
 # Set by the REPL to prompt the user on "ask" decisions. Signature:
 #   confirm(tool_name: str, tool_input: dict, reason: str) -> bool | (bool, str)
 # The tuple form carries decline feedback ("what to do instead"), which is
@@ -129,9 +144,10 @@ class PolicyMiddleware(AgentMiddleware):
         self._snapshot(request)
         try:
             result = handler(request)
+        except _CONTROL_FLOW:
+            raise  # interrupts and parent commands are not tool failures
         except Exception as exc:
-            self._report(request, exc)
-            raise
+            return self._crashed(request, exc)
         self._report_result(request, result)
         self._post(request)
         return result
@@ -143,9 +159,10 @@ class PolicyMiddleware(AgentMiddleware):
         self._snapshot(request)
         try:
             result = await handler(request)
-        except Exception as exc:
-            self._report(request, exc)
+        except _CONTROL_FLOW:
             raise
+        except Exception as exc:
+            return self._crashed(request, exc)
         self._report_result(request, result)
         self._post(request)
         return result
@@ -158,27 +175,65 @@ class PolicyMiddleware(AgentMiddleware):
     # an error ToolMessage, so nothing propagates to the REPL's crash handler:
     # without these two hooks, "the grep tool blew up" was visible in the
     # transcript and nowhere else.
-    def _report(self, request: Any, exc: BaseException) -> None:
-        """An exception that escaped the tool itself — report it with its stack."""
+    def _crashed(self, request: Any, exc: BaseException) -> Any:
+        """A tool raised. Report it with its stack, then hand the model an error
+        result instead of letting it end the turn.
+
+        LangGraph's default `handle_tool_errors` only converts
+        `ToolInvocationError` — the "model passed a string where an int goes"
+        case. Every other exception is re-raised out of the tool node and takes
+        the whole turn with it, which is the opposite of what a ReAct loop
+        needs: one broken tool should cost one step, not the session.
+
+        The model is told the exception type and message so it can adapt. Sentry
+        gets the stack; it does not get the message, which routinely quotes a
+        path or a line of the user's file.
+        """
         name, _, _ = self._extract(request)
         try:
             from loom.core import telemetry
 
-            telemetry.report("tool", exc, tool=name or "?")
+            telemetry.report("tool.crash", exc, tool=name or "?", category="bug")
         except Exception:
             pass
+        return self._tool_message(
+            request,
+            f"[error] `{name or '?'}` failed with {type(exc).__name__}: {exc}. "
+            "This is a fault in the tool, not in how you called it — "
+            "try a different approach rather than repeating the same call.",
+            status="error",
+        )
 
     def _report_result(self, request: Any, result: Any) -> None:
-        """A tool that returned an error ToolMessage instead of raising.
+        """A tool that returned an error result instead of raising.
 
-        Only the tool name and the leading ``SomeError:`` class name are sent —
-        never the message body, which routinely quotes a path or a line of the
-        user's file and would break the promise the setup wizard makes.
+        Two very different things arrive here and are tagged apart, because
+        they need different people to act:
+
+        ``params``  the model called the tool wrongly — a string where an int
+                    belongs. Expected from smaller local models, and a signal
+                    about the tool's schema or the model's size, not a defect.
+        ``failed``  the tool ran and reported failure (file not found, command
+                    exited non-zero). Usually the model's aim, sometimes ours.
+
+        Only the tool name, the category and a leading exception class name are
+        sent — never the message body, which routinely quotes a path or a line
+        of the user's file and would break the promise the setup wizard makes.
         """
         if str(getattr(result, "status", "")) != "error":
             return
         name, _, _ = self._extract(request)
-        kind = (name or "?", _leading_error_type(getattr(result, "content", "")))
+        content = str(getattr(result, "content", "") or "")
+        params = content.startswith("Error invoking tool ")
+        category = "params" if params else "failed"
+        error_type = "ToolInvocationError" if params else _leading_error_type(content)
+
+        # Deduped per (tool, category, class) rather than per tool: a benign
+        # "file not found" must not claim the only slot and hide a different
+        # failure in the same tool for the rest of the session. Crashes are
+        # never deduped here — they go through `report` with a stack, and
+        # Sentry groups those itself.
+        kind = (name or "?", category, error_type)
         if kind in _reported_tool_errors:
             return
         _reported_tool_errors.add(kind)
@@ -186,7 +241,11 @@ class PolicyMiddleware(AgentMiddleware):
             from loom.core import telemetry
 
             telemetry.capture_message(
-                f"tool failed: {kind[0]}", where="tool.result", tool=kind[0], error_type=kind[1]
+                f"tool {category}: {kind[0]}",
+                where=f"tool.{category}",
+                tool=kind[0],
+                category=category,
+                error_type=error_type,
             )
         except Exception:
             pass
@@ -251,10 +310,20 @@ class PolicyMiddleware(AgentMiddleware):
         return None, {}, ""
 
     def _blocked(self, request: Any, message: str) -> Any:
+        """A policy decision: this call stops, the turn does not.
+
+        Status stays "success" deliberately. A denial is the system working as
+        designed — the model is told why and picks another route — and marking
+        it an error would both mislead the model and put every "no" the user
+        says into the crash-report stream.
+        """
+        return self._tool_message(request, f"[policy] {message}")
+
+    def _tool_message(self, request: Any, content: str, status: str = "success") -> Any:
         _, _, tool_call_id = self._extract(request)
         try:
             from langchain_core.messages import ToolMessage
 
-            return ToolMessage(content=f"[policy] {message}", tool_call_id=tool_call_id or "policy")
+            return ToolMessage(content=content, tool_call_id=tool_call_id or "policy", status=status)
         except Exception:
-            return f"[policy] {message}"
+            return content

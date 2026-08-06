@@ -174,11 +174,11 @@ def test_run_turn_survives_model_connection_error(tmp_path, monkeypatch, capsys)
     assert "model call failed" in out
 
 
-def test_tool_crash_is_reported(tmp_path, monkeypatch):
-    """A tool that raises is the most common error a user sees, and until the
-    policy wrapper caught it nothing reached the crash reporter: LangChain
-    turns tool exceptions into an error ToolMessage inside the tool node, so
-    they never reach the REPL's handler."""
+def test_a_tool_crash_costs_one_step_not_the_turn(tmp_path, monkeypatch):
+    """LangGraph's default `handle_tool_errors` converts only
+    `ToolInvocationError`; every other exception is re-raised out of the tool
+    node and takes the whole turn with it. One broken tool must cost one step.
+    """
     from loom.core import telemetry
 
     seen = []
@@ -191,9 +191,28 @@ def test_tool_crash_is_reported(tmp_path, monkeypatch):
     def handler(_req):
         raise boom
 
-    with pytest.raises(RuntimeError):
+    result = mw.wrap_tool_call(SimpleNamespace(call={"name": "grep", "args": {}, "id": "x"}), handler)
+    assert seen == [("tool.crash", boom, {"tool": "grep", "category": "bug"})]
+
+    # The model gets a usable error result instead of the run ending.
+    content = str(getattr(result, "content", result))
+    assert getattr(result, "status", None) == "error"
+    assert "RuntimeError" in content and "tool exploded" in content
+    assert not content.startswith("[policy]"), "a crash is not a policy decision"
+
+
+def test_control_flow_signals_are_not_tool_failures(tmp_path):
+    """An `interrupt()` inside a tool travels as an exception but is control
+    flow — converting one into a tool result would break human-in-the-loop."""
+    from langgraph.errors import GraphBubbleUp
+
+    mw = PolicyMiddleware(st.Settings(permissions=st.Permissions(default_mode="allow")), cwd=str(tmp_path))
+
+    def handler(_req):
+        raise GraphBubbleUp()
+
+    with pytest.raises(GraphBubbleUp):
         mw.wrap_tool_call(SimpleNamespace(call={"name": "grep", "args": {}, "id": "x"}), handler)
-    assert seen == [("tool", boom, {"tool": "grep"})]
 
 
 def test_tool_error_result_is_reported_without_its_body(tmp_path, monkeypatch):
@@ -214,8 +233,8 @@ def test_tool_error_result_is_reported_without_its_body(tmp_path, monkeypatch):
     mw.wrap_tool_call(SimpleNamespace(call={"name": "read_file", "args": {}, "id": "x"}), lambda _r: result)
 
     (msg, where, tags) = seen[0]
-    assert msg == "tool failed: read_file" and where == "tool.result"
-    assert tags == {"tool": "read_file", "error_type": "FileNotFoundError"}
+    assert msg == "tool failed: read_file" and where == "tool.failed"
+    assert tags == {"tool": "read_file", "category": "failed", "error_type": "FileNotFoundError"}
     assert "secret.py" not in str(seen)
 
     # A coding agent misses on paths constantly; the repeats carry no new

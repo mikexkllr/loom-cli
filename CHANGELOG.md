@@ -30,6 +30,22 @@
   pipe can be checked rather than assumed. Because the update crash happened
   before the REPL started, it also meant the privacy question was never
   reached — so consent was never recorded and nothing *could* be sent.
+- **A bug in one tool ended the whole turn.** LangGraph's default
+  `handle_tool_errors` converts only `ToolInvocationError` — the "model passed
+  a string where an int belongs" case — and re-raises everything else, so a
+  defect inside any tool propagated out of the tool node and killed the run.
+  Nothing in Loom or deepagents overrode that. The policy wrapper now returns
+  an error `ToolMessage` naming the exception type, so a broken tool costs one
+  step instead of the session, while the crash still reports with its stack.
+  `GraphBubbleUp` is re-raised untouched — interrupts travel as exceptions but
+  are control flow, and converting one would break human-in-the-loop.
+- **Failing tool calls are now classified.** `params` (the model called it
+  wrongly — routine from smaller local models), `failed` (the tool ran and
+  reported failure), `crash` (the tool raised), and policy denials, which stay
+  unreported because a refusal is the system working. They were previously one
+  undifferentiated `tool.result` with `error_type: unknown`, deduped per tool —
+  which meant a session's first benign "file not found" claimed the only slot
+  and silently hid every later, different failure in that tool.
 - **Every command outside the REPL had no crash handler at all.** Click only
   handles its own exceptions, so anything unexpected escaping `loom doctor`,
   `loom setup`, `loom models pull` or any other subcommand printed a raw

@@ -198,17 +198,48 @@ such site reports on the way past via `telemetry.report(where, exc)`. The
 | `turn.stream`, `turn.invoke` | streaming failed; the synchronous retry failed too |
 | `bundle.build`, `bundle.dependency` | the orchestrator could not be constructed |
 | `startup.*`, `task` | the headless `loom "task"` path |
-| `tool` | an exception escaped a tool (`PolicyMiddleware.wrap_tool_call`) |
-| `tool.result` | a tool returned an error `ToolMessage` instead of raising |
+| `tool.params` | the model called a tool wrongly (a string where an int belongs) |
+| `tool.failed` | the tool ran and reported failure (file not found, non-zero exit) |
+| `tool.crash` | the tool itself raised — a defect, reported with its stack |
 | `mcp.connect` | an MCP server failed to start and was skipped |
 | `compact` | `/compact` could not summarise the transcript |
 | `privacy.test` | the synthetic event `/privacy test` sends |
 
-`tool.result` carries only the tool name and the leading exception class name —
-never the message body, which routinely quotes a path or a line of the user's
-file — and reports once per `(tool, error class)` per process. A coding agent
-guesses paths and greps for things that aren't there by design; without that
-cap the real failures drown.
+### How a failing tool call is classified
+
+A tool call fails in one of four ways, and they need different people to act.
+All four cost one step and never the turn — `PolicyMiddleware.wrap_tool_call`
+is the single seam every call passes through, so that is where the split lives.
+
+| Kind | What happened | Model sees | Sentry |
+| --- | --- | --- | --- |
+| **params** | the model called it wrongly — a string where an int belongs | which argument, so it can retry | `tool.params` |
+| **policy** | a deny rule, a declined prompt, a blocking hook | `[policy] …` + the reason | *nothing* — a refusal is the system working |
+| **failed** | the tool ran and reported failure | the tool's own message | `tool.failed` |
+| **crash** | the tool raised | `[error] …` + the exception type | `tool.crash`, with a stack |
+
+**crash** is the one that was broken. LangGraph's default `handle_tool_errors`
+converts only `ToolInvocationError` — the params case — and re-raises
+everything else, so a defect in one tool propagated out of the tool node and
+ended the whole turn. The wrapper now returns an error `ToolMessage` instead,
+naming the exception type so the model tries a different route rather than
+repeating the call. `GraphBubbleUp` (interrupts, parent commands) is re-raised
+untouched: it travels as an exception but it is control flow, and converting
+one would silently break human-in-the-loop.
+
+**policy** deliberately keeps `status="success"`. A denial is not a fault, and
+marking it an error would both mislead the model and put every "no" the user
+says into the crash-report stream.
+
+Reports carry only the tool name, the category and a leading exception class
+name — never the message body, which routinely quotes a path or a line of the
+user's file. `params` and `failed` are deduped per `(tool, category, class)`
+per process: a coding agent guesses paths and greps for things that aren't
+there by design, and without a cap the real failures drown. The category and
+class are both in the key so that a session's first benign "file not found"
+cannot claim the only slot and hide every later, different failure in the same
+tool. Crashes are never deduped here — they go through `report` with a stack,
+and Sentry groups those itself.
 
 `loom.cli.main:run` is the process entry point (`[project.scripts]` and
 `packaging/entry_point.py` both point at it, not at `app`). Click only handles
