@@ -358,3 +358,26 @@ def test_the_cloud_role_filter_is_scoped_to_the_no_cloud_modes(monkeypatch, loca
     names = {s["name"] for s in build_all_subagents(config, local_only=local_only)}
     assert ("reviewer" in names) is expected
     assert "explorer" in names, "local roles are unaffected either way"
+
+
+def test_every_subagent_carries_the_tool_error_guard():
+    """Unlike the policy gate, this one has no "without settings" escape hatch.
+    A subagent that dies on a tool defect costs the orchestrator a whole
+    delegation and returns nothing usable."""
+    from loom.middleware.tool_guard import ToolErrorGuard
+
+    for settings, label in ((_settings(), "with settings"), (None, "bare config")):
+        config = settings.models if settings is not None else _config()
+        for sub in build_all_subagents(config, settings, "."):
+            assert any(isinstance(m, ToolErrorGuard) for m in sub["middleware"]), f"{sub['name']} ({label})"
+
+
+def test_the_guard_wraps_the_policy_gate_not_the_other_way_round():
+    """Outermost, so a crash inside the policy gate itself — a hook that blows
+    up, a confirm callback that raises — is caught too."""
+    from loom.middleware.tool_guard import ToolErrorGuard
+
+    settings = _settings()
+    for sub in build_all_subagents(settings.models, settings, "."):
+        kinds = [type(m).__name__ for m in sub["middleware"]]
+        assert kinds.index("ToolErrorGuard") < kinds.index("PolicyMiddleware"), sub["name"]

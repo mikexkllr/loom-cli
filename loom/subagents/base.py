@@ -117,6 +117,14 @@ class SubagentSpec:
 
         middleware: list[Any] = []
 
+        # First and unconditional — see the orchestrator's copy. A subagent
+        # that dies on a tool defect costs the orchestrator a whole delegation
+        # and returns nothing usable, so the guarantee matters more here, not
+        # less, and it must not depend on Settings being wired.
+        from loom.middleware.tool_guard import ToolErrorGuard
+
+        middleware.append(ToolErrorGuard())
+
         if backend is not None:
             fs = _filesystem_middleware(allowed, backend, model_string, config)
             if fs is not None:

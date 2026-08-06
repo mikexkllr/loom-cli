@@ -208,8 +208,14 @@ such site reports on the way past via `telemetry.report(where, exc)`. The
 ### How a failing tool call is classified
 
 A tool call fails in one of four ways, and they need different people to act.
-All four cost one step and never the turn — `PolicyMiddleware.wrap_tool_call`
-is the single seam every call passes through, so that is where the split lives.
+All four cost one step and never the turn. `ToolErrorGuard` owns that rule:
+it sits on the single seam every tool call passes through, is installed
+**unconditionally** and **outermost** on the orchestrator and every subagent,
+and is deliberately separate from `PolicyMiddleware`. Crash safety is not a
+permissions feature — the policy gate is skipped entirely on the bare-
+`LoomConfig` back-compat path, which is exactly where an unprotected tool crash
+would be hardest to explain. Outermost also means a crash *inside* the policy
+gate — a hook that blows up, a confirm callback that raises — is caught too.
 
 | Kind | What happened | Model sees | Sentry |
 | --- | --- | --- | --- |
@@ -221,7 +227,10 @@ is the single seam every call passes through, so that is where the split lives.
 **crash** is the one that was broken. LangGraph's default `handle_tool_errors`
 converts only `ToolInvocationError` — the params case — and re-raises
 everything else, so a defect in one tool propagated out of the tool node and
-ended the whole turn. The wrapper now returns an error `ToolMessage` instead,
+ended the whole turn. deepagents patched that for its *own* filesystem tools
+(langchain-ai/deepagents#927, PR #994) by wrapping each in try/except, but that
+is three call sites in one file: MCP tools, `web_search`, `consult`, the `task`
+delegation and anything a user adds were all still on the default. The wrapper now returns an error `ToolMessage` instead,
 naming the exception type so the model tries a different route rather than
 repeating the call. `GraphBubbleUp` (interrupts, parent commands) is re-raised
 untouched: it travels as an exception but it is control flow, and converting

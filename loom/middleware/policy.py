@@ -28,20 +28,6 @@ except Exception:  # pragma: no cover
         pass
 
 
-# LangGraph raises these to steer the graph — an `interrupt()` inside a tool, a
-# parent Command. They travel as exceptions but they are control flow, and
-# turning one into a tool result would silently break human-in-the-loop.
-try:
-    from langgraph.errors import GraphBubbleUp
-
-    _CONTROL_FLOW: tuple[type[BaseException], ...] = (GraphBubbleUp,)
-except Exception:  # pragma: no cover - langgraph API drift
-
-    class _NeverRaised(Exception):
-        pass
-
-    _CONTROL_FLOW = (_NeverRaised,)
-
 
 # Set by the REPL to prompt the user on "ask" decisions. Signature:
 #   confirm(tool_name: str, tool_input: dict, reason: str) -> bool | (bool, str)
@@ -72,30 +58,6 @@ auto_approve_edits: Slot[bool] = Slot(False)
 _EDIT_TOOLS = {"write_file", "edit_file"}
 
 
-def _leading_error_type(content: Any) -> str:
-    """``"FileNotFoundError"`` out of ``"FileNotFoundError: /Users/…/x.py"``.
-
-    A deliberately narrow read: the token must look like a Python exception
-    class name (CamelCase, ends in Error/Exception) before it is sent, so a
-    tool whose error message starts with a path or a snippet of the user's code
-    contributes nothing rather than leaking its first word. The bare words
-    ``Error``/``Exception`` pass that shape test but name nothing, so they read
-    as unknown too.
-    """
-    head = str(content or "").strip().split(":", 1)[0].strip()
-    if not head or len(head) > 60 or not head.isidentifier() or not head[0].isupper():
-        return "unknown"
-    if head in ("Error", "Exception"):
-        return "unknown"
-    return head if head.endswith(("Error", "Exception")) else "unknown"
-
-
-# One report per (tool, error class) per process. A coding agent guesses paths
-# and greps for things that aren't there — routinely, by design — so reporting
-# every error result would bury the one genuine failure under a thousand
-# "file not found"s and burn the user's Sentry quota doing it. The first of
-# each kind is the one that carries information; the repeats only carry volume.
-_reported_tool_errors: set[tuple[str, str]] = set()
 
 
 def _normalize_path_arg(args: dict, cwd: str) -> dict:
@@ -142,13 +104,7 @@ class PolicyMiddleware(AgentMiddleware):
         if gate is not None:
             return gate  # blocked/denied → short-circuit with a ToolMessage
         self._snapshot(request)
-        try:
-            result = handler(request)
-        except _CONTROL_FLOW:
-            raise  # interrupts and parent commands are not tool failures
-        except Exception as exc:
-            return self._crashed(request, exc)
-        self._report_result(request, result)
+        result = handler(request)
         self._post(request)
         return result
 
@@ -157,98 +113,10 @@ class PolicyMiddleware(AgentMiddleware):
         if gate is not None:
             return gate
         self._snapshot(request)
-        try:
-            result = await handler(request)
-        except _CONTROL_FLOW:
-            raise
-        except Exception as exc:
-            return self._crashed(request, exc)
-        self._report_result(request, result)
+        result = await handler(request)
         self._post(request)
         return result
 
-    # --- crash reporting ---
-    #
-    # This wrapper is the only chokepoint every tool call passes through, and
-    # a tool failure is the single most common error a Loom user actually sees.
-    # LangChain catches tool exceptions inside the tool node and hands the model
-    # an error ToolMessage, so nothing propagates to the REPL's crash handler:
-    # without these two hooks, "the grep tool blew up" was visible in the
-    # transcript and nowhere else.
-    def _crashed(self, request: Any, exc: BaseException) -> Any:
-        """A tool raised. Report it with its stack, then hand the model an error
-        result instead of letting it end the turn.
-
-        LangGraph's default `handle_tool_errors` only converts
-        `ToolInvocationError` — the "model passed a string where an int goes"
-        case. Every other exception is re-raised out of the tool node and takes
-        the whole turn with it, which is the opposite of what a ReAct loop
-        needs: one broken tool should cost one step, not the session.
-
-        The model is told the exception type and message so it can adapt. Sentry
-        gets the stack; it does not get the message, which routinely quotes a
-        path or a line of the user's file.
-        """
-        name, _, _ = self._extract(request)
-        try:
-            from loom.core import telemetry
-
-            telemetry.report("tool.crash", exc, tool=name or "?", category="bug")
-        except Exception:
-            pass
-        return self._tool_message(
-            request,
-            f"[error] `{name or '?'}` failed with {type(exc).__name__}: {exc}. "
-            "This is a fault in the tool, not in how you called it — "
-            "try a different approach rather than repeating the same call.",
-            status="error",
-        )
-
-    def _report_result(self, request: Any, result: Any) -> None:
-        """A tool that returned an error result instead of raising.
-
-        Two very different things arrive here and are tagged apart, because
-        they need different people to act:
-
-        ``params``  the model called the tool wrongly — a string where an int
-                    belongs. Expected from smaller local models, and a signal
-                    about the tool's schema or the model's size, not a defect.
-        ``failed``  the tool ran and reported failure (file not found, command
-                    exited non-zero). Usually the model's aim, sometimes ours.
-
-        Only the tool name, the category and a leading exception class name are
-        sent — never the message body, which routinely quotes a path or a line
-        of the user's file and would break the promise the setup wizard makes.
-        """
-        if str(getattr(result, "status", "")) != "error":
-            return
-        name, _, _ = self._extract(request)
-        content = str(getattr(result, "content", "") or "")
-        params = content.startswith("Error invoking tool ")
-        category = "params" if params else "failed"
-        error_type = "ToolInvocationError" if params else _leading_error_type(content)
-
-        # Deduped per (tool, category, class) rather than per tool: a benign
-        # "file not found" must not claim the only slot and hide a different
-        # failure in the same tool for the rest of the session. Crashes are
-        # never deduped here — they go through `report` with a stack, and
-        # Sentry groups those itself.
-        kind = (name or "?", category, error_type)
-        if kind in _reported_tool_errors:
-            return
-        _reported_tool_errors.add(kind)
-        try:
-            from loom.core import telemetry
-
-            telemetry.capture_message(
-                f"tool {category}: {kind[0]}",
-                where=f"tool.{category}",
-                tool=kind[0],
-                category=category,
-                error_type=error_type,
-            )
-        except Exception:
-            pass
 
     def _snapshot(self, request: Any) -> None:
         """Record the pre-write file state so /undo can roll the turn back.

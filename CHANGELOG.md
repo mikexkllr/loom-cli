@@ -30,6 +30,13 @@
   pipe can be checked rather than assumed. Because the update crash happened
   before the REPL started, it also meant the privacy question was never
   reached — so consent was never recorded and nothing *could* be sent.
+- **The crash net now covers every build, not just configured ones.** It lived
+  inside `PolicyMiddleware`, which is only installed when `Settings` are wired
+  — so on the bare-`LoomConfig` back-compat path the orchestrator and every
+  subagent ran with no net at all. It is now its own `ToolErrorGuard`,
+  installed unconditionally and outermost, so it also catches a crash inside
+  the policy gate itself (a hook that blows up, a confirm callback that
+  raises). Crash safety is not a permissions feature.
 - **A bug in one tool ended the whole turn.** LangGraph's default
   `handle_tool_errors` converts only `ToolInvocationError` — the "model passed
   a string where an int belongs" case — and re-raises everything else, so a

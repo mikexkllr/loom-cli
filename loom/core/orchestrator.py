@@ -669,6 +669,15 @@ def build_orchestrator(
     # after the core middleware and before the prompt-caching tail.
     middleware: list[Any] = []
 
+    # Unconditional and first, so it wraps everything below it — including the
+    # policy gate, whose own hooks and confirm callback can throw. A tool that
+    # raises must cost one step, not the turn, and that is not a permissions
+    # feature: the policy gate is skipped entirely on the bare-LoomConfig path,
+    # which is exactly where an unprotected crash is hardest to explain.
+    from loom.middleware.tool_guard import ToolErrorGuard
+
+    middleware.append(ToolErrorGuard())
+
     fs_middleware = _orchestrator_filesystem_middleware(
         backend, config, orch_model_string, airgap=airgap
     )
