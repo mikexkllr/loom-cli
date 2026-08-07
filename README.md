@@ -136,6 +136,30 @@ launches the **setup wizard** automatically; run it again any time with
 `/setup` (REPL) or `loom setup` (shell). See [Setup wizard](#setup-wizard)
 below for what it configures and which providers it supports.
 
+### Uninstall
+
+`loom uninstall` is the counterpart to `loom update`. It prints exactly what
+it found before it touches anything, and asks about the binary and your data
+separately:
+
+```bash
+loom uninstall              # show the plan, then ask about each part
+loom uninstall --dry-run    # show the plan and stop
+loom uninstall --purge      # also delete ~/.loom
+loom uninstall -y --purge   # unattended, full removal
+```
+
+| It removes | It never removes |
+|---|---|
+| the standalone binary — the running one plus any other on `PATH` or in the install dir | a **project's `.loom/`** (sessions, undo snapshots, artifacts, a committed `settings.json`) — that belongs to the repo, so it is reported and left |
+| with `--purge`, `$LOOM_HOME` (default `~/.loom`): settings, provider keys, privacy choice, input history, user skills | **Ollama and its models** — a separate program other tools use; the plan reports the disk it holds and points at `loom models rm` |
+| | a **source install's `loom`** — a `#!` console script belongs to a venv `uv sync` owns, so it is skipped; remove the checkout and its `.venv` yourself |
+
+Without `--purge`, your keys and privacy choice survive, and `-y` alone never
+purges — an unattended run does not delete data nobody was asked about. On
+Windows the running `.exe` is locked, so a detached helper removes it a moment
+after the process exits, exactly as `loom update` does for the swap.
+
 Prefer to configure by hand? Set provider keys for whichever cloud models you
 use:
 
@@ -534,6 +558,7 @@ loom settings set ui.theme light                      # reconfigure UI/permissio
 loom agents list                                      # subagents + assigned models
 loom doctor                                           # health-check: ollama, keys, npx, MCP
 loom update                                           # binary installs: fetch + swap in the latest build
+loom uninstall                                        # remove the binary (and, with --purge, ~/.loom)
 ```
 
 **Missing a model? Loom stays local if it can.** If a role's model isn't

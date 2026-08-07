@@ -830,6 +830,174 @@ def update() -> None:
         raise typer.Exit(1)
 
 
+@app.command("uninstall")
+def uninstall(
+    root: str = typer.Option(".", "--root"),
+    purge: bool = typer.Option(
+        False, "--purge", help="Also delete ~/.loom — settings, provider keys, privacy choice, skills."
+    ),
+    keep_data: bool = typer.Option(False, "--keep-data", help="Keep ~/.loom; remove only the binary."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask — take the flags as the answer."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be removed and stop."),
+) -> None:
+    """Remove Loom from this machine — the counterpart to `loom update`.
+
+    Deletes the standalone binary, and with ``--purge`` the user directory
+    (``$LOOM_HOME``, default ``~/.loom``) too. A project's own ``.loom/`` and
+    anything belonging to Ollama are reported but never touched: they aren't
+    part of the install.
+    """
+    from loom.core import uninstall as un
+
+    _retheme(root)
+    if purge and keep_data:
+        render.note(console, "--purge and --keep-data contradict each other", kind="bad")
+        raise typer.Exit(2)
+
+    the_plan = un.plan(root)
+    _print_uninstall_plan(the_plan, root)
+
+    if the_plan.empty:
+        render.note(console, "nothing to uninstall — no standalone binary and no ~/.loom on this machine")
+        if not the_plan.frozen:
+            console.print(
+                "  [loom.muted]this is a source checkout — remove it with[/loom.muted] "
+                "rm -rf .venv [loom.muted]and delete the repo[/loom.muted]"
+            )
+        raise typer.Exit()
+
+    if dry_run:
+        render.note(console, "dry run — nothing removed", kind="tip")
+        raise typer.Exit()
+
+    # Every question is asked before anything is deleted, so a change of mind
+    # halfway through can't leave a half-removed install.
+    try:
+        take_binaries = bool(the_plan.binaries) and (
+            yes or render.confirm(console, f"  remove {len(the_plan.binaries)} binary file(s)?", default=True)
+        )
+        if purge or keep_data or yes:
+            # Unattended runs keep your keys and privacy choice unless --purge
+            # says otherwise; deleting those because nobody was asked is the
+            # wrong way to be wrong.
+            take_data = purge
+        else:
+            take_data = the_plan.data is not None and render.confirm(
+                console, "  also delete ~/.loom (settings, provider keys, privacy choice, skills)?", default=False
+            )
+    except (KeyboardInterrupt, EOFError):
+        console.print()
+        render.note(console, "cancelled — nothing removed")
+        raise typer.Exit(1)
+
+    if not take_binaries and not take_data:
+        render.note(console, "nothing removed")
+        raise typer.Exit()
+
+    failures = 0
+
+    def report(ok: bool, detail: str) -> None:
+        nonlocal failures
+        render.note(console, f"removed {detail}" if ok else f"couldn't remove {detail}", kind="good" if ok else "bad")
+        failures += not ok
+
+    if take_data and the_plan.data is not None:
+        report(*un.remove(the_plan.data))
+
+    # The binary this process is running from is deleted last of all and takes
+    # the process with it, so everything worth saying is said (and flushed)
+    # first — including its own "removed" line.
+    running = the_plan.running if take_binaries else None
+    if take_binaries:
+        for path in the_plan.binaries:
+            if path != running:
+                report(*un.remove(path))
+    if running is not None:
+        render.note(console, f"removed {running}", kind="good")
+
+    # Then what is left over, which is only worth reading after the removals.
+    if the_plan.data is not None and not take_data:
+        render.note(console, f"kept {the_plan.data} — delete it yourself to finish the job", kind="tip")
+    if take_binaries:
+        hint = un.path_hint(the_plan.binaries)
+        if hint:
+            render.note(console, hint, kind="tip")
+        console.print(f"  [loom.muted]reinstall anytime:[/loom.muted] {un.reinstall_hint()}")
+    render.note(console, "thanks for weaving. bye", kind="muted")
+
+    if running is not None:
+        try:
+            console.file.flush()
+        except Exception:
+            pass
+        # Does not return on POSIX: the unlink is the last thing this process
+        # can safely do, so the exit code goes in rather than being raised
+        # after. See uninstall.delete_running_and_exit.
+        un.delete_running_and_exit(running, code=1 if failures else 0)
+        # Windows only — the file is locked, so a detached helper removes it
+        # once we exit.
+        console.print("  [loom.muted]the binary is removed a moment after this exits[/loom.muted]")
+    if failures:
+        raise typer.Exit(1)
+
+
+def _print_uninstall_plan(the_plan, root: str) -> None:
+    """What an uninstall would touch, before it touches any of it."""
+    rows = []
+    if the_plan.binaries:
+        for i, path in enumerate(the_plan.binaries):
+            label = "binary" if i == 0 else ""
+            suffix = "  (running)" if path == the_plan.running else ""
+            rows.append((label, Text(f"{path}{suffix}", style="loom.text")))
+    else:
+        detail = (
+            "none found on PATH"
+            if the_plan.frozen
+            else "source install — `uv sync` owns it, nothing to delete here"
+        )
+        rows.append(("binary", Text(detail, style="loom.muted")))
+
+    if the_plan.data is not None:
+        from loom.core.uninstall import human_bytes
+
+        rows.append(
+            ("user data", Text(f"{the_plan.data}  ({human_bytes(the_plan.data_size)})", style="loom.text"))
+        )
+        for name, blurb in the_plan.data_contents:
+            rows.append(("", Text(f"{ink(console).tip} {name}", style="loom.muted") + Text(f"  {blurb}", style="loom.muted")))
+    else:
+        rows.append(("user data", Text(f"{cfg.USER_CONFIG_DIR} — not present", style="loom.muted")))
+
+    if the_plan.project is not None:
+        rows.append(("this project", Text(f"{the_plan.project} — kept (sessions, undo, artifacts)", style="loom.muted")))
+
+    try:
+        count, size = _ollama_disk(root)
+    except Exception:
+        count = 0  # a plan is not the place to fail over an unreachable daemon
+    if count:
+        from loom.core.ollama import human_size
+
+        rows.append(
+            (
+                "ollama",
+                Text(f"{count} model(s), {human_size(size)} — kept; `loom models rm <tag>` frees them", style="loom.muted"),
+            )
+        )
+
+    console.print()
+    render.rule(console, "uninstall")
+    console.print(render.kv(rows, justify="right"))
+    console.print()
+
+
+def _ollama_disk(root: str) -> tuple[int, int]:
+    """Ollama's disk footprint, resolved against this project's settings."""
+    from loom.core import uninstall as un
+
+    return un.ollama_disk(settings_mod.load_settings(root).models)
+
+
 @app.command("privacy")
 def privacy_cmd(
     action: Optional[str] = typer.Argument(

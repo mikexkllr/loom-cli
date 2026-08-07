@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Added
+
+- **`loom uninstall` — the counterpart to `loom update`.** Loom could install
+  itself with one `curl | sh` and update itself in place, and then had no way
+  to leave. It now resolves a plan first and prints it before touching
+  anything: which binaries it found (the running one, plus any other on `PATH`
+  or in the install dir), what is in `$LOOM_HOME`, and what it is deliberately
+  leaving behind. The binary and your data are asked about separately —
+  `--purge` deletes `~/.loom`, `--keep-data` keeps it, `--dry-run` stops after
+  the plan, and `-y` alone never purges, because an unattended run should not
+  delete provider keys and a privacy choice that nobody was asked about. Two
+  things are never removed: a **project's `.loom/`**, which holds sessions,
+  undo snapshots and a `settings.json` meant to be committed, and **Ollama's
+  models**, which belong to a separate program — both are reported instead,
+  the latter with the disk it is holding. A source install's `loom` is skipped
+  too: a `#!` console script belongs to a venv `uv sync` owns, and deleting
+  half an install is worse than leaving it alone. On POSIX the running binary
+  is unlinked as the very last thing the process does, for the same reason the
+  update swap is (a onefile build reads its module archive out of
+  `sys.executable`); on Windows, where the `.exe` is locked, a detached helper
+  removes it once the process exits.
+
 ### Fixed
 
 - **"Yes, update me" ended in a traceback.** Accepting the update downloaded
