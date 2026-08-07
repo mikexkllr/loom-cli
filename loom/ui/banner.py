@@ -28,8 +28,9 @@ ASCII_WORDMARK = (
 )
 
 
-def _lerp(a: str, b: str, t: float) -> str:
-    """Blend two ``#rrggbb`` colours."""
+def blend(a: str, b: str, t: float) -> str:
+    """Blend two ``#rrggbb`` colours. Shared with :mod:`loom.ui.about`, which
+    runs the same warm→cool axis across a whole screen."""
     ai = (int(a[1:3], 16), int(a[3:5], 16), int(a[5:7], 16))
     bi = (int(b[1:3], 16), int(b[3:5], 16), int(b[5:7], 16))
     return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(ai, bi))
@@ -47,7 +48,7 @@ def wordmark(console: Console) -> Text:
     span = max(len(line) for line in lines) - 1 or 1
     for i, line in enumerate(lines):
         for x, char in enumerate(line):
-            out.append(char, style=_lerp(palette.warp, palette.cloud, x / span))
+            out.append(char, style=blend(palette.warp, palette.cloud, x / span))
         if i < len(lines) - 1:
             out.append("\n")
     return out

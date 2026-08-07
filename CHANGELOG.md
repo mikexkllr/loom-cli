@@ -23,6 +23,19 @@
   update swap is (a onefile build reads its module archive out of
   `sys.executable`); on Windows, where the `.exe` is locked, a detached helper
   removes it once the process exits.
+- **`/about`, with the loom actually running.** Bare warp threads hang the
+  full height of the terminal, a shuttle runs back and forth laying weft, and
+  the cloth grows down the screen behind it — then the wordmark is revealed
+  row by row *in* the cloth as the weave reaches it, since the twill glyphs the
+  logo is drawn with (`▚▞`) are the same ones the cloth is made of. It runs on
+  the warm→cool axis the rest of the UI uses, so even the splash screen says
+  local-to-cloud. The card that follows names the build (frozen binary vs
+  source), where it is installed, `$LOOM_HOME`, the repo and the licence.
+  Degradable throughout: no terminal means no animation at all, no UTF-8 means
+  ASCII threads, `mono`/`NO_COLOR` means structure alone, `LOOM_NO_ANIM=1` or
+  `/about still` skips it, and Ctrl+C jumps straight to the card. It draws in
+  the alternate screen buffer, so the transcript underneath is exactly where
+  you left it.
 
 ### Fixed
 

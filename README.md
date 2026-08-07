@@ -340,6 +340,7 @@ Slash commands (Claude Code-compatible where it makes sense):
 | Command | What it does |
 |---|---|
 | `/help` | list all commands |
+| `/about` | what Loom is and which build you're on — weaves itself on screen first (`/about still` skips the animation) |
 | `/status` | version, models, modes, MCP, persistence, session cost |
 | `/model` | show every role's model + installed Ollama models |
 | `/model <role>` | interactive picker (installed local models + cloud) |

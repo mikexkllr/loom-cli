@@ -23,7 +23,7 @@ _REGISTRY: dict[str, tuple[str, Callable[["Session", str], bool]]] = {}
 # Commands grouped for /help, in the order they're most useful to a newcomer.
 # A command missing from every group still shows, under "more".
 _GROUPS: list[tuple[str, tuple[str, ...]]] = [
-    ("session", ("help", "status", "cost", "clear", "compact", "resume", "export", "exit")),
+    ("session", ("help", "about", "status", "cost", "clear", "compact", "resume", "export", "exit")),
     ("modes", ("mode", "plan", "yolo", "local", "airgap", "loop", "vim")),
     ("fleet", ("model", "agents", "ollama", "setup", "skills", "mcp", "playwright", "graphify")),
     ("project", ("cwd", "memory", "init", "undo", "permissions", "hooks", "privacy", "settings", "theme", "doctor")),
@@ -86,6 +86,17 @@ def _help(session: "Session", args: str) -> bool:
         f"[loom.warp]@file[/loom.warp] pulls a file into context {g.dot} "
         f"[loom.warp]shift+tab[/loom.warp] cycles modes",
     )
+    return True
+
+
+@command("about", "What Loom is, which build you're on — with the loom running")
+def _about(session: "Session", args: str) -> bool:
+    from loom.ui import about as about_mod
+
+    # `/about still` for anyone who wants the facts without waiting two
+    # seconds for the shuttle; the animation self-skips off a terminal anyway.
+    still = args.strip().lower() in ("still", "quick", "skip", "--still", "-q")
+    about_mod.show(session.console, cwd=str(session.cwd), still=still)
     return True
 
 

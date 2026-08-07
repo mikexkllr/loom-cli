@@ -18,7 +18,7 @@ EXPECTED_COMMANDS = {
     "resume", "undo",
     # Loom-specific
     "plan", "local", "yolo", "agents", "ollama", "playwright", "settings", "theme", "cwd",
-    "airgap", "setup", "privacy",
+    "airgap", "setup", "privacy", "about",
 }
 
 
