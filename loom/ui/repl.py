@@ -15,6 +15,7 @@ without reading any of the prose. Slash commands (``/help``, ``/model``,
 from __future__ import annotations
 
 import difflib
+import itertools
 from pathlib import Path
 
 from rich.text import Text
@@ -61,11 +62,24 @@ class Session:
         self.vim = False
         # Tools approved with "don't ask again" — cleared when the session ends.
         self.session_allowed: set[str] = set()
-        # Approval prompts can fire from LangGraph worker threads; serialize
-        # them so two parallel tool calls never interleave on the terminal.
+        # One writer at a time on the terminal.
+        #
+        # LangGraph runs tool calls in worker threads (ToolNode fans them out
+        # through an executor, and a stream that includes "messages" always
+        # takes the executor path), so an approval prompt is drawn from a
+        # different thread than the one streaming tokens. Whoever holds this
+        # owns the screen: while the prompt is up the render loop stops drawing
+        # instead of scrolling the question away, and two parallel tool calls
+        # still can't interleave their prompts.
+        #
+        # Re-entrant because the same thread may both render and confirm — with
+        # streaming off there is no waiter future, so LangGraph runs a lone task
+        # inline on the main thread. Never held across ``next(stream)``: the
+        # tool being approved is what the stream is waiting on, so holding it
+        # there would deadlock.
         import threading
 
-        self._confirm_lock = threading.Lock()
+        self._draw_lock = threading.RLock()
         self._interrupted = False
         self.console = make_console(settings.ui)
         self.weave = Weave(self.console, flat=not settings.ui.weave)
@@ -420,7 +434,7 @@ class Session:
     def _confirm(self, tool_name: str, tool_input: dict, reason: str) -> "bool | tuple[bool, str]":
         if tool_name in self.session_allowed:
             return True
-        with self._confirm_lock:
+        with self._draw_lock:
             return self._confirm_locked(tool_name, tool_input, reason)
 
     def _confirm_locked(self, tool_name: str, tool_input: dict, reason: str) -> "bool | tuple[bool, str]":
@@ -810,15 +824,29 @@ class Session:
         installed langgraph doesn't support multi-mode streams. Returns the
         final assistant text. ``subgraphs=True`` surfaces intermediate steps
         from nested graphs; messages-mode token streaming reaches every model
-        call in the run tree (subagents and the advisor included) either way."""
+        call in the run tree (subagents and the advisor included) either way.
+
+        The probe below is load-bearing. ``agent.stream(...)`` is a generator
+        function, so it does nothing until the first ``next()`` — an unsupported
+        ``stream_mode``/``subgraphs`` raises there, not at the call. Wrapping the
+        whole drain in the try meant *any* mid-run TypeError/ValueError — from a
+        provider, a tool, a bad chunk — was read as "this stream shape is
+        unsupported" and the entire turn was silently re-run from the top, tool
+        calls and approval prompts included. Only a failure before the first item
+        says anything about the stream shape; after that the error belongs to the
+        caller, which reports it and falls back to a synchronous invoke in view.
+        """
         if not self.settings.ui.streaming:
             return self._stream_updates(agent.stream(inputs, config=run_config, stream_mode="updates"))
         for kwargs in ({"subgraphs": True}, {}):
+            stream = iter(agent.stream(inputs, config=run_config, stream_mode=["updates", "messages"], **kwargs))
             try:
-                stream = agent.stream(inputs, config=run_config, stream_mode=["updates", "messages"], **kwargs)
-                return self._stream_multi(stream)
+                first = next(stream)
+            except StopIteration:
+                return None
             except (TypeError, ValueError):
                 continue
+            return self._stream_multi(itertools.chain([first], stream))
         return self._stream_updates(agent.stream(inputs, config=run_config, stream_mode="updates"))
 
     def _stream_multi(self, stream) -> str | None:
@@ -843,8 +871,15 @@ class Session:
             """Append tokens to the current block, opening a new rail whenever
             the kind (text vs thinking) or the emitting model changes."""
             nonlocal open_key, buf
-            if open_key != (kind, source):
-                if open_key is not None and open_key[0] == "text" and buf:
+            switched = open_key != (kind, source)
+            # `open_key` is only a cache of what the weave has open, and the
+            # weave is torn down by any other drawing path — most importantly
+            # the approval prompt, which runs on a tool worker thread. Trusting
+            # the cache alone means `text()` writes to a gutter that no longer
+            # exists and every remaining token of the message is dropped without
+            # a word: the transcript just stops mid-sentence.
+            if switched or not self.weave.is_open():
+                if switched and open_key is not None and open_key[0] == "text" and buf:
                     streamed.add("".join(buf).strip())
                     buf = []
                 open_key = (kind, source)
@@ -864,71 +899,78 @@ class Session:
             else:
                 continue
             nested = bool(ns)
-            if mode == "messages":
-                chunk, meta = payload
-                if type(chunk).__name__ != "AIMessageChunk":
-                    continue
-                text, thinking = self._chunk_parts(chunk)
-                if not text and not thinking:
-                    continue
-                role = self._attribute_ns(ns)
-                source = (
-                    self._role_label(role, str(meta.get("ls_model_name") or ""), str(meta.get("ls_provider") or ""))
-                    if role
-                    else self._stream_source(meta)
-                )
-                if thinking and ui.show_thinking:
-                    emit("thinking", source, thinking)
-                if text:
-                    emit("text", source, text)
-                continue
-
-            # updates mode — structure: tool calls, results, non-streamed text
-            finish_block()
-            for node, update in (payload or {}).items():
-                msgs = (update or {}).get("messages") if isinstance(update, dict) else None
-                if not msgs:
-                    continue
-                msg = msgs[-1]
-                if getattr(msg, "type", "") == "tool":
-                    # A `task` result is the delegated thread handing its
-                    # summary back and dropping its context. Tie the rail off
-                    # first, so the summary reads as arriving on the caller's
-                    # rail after the subagent is done — which is what happened.
-                    if getattr(msg, "name", "") == "task":
-                        self._close_delegated_thread()
-                    if ui.show_tool_calls:
-                        role = self._attribute_ns(ns) if ns else None
-                        self._print_tool_result(
-                            msg,
-                            source=self._role_label(role) if role else None,
-                            node=node,
-                            nested=nested,
+            # Taken per item and released before the next `next(stream)`, so an
+            # approval prompt can take the screen between chunks — and so this
+            # loop never holds it while waiting on the very tool that is asking.
+            with self._draw_lock:
+                if mode == "messages":
+                    chunk, meta = payload
+                    if type(chunk).__name__ != "AIMessageChunk":
+                        continue
+                    text, thinking = self._chunk_parts(chunk)
+                    if not text and not thinking:
+                        continue
+                    role = self._attribute_ns(ns)
+                    source = (
+                        self._role_label(
+                            role, str(meta.get("ls_model_name") or ""), str(meta.get("ls_provider") or "")
                         )
+                        if role
+                        else self._stream_source(meta)
+                    )
+                    if thinking and ui.show_thinking:
+                        emit("thinking", source, thinking)
+                    if text:
+                        emit("text", source, text)
                     continue
-                calls = getattr(msg, "tool_calls", []) or []
-                # Learn delegations before attributing, so a subagent's own
-                # nested output binds to the right task in order.
-                for call in calls:
-                    self._note_task(call)
-                role = self._attribute_ns(ns)
-                if role:
-                    rmeta = getattr(msg, "response_metadata", None) or {}
-                    source = self._role_label(role, str(rmeta.get("model_name") or rmeta.get("model") or ""))
-                else:
-                    source = self._msg_source(msg, nested)
-                for call in calls:
-                    if ui.show_tool_calls:
-                        self._print_tool_call(call, node, source=source)
-                text = getattr(msg, "content", "")
-                if text:
-                    text = str(text) if isinstance(text, str) else self._chunk_text(msg)
-                    if text.strip() and text.strip() not in streamed:
-                        self._print_assistant(text, node, source=source)
-                    # Nested-graph text is a subagent's answer, not the turn's.
-                    if not nested:
-                        final_text = text
-        finish_block()
+
+                # updates mode — structure: tool calls, results, non-streamed text
+                finish_block()
+                for node, update in (payload or {}).items():
+                    msgs = (update or {}).get("messages") if isinstance(update, dict) else None
+                    if not msgs:
+                        continue
+                    msg = msgs[-1]
+                    if getattr(msg, "type", "") == "tool":
+                        # A `task` result is the delegated thread handing its
+                        # summary back and dropping its context. Tie the rail off
+                        # first, so the summary reads as arriving on the caller's
+                        # rail after the subagent is done — which is what happened.
+                        if getattr(msg, "name", "") == "task":
+                            self._close_delegated_thread()
+                        if ui.show_tool_calls:
+                            role = self._attribute_ns(ns) if ns else None
+                            self._print_tool_result(
+                                msg,
+                                source=self._role_label(role) if role else None,
+                                node=node,
+                                nested=nested,
+                            )
+                        continue
+                    calls = getattr(msg, "tool_calls", []) or []
+                    # Learn delegations before attributing, so a subagent's own
+                    # nested output binds to the right task in order.
+                    for call in calls:
+                        self._note_task(call)
+                    role = self._attribute_ns(ns)
+                    if role:
+                        rmeta = getattr(msg, "response_metadata", None) or {}
+                        source = self._role_label(role, str(rmeta.get("model_name") or rmeta.get("model") or ""))
+                    else:
+                        source = self._msg_source(msg, nested)
+                    for call in calls:
+                        if ui.show_tool_calls:
+                            self._print_tool_call(call, node, source=source)
+                    text = getattr(msg, "content", "")
+                    if text:
+                        text = str(text) if isinstance(text, str) else self._chunk_text(msg)
+                        if text.strip() and text.strip() not in streamed:
+                            self._print_assistant(text, node, source=source)
+                        # Nested-graph text is a subagent's answer, not the turn's.
+                        if not nested:
+                            final_text = text
+        with self._draw_lock:
+            finish_block()
         if final_text is not None and not (self.bundle and self.bundle.persistent):
             self.messages.append(("assistant", final_text))
         return final_text
@@ -943,22 +985,23 @@ class Session:
         ui = self.settings.ui
         final_text = None
         for chunk in stream:
-            for node, update in (chunk or {}).items():
-                msgs = (update or {}).get("messages") if isinstance(update, dict) else None
-                if not msgs:
-                    continue
-                msg = msgs[-1]
-                if getattr(msg, "type", "") == "tool":
-                    if ui.show_tool_calls:
-                        self._print_tool_result(msg)
-                    continue
-                for call in getattr(msg, "tool_calls", []) or []:
-                    if ui.show_tool_calls:
-                        self._print_tool_call(call, node)
-                text = getattr(msg, "content", "")
-                if text:
-                    self._print_assistant(str(text), node)
-                    final_text = str(text)
+            with self._draw_lock:  # never held across `next(stream)` — see __init__
+                for node, update in (chunk or {}).items():
+                    msgs = (update or {}).get("messages") if isinstance(update, dict) else None
+                    if not msgs:
+                        continue
+                    msg = msgs[-1]
+                    if getattr(msg, "type", "") == "tool":
+                        if ui.show_tool_calls:
+                            self._print_tool_result(msg)
+                        continue
+                    for call in getattr(msg, "tool_calls", []) or []:
+                        if ui.show_tool_calls:
+                            self._print_tool_call(call, node)
+                    text = getattr(msg, "content", "")
+                    if text:
+                        self._print_assistant(str(text), node)
+                        final_text = str(text)
         if final_text is not None and not (self.bundle and self.bundle.persistent):
             self.messages.append(("assistant", final_text))
         return final_text

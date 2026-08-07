@@ -26,6 +26,7 @@ Durable, hard-won knowledge lives in `memories/` (migrated from Claude Code's me
 | [memories/loom-enforce-routing-structurally.md](memories/loom-enforce-routing-structurally.md) | "Make the orchestrator/subagent stop doing X" — tool allowlists, exclusion, read budget |
 | [memories/loom-cloud-fallback-needs-anthropic-key.md](memories/loom-cloud-fallback-needs-anthropic-key.md) | Provider/auth failures, OpenCode Zen/Go credentials, free models, Go region gates |
 | [memories/loom-test-end-to-end.md](memories/loom-test-end-to-end.md) | Testing Loom — why unit tests miss real bugs, the four test layers incl. pty REPL testing |
+| [memories/loom-approval-prompts-race-the-renderer.md](memories/loom-approval-prompts-race-the-renderer.md) | Anything that prints during a turn — tool calls run on LangGraph worker threads, so prompts race the stream |
 | [memories/loom-privacy-telemetry.md](memories/loom-privacy-telemetry.md) | Privacy modes, Sentry/Langfuse telemetry — consent gates, fail-closed invariants, scrub rules |
 
 When you learn something durable about this project, update the matching memory file (and add a row here if you create a new one).

@@ -39,6 +39,30 @@
 
 ### Fixed
 
+- **The UI stopped dead mid-turn, and an approval prompt you couldn't see was
+  why.** LangGraph does not run tool calls on the thread that drives the
+  stream: `ToolNode` fans them out through an executor, and its inline fast
+  path is only taken when there is no stream waiter — which never holds once
+  token streaming is on. So the approval card was drawn from a *different*
+  thread than the one printing tokens, with nothing between them. A sibling
+  subagent would stream straight over the `❯ [1/2/3]` prompt, leaving a screen
+  that looks alive while stdin is blocked; answering it worked, so the keypress
+  landed mid-sentence in the transcript and the turn carried on, which is why
+  this read as a crash that a stray `2` somehow fixed. Two more failures came
+  out of the same seam. The prompt opens by ending the current block, which
+  nulled the gutter the render loop was still writing to — and because that
+  loop trusted its own cache of what was open rather than asking, every
+  remaining token of the message was **dropped in silence**, so the transcript
+  simply stopped mid-word. Separately, `agent.stream(...)` is a generator, so
+  unsupported kwargs raise on the first `next()` and not at the call; wrapping
+  the whole drain in one `try` meant *any* mid-run `TypeError`/`ValueError`
+  from a provider or tool was read as "this stream mode is unsupported" and the
+  entire turn was silently re-run from the top, approval prompts included.
+  There is now one writer on the terminal: while a question is up nothing else
+  draws, the render loop asks the weave what is open instead of guessing, and
+  only a failure before the first item is allowed to mean anything about the
+  stream's shape. The lock is released before each `next(stream)` — the tool
+  asking for approval is exactly what the stream is waiting on.
 - **"Yes, update me" ended in a traceback.** Accepting the update downloaded
   and installed the new build correctly, then crashed on its way out with
   `zlib.error: Error -3 while decompressing data: incorrect header check`. A

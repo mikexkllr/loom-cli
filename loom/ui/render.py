@@ -653,6 +653,18 @@ class Weave:
         else:
             self._gutter = Gutter(self.console, self._prefix(thread, g.rail))
 
+    def is_open(self) -> bool:
+        """True while a token block is open — i.e. :meth:`text` will actually
+        draw something.
+
+        Every other drawing path (a tool call, an approval prompt, an aside)
+        ends the block, and an approval prompt is drawn from a tool worker
+        thread while the stream loop is mid-message. A streaming caller must
+        therefore ask the weave what is open rather than trust its own
+        bookkeeping, or its tokens go nowhere.
+        """
+        return self._gutter is not None
+
     def _header(self, thread: Thread, *, thinking: bool = False) -> None:
         self._settle()
         g = ink(self.console)

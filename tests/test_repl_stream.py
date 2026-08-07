@@ -1,6 +1,8 @@
 """REPL streaming internals: reasoning extraction, per-model attribution,
 inline edit diffs, and the Claude Code-style approval selector."""
 
+import time
+
 import pytest
 
 pytest.importorskip("pydantic")
@@ -303,3 +305,122 @@ def test_confirm_decline_with_feedback(tmp_path, monkeypatch):
     _scripted_prompt(monkeypatch, ["3", "use pathlib instead"])
     result = s._confirm("execute", {"command": "sed -i"}, "requires approval")
     assert result == (False, "use pathlib instead")
+
+
+# ------------------------------------------------------------ prompts vs. the stream
+#
+# LangGraph runs tool calls in worker threads, so an approval prompt is drawn
+# from a different thread than the one rendering the stream. Nothing used to
+# stand between them, and the two ways that broke are exactly what a user
+# sees as "it crashed": the transcript stops mid-sentence, or the question is
+# on screen but scrolled away under live output.
+
+
+def test_stream_resumes_after_a_prompt_tears_the_block_down(tmp_path):
+    """A confirm ends the open block from its own thread. The render loop
+    caches what it thinks is open, so without consulting the weave every
+    remaining token of the message goes nowhere — silently."""
+    import io
+    import threading
+
+    s = _session(tmp_path)
+    s.console.file = io.StringIO()
+    meta = {"ls_model_name": "orch", "ls_provider": "anthropic"}
+
+    def stream():
+        yield ("messages", (AIMessageChunk(content="the answer is "), meta))
+        # what _confirm_locked() does first, on a tool worker thread
+        t = threading.Thread(target=s.weave.end_block)
+        t.start()
+        t.join()
+        yield ("messages", (AIMessageChunk(content="forty-two exactly. "), meta))
+
+    s.weave.reset()
+    s._stream_multi(stream())
+    assert "forty-two exactly." in s.console.file.getvalue()
+
+
+def test_a_waiting_prompt_is_the_last_thing_on_screen(tmp_path, monkeypatch):
+    """While a prompt waits for an answer the render loop must stop drawing.
+    Otherwise a sibling subagent streams straight over the question and the
+    user is looking at live output with no idea anything wants input."""
+    import io
+    import threading
+
+    s = _session(tmp_path)
+    s.console.file = io.StringIO()
+    answer = threading.Event()
+
+    def blocking_ask(*a, **k):
+        s.console.print("  > [1/2/3] (1): ", end="")
+        assert answer.wait(5), "prompt was never released"
+        return "1"
+
+    monkeypatch.setattr("rich.prompt.Prompt.ask", staticmethod(blocking_ask))
+    worker = threading.Thread(
+        target=lambda: s._confirm("write_file", {"path": "a.py", "content": "x"}, "requires approval")
+    )
+
+    def stream():
+        yield ("messages", (AIMessageChunk(content="editing two files. "), {"ls_model_name": "orch"}))
+        worker.start()
+        while not s.console.file.getvalue().rstrip().endswith("(1):"):
+            time.sleep(0.01)  # the prompt is up and holding the screen
+        yield (("tools:1",), "messages", (AIMessageChunk(content="scanning the repo… "), {}))
+
+    s.weave.reset()
+    renderer = threading.Thread(target=lambda: s._stream_multi(stream()))
+    renderer.start()
+    time.sleep(0.4)  # ample time for the stream to run over the prompt, if it can
+
+    waiting = s.console.file.getvalue()
+    answer.set()
+    worker.join(5)
+    renderer.join(5)
+
+    assert "scanning the repo" not in waiting, "stream drew over a prompt that was waiting for input"
+    assert waiting.rstrip().endswith("(1):"), "the question was not the last thing on screen"
+    assert "scanning the repo" in s.console.file.getvalue(), "stream did not resume after the answer"
+
+
+def test_mid_stream_error_is_not_read_as_an_unsupported_stream_mode(tmp_path):
+    """``agent.stream()`` is lazy, so kwargs errors surface on the first
+    ``next()``. Treating a later ValueError the same way re-ran the whole turn
+    — tool calls and approval prompts included — behind the user's back."""
+    s = _session(tmp_path)
+    attempts = []
+
+    class Agent:
+        def stream(self, inputs, config=None, stream_mode=None, **kwargs):
+            attempts.append(kwargs)
+
+            def gen():
+                yield ("messages", (AIMessageChunk(content="hi "), {"ls_model_name": "orch"}))
+                raise ValueError("provider hiccup")
+
+            return gen()
+
+    with pytest.raises(ValueError, match="provider hiccup"):
+        s._stream(Agent(), {}, {})
+    assert attempts == [{"subgraphs": True}], "the turn was silently restarted"
+
+
+def test_unsupported_stream_kwargs_still_fall_back(tmp_path):
+    """The fallback the probe exists to preserve: a langgraph that rejects
+    ``subgraphs`` raises on the first next(), and the retry must still run."""
+    s = _session(tmp_path)
+    attempts = []
+
+    class Agent:
+        def stream(self, inputs, config=None, stream_mode=None, **kwargs):
+            attempts.append(kwargs)
+
+            def gen():
+                if kwargs.get("subgraphs"):
+                    raise TypeError("unexpected keyword argument 'subgraphs'")
+                yield ("messages", (AIMessageChunk(content="hello"), {"ls_model_name": "orch"}))
+
+            return gen()
+
+    s._stream(Agent(), {}, {})
+    assert attempts == [{"subgraphs": True}, {}]
