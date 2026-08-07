@@ -375,8 +375,6 @@ def test_every_subagent_carries_the_tool_error_guard():
 def test_the_guard_wraps_the_policy_gate_not_the_other_way_round():
     """Outermost, so a crash inside the policy gate itself — a hook that blows
     up, a confirm callback that raises — is caught too."""
-    from loom.middleware.tool_guard import ToolErrorGuard
-
     settings = _settings()
     for sub in build_all_subagents(settings.models, settings, "."):
         kinds = [type(m).__name__ for m in sub["middleware"]]
