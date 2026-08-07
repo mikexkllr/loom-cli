@@ -23,6 +23,21 @@ from loom.core import uninstall as un
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def wide_console(monkeypatch):
+    """Pin the render width so output assertions don't depend on where a line
+    happens to fold.
+
+    The plan prints absolute paths through a folding `render.kv` column, and
+    `tmp_path` is a different length on every machine — long on a developer's
+    Mac, short on a CI runner. At 80 columns that moved the break into the
+    middle of the very word a test was looking for, so the suite passed
+    locally and failed in CI on a difference that has nothing to do with
+    uninstalling anything.
+    """
+    monkeypatch.setenv("COLUMNS", "200")
+
+
 def _binary(path, *, frozen: bool = True):
     """A file that looks like a standalone binary (or a console script)."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -192,10 +207,10 @@ def test_dry_run_removes_nothing(tmp_path, monkeypatch):
 
 
 def test_plan_is_printed_before_anything_is_asked(tmp_path, monkeypatch):
-    _home(monkeypatch, tmp_path)
+    home = _home(monkeypatch, tmp_path)
     _no_real_binaries(monkeypatch, [_binary(tmp_path / "bin" / un.BINARY_STEM)])
     out = runner.invoke(app, ["uninstall", "--dry-run", "--root", str(tmp_path)]).output
-    assert "loomhome" in out  # the directory (the full path folds across lines)
+    assert str(home) in out  # the directory it would delete
     assert "provider API keys" in out  # and what is in it, not just its name
     assert "privacy choice" in out
 
