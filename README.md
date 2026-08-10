@@ -14,7 +14,7 @@ own context windows and return only summaries.
 > context quality** by quarantining noisy tool output, logs, and file content
 > into isolated windows that hand back only a summary.
 
-### 🎥 Watch the video: https://youtu.be/YACO3N6H8-E
+### 🎥 Watch the video: https://www.youtube.com/watch?v=aKQ7N87R9hg
 
 ## Contents
 
