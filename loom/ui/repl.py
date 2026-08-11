@@ -846,7 +846,24 @@ class Session:
                 return None
             except (TypeError, ValueError):
                 continue
-            return self._stream_multi(itertools.chain([first], stream))
+            try:
+                return self._stream_multi(itertools.chain([first], stream))
+            except Exception:
+                # The drain failed partway, so the generator is suspended at a
+                # yield with its Pregel executor — and that pool's worker
+                # threads — still open. The caller answers this by running a
+                # whole second graph, synchronously, and the abandoned one only
+                # tears down whenever the collector reaches it: two runs
+                # overlapping for an unbounded stretch. Closing here makes the
+                # teardown happen before the fallback, not during it.
+                #
+                # KeyboardInterrupt is deliberately not caught. __exit__ waits
+                # on in-flight nodes, so closing under Ctrl-C would hold the
+                # interrupt until the running tool call returned.
+                close = getattr(stream, "close", None)  # not every iterator has one
+                if close is not None:
+                    close()
+                raise
         return self._stream_updates(agent.stream(inputs, config=run_config, stream_mode="updates"))
 
     def _stream_multi(self, stream) -> str | None:

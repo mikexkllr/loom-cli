@@ -424,3 +424,41 @@ def test_unsupported_stream_kwargs_still_fall_back(tmp_path):
 
     s._stream(Agent(), {}, {})
     assert attempts == [{"subgraphs": True}, {}]
+
+
+def test_a_failed_drain_closes_the_stream_before_the_fallback_runs(tmp_path):
+    """A generator that *raised* is already finished, but one that fails while
+    being *drained* is left suspended at a yield, holding langgraph's Pregel
+    executor — and that pool's worker threads — open. Refcounting doesn't save
+    this: the traceback keeps `_stream`'s frame, and with it the generator,
+    alive for the whole of the caller's `except` block — which runs a second
+    graph synchronously. So the ordering is the property worth pinning, not the
+    close itself."""
+    from types import SimpleNamespace
+
+    s = _session(tmp_path)
+    events = []
+
+    class Agent:
+        def stream(self, inputs, config=None, stream_mode=None, **kwargs):
+            def gen():
+                try:
+                    yield ("messages", (AIMessageChunk(content="hi "), {"ls_model_name": "orch"}))
+                    yield ("messages", (AIMessageChunk(content="there"), {"ls_model_name": "orch"}))
+                except GeneratorExit:
+                    events.append("closed")
+                    raise
+
+            return gen()
+
+        def invoke(self, *a, **k):
+            events.append("fallback")
+            return {"messages": []}
+
+    def blows_up_mid_drain(_chunks):
+        raise ValueError("bad chunk")
+
+    s.bundle = SimpleNamespace(agent=Agent(), persistent=False, mode="normal", fallbacks={})
+    s._stream_multi = blows_up_mid_drain
+    s.run_turn("hello")
+    assert events == ["closed", "fallback"], "the abandoned stream outlived the fallback run"
