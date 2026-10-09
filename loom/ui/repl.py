@@ -299,6 +299,7 @@ class Session:
 
         run_config = self._run_config()
         final_text: str | None = None
+        failed = False
         self.weave.reset()
         # The gap before the first token is the one moment nothing is streaming.
         # The weave retires this the instant it has anything real to draw.
@@ -327,6 +328,7 @@ class Session:
             except Exception as exc2:
                 self.weave.aside(Text(f"model call failed: {exc2}", style="loom.bad.b"))
                 telemetry.report("turn.invoke", exc2)
+                failed = True
                 return None
             final_text = self._absorb_result(result)
         finally:
@@ -334,16 +336,17 @@ class Session:
             self.weave.working = None
             undo.current_turn_id.set("")
             # Explicit end-of-turn marker: while it's absent, Loom is still
-            # streaming — intermediate text is never the final answer.
-            self.weave.close(self._receipt_text(), ok=not self._interrupted)
+            # streaming — intermediate text is never the final answer. A turn
+            # whose model call failed must not close as complete: that check
+            # mark sat under a provider error and read as success.
+            self.weave.close(self._receipt_text(failed=failed), ok=not (self._interrupted or failed))
         return final_text
 
-    def _receipt_text(self) -> Text:
+    def _receipt_text(self, *, failed: bool = False) -> Text:
         """The turn's receipt, with the money in the accent colour and
         everything free stated as free — the whole reason the fleet exists."""
-        parts = [
-            Text("turn interrupted" if self._interrupted else "turn complete", style="loom.muted")
-        ]
+        label = "turn failed" if failed else "turn interrupted" if self._interrupted else "turn complete"
+        parts = [Text(label, style="loom.bad.b" if failed else "loom.muted")]
         receipt = self.tracker.receipt(turn=True)
         if receipt:
             parts.append(Text(receipt, style="loom.muted"))

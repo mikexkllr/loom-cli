@@ -113,6 +113,38 @@ def test_opencode_presets_build_chat_openai(monkeypatch, provider, api_key_env, 
         mr._build_cached.cache_clear()
 
 
+@pytest.mark.parametrize("provider,api_key_env", [("opencode_zen", "OPENCODE_ZEN_API_KEY"), ("opencode_go", "OPENCODE_GO_API_KEY")])
+def test_opencode_gateways_get_a_session_id_and_user_agent(monkeypatch, provider, api_key_env):
+    """Go answers 400 MissingSessionID without x-opencode-session (Oct 2026), and
+    both gateways ask clients to name themselves rather than send the SDK's
+    generic User-Agent. One id per process, shared by every role and turn."""
+    pytest.importorskip("langchain_openai")
+    from loom import __version__
+
+    monkeypatch.setenv(api_key_env, "test-key")
+    mr._build_cached.cache_clear()
+    try:
+        a = mr._build_cached(provider, "glm-5.3", "", 0)
+        b = mr._build_cached(provider, "kimi-k2.7-code", "", 0)
+        assert a.default_headers["x-opencode-session"].startswith("loom-")
+        assert a.default_headers["x-opencode-session"] == b.default_headers["x-opencode-session"]
+        assert a.default_headers["User-Agent"] == f"loom/{__version__}"
+    finally:
+        mr._build_cached.cache_clear()
+
+
+def test_custom_endpoints_get_no_opencode_headers(monkeypatch):
+    pytest.importorskip("langchain_openai")
+    monkeypatch.setenv("LOOM_CUSTOM_BASE_URL", "https://example.com/v1")
+    monkeypatch.setenv("LOOM_CUSTOM_API_KEY", "k")
+    mr._build_cached.cache_clear()
+    try:
+        model = mr._build_cached("custom", "my-model", "", 0)
+        assert "x-opencode-session" not in (model.default_headers or {})
+    finally:
+        mr._build_cached.cache_clear()
+
+
 def test_opencode_zen_falls_back_to_shared_api_key(monkeypatch):
     pytest.importorskip("langchain_openai")
     monkeypatch.delenv("OPENCODE_ZEN_API_KEY", raising=False)

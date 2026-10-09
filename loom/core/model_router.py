@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import functools
 import os
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -143,6 +144,24 @@ _OPENAI_COMPATIBLE: dict[str, dict[str, str]] = {
 }
 
 
+# OpenCode's gateways route and prompt-cache by conversation. Since Oct 2026 Go
+# rejects a request without a session id (400 MissingSessionID), and both ask
+# clients to name themselves instead of sending the OpenAI SDK's generic
+# User-Agent (https://opencode.ai/docs/go/#where-can-i-use-it). One id per Loom
+# process: a one-shot run is one conversation, and a REPL session keeping it
+# across turns is what keeps the gateway's prompt cache warm.
+_OPENCODE_GATEWAYS = frozenset({"opencode_zen", "opencode_go"})
+_OPENCODE_SESSION = f"loom-{uuid.uuid4().hex}"
+
+
+def _gateway_headers(provider: str) -> dict[str, str] | None:
+    if provider not in _OPENCODE_GATEWAYS:
+        return None
+    from loom import __version__
+
+    return {"x-opencode-session": _OPENCODE_SESSION, "User-Agent": f"loom/{__version__}"}
+
+
 def _build_openai_compatible(provider: str, name: str) -> "BaseChatModel":
     from langchain_openai import ChatOpenAI
 
@@ -159,7 +178,7 @@ def _build_openai_compatible(provider: str, name: str) -> "BaseChatModel":
             "(set it via settings.json's env block, e.g. `loom settings set "
             f"env.{spec['api_key_env']} <key>`)."
         )
-    return ChatOpenAI(model=name, base_url=base_url, api_key=api_key)
+    return ChatOpenAI(model=name, base_url=base_url, api_key=api_key, default_headers=_gateway_headers(provider))
 
 
 @functools.lru_cache(maxsize=64)

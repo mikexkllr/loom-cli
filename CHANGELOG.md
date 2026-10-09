@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Fixed
+
+- **OpenCode Go works again.** Since Oct 8, 2026 the Go gateway rejects requests
+  without a stable `x-opencode-session` id (`400 MissingSessionID`) and asks clients
+  to name themselves instead of sending the OpenAI SDK's generic User-Agent. Every
+  Go call failed. Both OpenCode gateways (Go and Zen) now get one session id per
+  Loom process and `User-Agent: loom/<version>`; a one-shot run is one
+  conversation, and a REPL session keeping the id is what keeps the gateway's
+  prompt cache warm.
+- **OpenCode Go defaults no longer point at a retired model.** Go retired `glm-5`
+  ("Model is unavailable"), so the setup wizard handed new Go users a fleet whose
+  orchestrator could not answer. Defaults are now `glm-5.2` / `glm-5.3` /
+  `kimi-k2.7-code`, all verified callable. An existing config that names
+  `go:glm-5` needs `/model orchestrator go:glm-5.3` (and the same for advisor and
+  escalation).
+- **A failed turn no longer closes as "✔ turn complete".** When both the stream
+  and the synchronous fallback failed, the provider error was followed by a green
+  check mark, which read as success. It now ends with "turn failed".
+- **Shell commands no longer `cd /` into the machine's root.** For the file tools
+  the project root is `/`; in a real shell `/` is the filesystem root. A live run
+  had the orchestrator brief bash to "run `bash ./ci.sh` from `/`", which left the
+  project and missed the project's allow rule for `./ci.sh`. The orchestrator now
+  briefs commands relative to the project root, and the two roles that hold
+  `execute` (bash, general-purpose) are told their shell already starts there.
+
 ### Changed
 
 - **The orchestrator's read budget is gone; every direct read now carries a

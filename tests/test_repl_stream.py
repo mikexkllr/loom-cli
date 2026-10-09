@@ -253,6 +253,28 @@ def test_turn_complete_marker_prints(tmp_path, capsys):
     assert "✔ turn complete" in capsys.readouterr().out
 
 
+def test_a_failed_model_call_does_not_close_as_complete(tmp_path, capsys):
+    """Both the stream and the synchronous fallback failing used to end with
+    "✔ turn complete" under the provider error, which read as success."""
+    from types import SimpleNamespace
+
+    s = _session(tmp_path)
+
+    class BrokenAgent:
+        def stream(self, *a, **k):
+            raise RuntimeError("Error code: 400 - MissingSessionID")
+
+        def invoke(self, *a, **k):
+            raise RuntimeError("Error code: 400 - MissingSessionID")
+
+    s.bundle = SimpleNamespace(agent=BrokenAgent(), persistent=False, fallbacks={})
+    assert s.run_turn("hello") is None
+    out = capsys.readouterr().out
+    assert "model call failed" in out
+    assert "turn failed" in out
+    assert "turn complete" not in out
+
+
 # ------------------------------------------------------------ approvals cross threads
 
 

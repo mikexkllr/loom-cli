@@ -166,3 +166,34 @@ def test_the_prompt_announces_the_reminder_on_read_results():
     prompt = _flat(orchestrator_system_prompt())
     assert "Every `read_file` result ends with a one-line reminder" in prompt
     assert "`explorer`" in prompt
+
+
+# ---------------------------------------------------------------------------
+# The virtual root stops at the shell
+#
+# A live run on 2026-10-09: the orchestrator briefed bash with "`cd /` is the
+# project root ... run `bash ./ci.sh` from `/`", and bash ran exactly that. For
+# the file tools `/` is the project; in a real shell it is the machine's root, so
+# the command left the project and missed the allow rule for ./ci.sh.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["bash", "general-purpose"])
+def test_shell_roles_are_told_not_to_cd_to_the_virtual_root(name):
+    prompt = _flat(SPECS[name].system_prompt)
+    assert "never `cd /`" in prompt
+    assert "already starts in the project root" in prompt
+
+
+@pytest.mark.parametrize("name", ["explorer", "editor", "searcher", "reviewer", "tester"])
+def test_roles_without_a_shell_hear_nothing_about_it(name):
+    assert "cd /" not in SPECS[name].system_prompt
+
+
+def test_the_orchestrator_briefs_commands_relative_to_the_root():
+    from loom.core.orchestrator import orchestrator_system_prompt
+
+    for can_read in (True, False):
+        prompt = _flat(orchestrator_system_prompt(can_read=can_read))
+        assert "relative to the project root" in prompt
+        assert "machine's real root" in prompt

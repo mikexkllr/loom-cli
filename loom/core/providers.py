@@ -153,9 +153,10 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
         # Deliberately NOT deepseek-v4-flash: it is hosted in China and 403s
         # with a RegionError until the account opts in on the OpenCode
         # dashboard, so defaulting to it hands a brand-new user a setup that
-        # cannot answer. These three are verified callable with a plain key.
-        main_model="glm-5",
-        flagship_model="glm-5.2",
+        # cannot answer. Not glm-5 either: Go retired it (Oct 2026, "Model is
+        # unavailable"). These three were verified callable on 2026-10-09.
+        main_model="glm-5.2",
+        flagship_model="glm-5.3",
         light_model="kimi-k2.7-code",
         docs_url="https://opencode.ai/docs/go/",
         notes="$5 first month / $10 mo subscription, flat usage limits. GLM/Kimi/DeepSeek/MiMo/MiniMax/Qwen "

@@ -224,6 +224,15 @@ def _summarization_middleware(
 # (it used to describe the filesystem and task tools for us). Every word a
 # subagent reads about how to behave now comes from here.
 
+# For the roles that hold `execute`. The virtual root is a file-tool convention:
+# a real shell starts in the project root, and `cd /` leaves the project. A live
+# run briefed bash to "run `bash ./ci.sh` from `/`" and it did exactly that.
+SHELL_PATHS = """
+Shell paths: `execute` already starts in the project root, so use relative paths
+in commands (`./ci.sh`, `pytest tests/`) and never `cd /` — in a real shell that
+is the machine's own root, not the project.
+"""
+
 ISOLATION_PREAMBLE = """You are a Loom subagent — an isolated worker with your own fresh context window.
 
 Your contract:

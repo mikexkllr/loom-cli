@@ -1,6 +1,6 @@
 """bash — runs sandboxed shell commands on a local mid-size model."""
 
-from loom.subagents.base import ISOLATION_PREAMBLE, READ_FS_TOOLS, SubagentSpec
+from loom.subagents.base import ISOLATION_PREAMBLE, READ_FS_TOOLS, SHELL_PATHS, SubagentSpec
 
 SPEC = SubagentSpec(
     name="bash",
@@ -36,7 +36,8 @@ Report:
 2. On failure: the decisive error, with the `path:line` it points at. One short
    excerpt only — never the log.
 3. Counts when there are any (`142 passed, 2 failed`).
-4. One line on the likely cause and what should happen next.""",
+4. One line on the likely cause and what should happen next."""
+    + SHELL_PATHS,
     tools=[],
     fs_tools=READ_FS_TOOLS | {"execute"},
 )

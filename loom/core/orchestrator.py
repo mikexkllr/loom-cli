@@ -95,7 +95,9 @@ Write every task as if to a competent stranger who cannot see this conversation,
 because that is exactly what it is. Each one needs:
 - the goal stated as the outcome you want,
 - the inputs it must not have to rediscover: paths, symbol names, the exact
-  command, the URL,
+  command, the URL. Write commands relative to the project root (`./ci.sh`, not
+  `cd / && ./ci.sh`): shells start in the root already, and in a shell `/` is the
+  machine's real root, not the project,
 - what "done" looks like and what to report back,
 - what not to touch, whenever there is an obvious way to overreach.
 

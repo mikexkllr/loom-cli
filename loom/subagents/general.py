@@ -9,7 +9,7 @@ never materializes. ``build_orchestrator`` guarantees this spec survives every
 run mode (plan/local-only/airgap) for the same reason.
 """
 
-from loom.subagents.base import ISOLATION_PREAMBLE, READ_FS_TOOLS, SubagentSpec
+from loom.subagents.base import ISOLATION_PREAMBLE, READ_FS_TOOLS, SHELL_PATHS, SubagentSpec
 from loom.tools import web_search
 
 SPEC = SubagentSpec(
@@ -44,7 +44,8 @@ Report:
 1. What you changed, one line per file as `path` — change.
 2. How you verified it: the exact command and its result. If you could not
    verify, say that plainly.
-3. Anything left open or noticed in passing.""",
+3. Anything left open or noticed in passing."""
+    + SHELL_PATHS,
     tools=[web_search],
     fs_tools=READ_FS_TOOLS | {"write_file", "edit_file", "execute"},
 )
