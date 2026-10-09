@@ -2,8 +2,32 @@
 
 ## Unreleased
 
+### Added
+
+- **`LOOM_USAGE_LOG=<file>`: the per-call record behind every receipt.** Each
+  model call (role, context window, model, input, cached and output tokens),
+  each tool call (who made it), and the size of each summary a subagent or the
+  advisor handed back are appended as JSON lines. A receipt can now be checked
+  against the numbers it was summed from, and a whole session analysed after
+  the fact: which role read what, how big each context window grew, and how
+  much of each subagent's work came back to the orchestrator.
+
 ### Fixed
 
+- **A provider refusal is no longer retried as a full synchronous turn.** When
+  the stream failed with HTTP 401, 402 or 403 (bad key, account out of credit
+  or over its plan limit, no access to the model), Loom fell back to running
+  the whole turn again without streaming, which the provider refused again.
+  Seen live when an OpenCode Go plan hit its usage limit mid-build. The turn
+  now ends at once with the reason and what to check. Rate limits (429) and
+  other errors still fall back as before.
+- **`loom "task"` exits 1 when the turn failed.** A refused or failed run
+  printed "turn failed" and exited 0, so a script or CI job could not tell it
+  from a finished one. `--loop` also stops at a failed turn instead of starting
+  the next iteration.
+- **The README no longer promises OpenCode Zen's free models.** Zen now serves
+  `-free` models only to OpenCode itself (`403 FreeTierError: OpenCode's free
+  tier can only be used from within OpenCode`).
 - **OpenCode Go works again.** Since Oct 8, 2026 the Go gateway rejects requests
   without a stable `x-opencode-session` id (`400 MissingSessionID`) and asks clients
   to name themselves instead of sending the OpenAI SDK's generic User-Agent. Every

@@ -39,6 +39,31 @@ from loom.ui.theme import make_console
 MEMORY_FILES = ("LOOM.md", "CLAUDE.md", "AGENTS.md")
 
 
+# HTTP statuses that mean "this request will be refused again as sent": the
+# key, the account's credit or plan limit, or access to the model. Retrying
+# such a turn only repeats the error after re-sending everything.
+_REFUSAL_HINTS = {
+    401: "Not retrying. The API key was rejected: check it with /doctor.",
+    402: "Not retrying. The account is out of credit or over its plan's usage limit: check the provider's billing page.",
+    403: "Not retrying. This key may not use this model, or the provider blocks this client: check the provider's console.",
+}
+
+
+def _refused_by_provider(exc: BaseException) -> int | None:
+    """The HTTP status of a provider refusal anywhere in ``exc``'s chain, else None."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        status = getattr(cur, "status_code", None)
+        if status is None:
+            status = getattr(getattr(cur, "response", None), "status_code", None)
+        if isinstance(status, int) and status in _REFUSAL_HINTS:
+            return status
+        cur = cur.__cause__ or cur.__context__
+    return None
+
+
 class Session:
     """Mutable state for one interactive Loom session."""
 
@@ -81,6 +106,7 @@ class Session:
 
         self._draw_lock = threading.RLock()
         self._interrupted = False
+        self.last_turn_failed = False
         self.console = make_console(settings.ui)
         self.weave = Weave(self.console, flat=not settings.ui.weave)
         self.messages: list = []
@@ -272,6 +298,7 @@ class Session:
         policy.auto_approve_edits.set(self.accept_edits)
         policy.confirm_callback.set(self._confirm)
         self._interrupted = False
+        self.last_turn_failed = False
 
         try:
             bundle = self.ensure_bundle()
@@ -317,6 +344,15 @@ class Session:
                 )
             )
         except Exception as exc:
+            refused = _refused_by_provider(exc)
+            if refused:
+                # A synchronous retry cannot fix a refusal: the same request is
+                # refused again, and the retry re-sends the whole turn first.
+                self.weave.aside(Text(f"provider refused the request: {exc}", style="loom.bad.b"))
+                self.weave.aside(Text(_REFUSAL_HINTS[refused], style="loom.muted"))
+                telemetry.report("turn.refused", exc)
+                failed = True
+                return None
             self.weave.aside(Text(f"streaming unavailable ({exc}); running synchronously…", style="loom.warn"))
             # Reported even though the run recovers: falling back to a
             # synchronous invoke hides a real provider/transport failure behind
@@ -339,6 +375,7 @@ class Session:
             # streaming — intermediate text is never the final answer. A turn
             # whose model call failed must not close as complete: that check
             # mark sat under a provider error and read as success.
+            self.last_turn_failed = failed
             self.weave.close(self._receipt_text(failed=failed), ok=not (self._interrupted or failed))
         return final_text
 
@@ -411,6 +448,9 @@ class Session:
             text = self.run_turn(next_prompt) or ""
             if self._interrupted:
                 render.note(self.console, "loop stopped (interrupted)", kind="warn")
+                return
+            if self.last_turn_failed:
+                render.note(self.console, "loop stopped (the turn failed)", kind="bad")
                 return
             if until:
                 check = subprocess.run(until, shell=True, cwd=self.cwd, capture_output=True, text=True)

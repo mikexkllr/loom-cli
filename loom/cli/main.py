@@ -301,6 +301,10 @@ def _run_task(
         raise typer.Exit(1)
     finally:
         telemetry.flush()
+    if session.last_turn_failed:
+        # The turn already said why; the exit code is for the script or CI job
+        # that ran it, which otherwise saw a failed run exit 0.
+        raise typer.Exit(1)
 
 
 def _fleet_rows(config: cfg.LoomConfig, bundle):

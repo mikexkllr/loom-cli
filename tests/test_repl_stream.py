@@ -275,6 +275,99 @@ def test_a_failed_model_call_does_not_close_as_complete(tmp_path, capsys):
     assert "turn complete" not in out
 
 
+
+class _Refusal(Exception):
+    """Shaped like openai.APIStatusError: the status rides on the exception."""
+
+    def __init__(self, status):
+        super().__init__(f"Error code: {status} - Insufficient account funds")
+        self.status_code = status
+
+
+def test_a_provider_refusal_is_not_retried_synchronously(tmp_path, capsys):
+    """A 402 (out of credit) streamed back once was re-sent as a full synchronous
+    turn, which the provider refused again. Seen live when an OpenCode Go plan
+    hit its limit mid-run."""
+    from types import SimpleNamespace
+
+    s = _session(tmp_path)
+    invoked = []
+
+    class RefusingAgent:
+        def stream(self, *a, **k):
+            raise _Refusal(402)
+
+        def invoke(self, *a, **k):
+            invoked.append(1)
+            raise _Refusal(402)
+
+    s.bundle = SimpleNamespace(agent=RefusingAgent(), persistent=False, fallbacks={})
+    assert s.run_turn("hello") is None
+    out = capsys.readouterr().out
+    assert invoked == []
+    assert "provider refused the request" in out and "out of credit" in out
+    assert "running synchronously" not in out
+    assert "turn failed" in out
+    assert s.last_turn_failed is True
+
+
+def test_a_refusal_wrapped_by_the_graph_is_still_recognised():
+    from loom.ui.repl import _refused_by_provider
+
+    try:
+        try:
+            raise _Refusal(401)
+        except _Refusal as inner:
+            raise RuntimeError("tool node failed") from inner
+    except RuntimeError as outer:
+        assert _refused_by_provider(outer) == 401
+    assert _refused_by_provider(RuntimeError("Error code: 400 - MissingSessionID")) is None
+    assert _refused_by_provider(_Refusal(429)) is None  # rate limits are worth retrying
+
+
+def test_a_good_turn_resets_the_failed_flag(tmp_path):
+    from types import SimpleNamespace
+
+    s = _session(tmp_path)
+    s.last_turn_failed = True
+
+    class QuietAgent:
+        def stream(self, *a, **k):
+            return iter([])
+
+    s.bundle = SimpleNamespace(agent=QuietAgent(), persistent=False, fallbacks={})
+    s.run_turn("hello")
+    assert s.last_turn_failed is False
+
+
+def test_a_failed_headless_task_exits_nonzero(tmp_path, monkeypatch):
+    """`loom "task"` printed "turn failed" and still exited 0, so a script or CI
+    job could not tell a refused run from a finished one."""
+    import typer
+
+    from loom.cli import main as cli
+    from loom.core.settings import Settings
+    from loom.ui import repl
+
+    def failing_turn(self, text):
+        self.last_turn_failed = True
+        return None
+
+    monkeypatch.setattr(repl.Session, "ensure_bundle", lambda self: SimpleBundle())
+    monkeypatch.setattr(repl.Session, "run_turn", failing_turn)
+    settings = Settings()
+    settings.ui.show_fleet_panel = False
+    with pytest.raises(typer.Exit) as exit_:
+        cli._run_task(settings, "do it", plan=False, local_only=False, yolo=True,
+                      advisor_threshold=None, root=str(tmp_path))
+    assert exit_.value.exit_code == 1
+
+
+class SimpleBundle:
+    mode = "normal"
+    model_string = "go:glm-5.3"
+    subagent_names: list = []
+
 # ------------------------------------------------------------ approvals cross threads
 
 

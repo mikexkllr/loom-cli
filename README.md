@@ -242,7 +242,7 @@ editing required.
 | **Anthropic via AWS Bedrock** | `AWS_BEARER_TOKEN_BEDROCK` (or real AWS credentials) + optional `ANTHROPIC_BEDROCK_BASE_URL` for a corporate proxy. Needs `uv sync --extra bedrock` for source installs; the standalone binary bundles it already. The setup wizard lists the models your account can actually call. |
 | **OpenAI** | `OPENAI_API_KEY`. |
 | **OpenAI-compatible (custom endpoint)** | Any server speaking the OpenAI Chat Completions API — vLLM, LM Studio, Together, Groq, etc. `LOOM_CUSTOM_BASE_URL` + `LOOM_CUSTOM_API_KEY`. |
-| **OpenCode Zen** | Curated pay-per-use model gateway. Models suffixed `-free` cost nothing and are billed as zero in receipts. `OPENCODE_ZEN_API_KEY`. |
+| **OpenCode Zen** | Curated pay-per-use model gateway. Models suffixed `-free` are billed as zero in receipts, but since October 2026 Zen serves its free tier only to OpenCode itself and answers other clients, Loom included, with `403 FreeTierError`. `OPENCODE_ZEN_API_KEY`. |
 | **OpenCode Go** | $5 first month / $10-mo subscription to curated open models (GLM, Kimi, DeepSeek, MiMo, MiniMax, Qwen). `OPENCODE_GO_API_KEY`. Being a subscription, per-token cost doesn't apply — receipts mark these `~`. |
 | **Google AI Studio** (Gemini API) | Personal API key, no GCP project — `GOOGLE_API_KEY`. |
 | **Google Vertex AI** | GCP project + Application Default Credentials (`gcloud auth application-default login`). Needs `uv sync --extra vertexai` — **source installs only**, the standalone binary does not bundle it. |
@@ -461,6 +461,12 @@ under the upstream model's name (OpenCode Zen answers `deepseek-v4-flash-free` a
 free. A `-free` tier costs zero, and a model Loom has no published price for is
 charged at the Sonnet-tier default but marked `~`, so an estimate never reads as a
 bill.
+
+For the raw numbers, set `LOOM_USAGE_LOG=usage.jsonl`: every model call (role,
+context window, model, input / cached / output tokens), every tool call, and the
+size of every summary a subagent or the advisor handed back is appended as one
+JSON line. That is enough to recompute any receipt, or to see which role read
+what and how much of it came back to the orchestrator.
 
 `/cost` breaks the session down per role — model, where it ran, calls, cached
 share, and cost — plus how often the orchestrator read files itself. `/status` shows the same

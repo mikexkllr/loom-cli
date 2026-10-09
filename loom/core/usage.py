@@ -27,6 +27,10 @@ wrong:
 
 from __future__ import annotations
 
+import json
+import os
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
@@ -102,6 +106,27 @@ DEFAULT_CLOUD_REFERENCE = "claude-sonnet-5"
 
 # Run-metadata key a caller uses to name the role it is spending on behalf of.
 ROLE_KEY = "loom_role"
+
+# Opt-in raw log. Set to a file path and every model call, tool call and
+# subagent/advisor result is appended to it as one JSON line, so a receipt can
+# be checked against the per-call numbers it was summed from.
+USAGE_LOG_ENV = "LOOM_USAGE_LOG"
+
+
+def _result_text(output: Any) -> str:
+    """The text a tool handed back, whether it returned a plain value, a message,
+    or a LangGraph ``Command`` carrying one (deepagents' ``task`` does)."""
+    update = getattr(output, "update", None)
+    if isinstance(update, dict):
+        messages = update.get("messages") or []
+        if messages:
+            output = messages[-1]
+    content = getattr(output, "content", output)
+    if isinstance(content, list):
+        content = "".join(
+            str(part.get("text", "")) if isinstance(part, dict) else str(part) for part in content
+        )
+    return "" if content is None else str(content)
 
 
 def role_metadata(config: Any, role: str) -> dict[str, Any]:
@@ -406,6 +431,8 @@ class UsageTracker(BaseCallbackHandler):
         self._parent: dict[Any, Any] = {}
         self._role: dict[Any, str] = {}
         self._provider: dict[Any, str] = {}
+        self._log_path = os.environ.get(USAGE_LOG_ENV) or None
+        self._log_lock = threading.Lock()
 
     def _billing_model(self, role: str, reported: str) -> str:
         """The model string to price this call against.
@@ -461,6 +488,18 @@ class UsageTracker(BaseCallbackHandler):
         self._parent.clear()
         self._role.clear()
         self._provider.clear()
+        self._log({"event": "turn"})
+
+    def _log(self, record: dict[str, Any]) -> None:
+        """Append one record to the ``LOOM_USAGE_LOG`` file, if one is set."""
+        if not self._log_path:
+            return
+        try:
+            line = json.dumps({"t": round(time.time(), 3), "turn": self.turns, **record})
+            with self._log_lock, open(self._log_path, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except Exception:
+            pass  # a log that can't be written must not cost the user the turn
 
     def cloud_reference(self) -> str:
         """A cloud model to price the all-cloud counterfactual against.
@@ -500,12 +539,30 @@ class UsageTracker(BaseCallbackHandler):
             run_id = kwargs.get("run_id")
             self._remember(run_id, kwargs.get("parent_run_id"))
             name = (serialized or {}).get("name") or kwargs.get("name") or ""
+            if self._log_path:
+                caller, thread = self._owner(kwargs.get("parent_run_id"))
+                self._log({"event": "tool", "role": caller, "thread": thread, "name": name})
             if name == "task":
                 inputs = kwargs.get("inputs") or {}
                 sub = inputs.get("subagent_type") if isinstance(inputs, dict) else None
                 self._role[run_id] = str(sub or "general-purpose")
             elif name == "consult":
                 self._role[run_id] = "advisor"
+        except Exception:
+            pass
+
+    def on_tool_end(self, output: Any, **kwargs: Any) -> None:
+        """Log how much a subagent or the advisor handed back — the summary the
+        orchestrator keeps, set against the tokens spent producing it."""
+        try:
+            run_id = kwargs.get("run_id")
+            role = self._role.get(run_id)
+            if role is None or not self._log_path:
+                return
+            self._log(
+                {"event": "result", "role": role, "thread": str(run_id),
+                 "chars": len(_result_text(output))}
+            )
         except Exception:
             pass
 
@@ -548,15 +605,21 @@ class UsageTracker(BaseCallbackHandler):
         """The role that owns ``run_id``, by walking up the run tree to the
         nearest ``task`` (or ``consult``) call. Defaults to the orchestrator: a
         model call under no delegation is the main graph's own."""
+        return self._owner(run_id)[0]
+
+    def _owner(self, run_id: Any) -> tuple[str, str]:
+        """``(role, thread)`` for ``run_id``. The thread is the run that claimed
+        the role — one ``task`` call is one subagent context window — or
+        ``"main"`` for the orchestrator's own."""
         seen: set[Any] = set()
         cur = run_id
         while cur is not None and cur not in seen:
             seen.add(cur)
             role = self._role.get(cur)
             if role is not None:
-                return role
+                return role, str(cur)
             cur = self._parent.get(cur)
-        return "orchestrator"
+        return "orchestrator", "main"
 
     # ----- LangChain callback hook -----
     def on_llm_end(self, response: Any, **kwargs: Any) -> None:
@@ -566,7 +629,7 @@ class UsageTracker(BaseCallbackHandler):
             pass  # never break the run over accounting
 
     def _record(self, response: Any, run_id: Any = None) -> None:
-        role = self.role_for(run_id)
+        role, thread = self._owner(run_id)
         provider = self._provider.get(run_id, "")
         for generations in getattr(response, "generations", []) or []:
             for gen in generations:
@@ -596,6 +659,11 @@ class UsageTracker(BaseCallbackHandler):
                         cache_write=cache_write,
                         billed_as=billed_as,
                     )
+                self._log(
+                    {"event": "llm", "role": role, "thread": thread, "model": model,
+                     "local": is_local, "input": inp, "cache_read": cache_read,
+                     "cache_write": cache_write, "output": out}
+                )
 
     def _is_local(self, model_name: str, provider: str = "") -> bool:
         """Whether a call was free.
