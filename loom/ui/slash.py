@@ -659,9 +659,8 @@ def _status(session: "Session", args: str) -> bool:
         return render.model_badge(console, model, is_local)
 
     local_tags = session.local_model_tags()
-    budget = cfg.orchestrator_read_budget
     guards = (getattr(session.bundle, "guards", []) or []) if session.bundle is not None else []
-    note = _read_budget_note(session)
+    note = _direct_reads_note(session)
     reference = session.tracker.cloud_reference()
     approx = "~" if u.get("cost_estimated") else ""
 
@@ -728,8 +727,7 @@ def _status(session: "Session", args: str) -> bool:
                         [
                             Text(f"orchestrator held {su.orchestrator_share():.0%}", style="loom.text"),
                             Text(f"{su.delegations()} delegated role(s)", style="loom.muted"),
-                            Text(f"read budget {'off' if budget < 0 else f'{budget}/turn'}", style="loom.muted"),
-                            *([Text(note, style="loom.warn")] if note else []),
+                            *([Text(note, style="loom.muted")] if note else []),
                         ],
                     ),
                 ),
@@ -1028,7 +1026,7 @@ def _cost(session: "Session", args: str) -> bool:
                         ],
                     ),
                 ),
-                ("read budget", Text(_read_budget_note(session) or "never hit", style="loom.muted")),
+                ("direct reads", Text(_direct_reads_note(session) or "none", style="loom.muted")),
             ]
         )
     )
@@ -1038,21 +1036,16 @@ def _cost(session: "Session", args: str) -> bool:
     return True
 
 
-def _read_budget_note(session: "Session") -> str:
-    """What the read budget actually did, as a bare fragment both callers frame
-    themselves — /status already labels the row "read budget", and repeating the
-    phrase there read like a stutter."""
-    guard = getattr(session.bundle, "delegation_guard", None) if session.bundle else None
-    blocked = getattr(guard, "blocked_count", 0) or 0
-    refused = getattr(guard, "refused_count", 0) or 0
-    if not blocked and not refused:
+def _direct_reads_note(session: "Session") -> str:
+    """How often the orchestrator read a file itself, as a bare fragment both
+    callers frame themselves. Each of those reads came back with the reminder to
+    hand larger investigation to explorer (see DelegationReminder); a count that
+    climbs turn after turn means the reminder is not landing."""
+    reminder = getattr(session.bundle, "delegation_reminder", None) if session.bundle else None
+    reads = getattr(reminder, "reminded_count", 0) or 0
+    if not reads:
         return ""
-    parts = [f"withheld on {blocked} model call(s)"] if blocked else []
-    if refused:
-        # Worth naming separately: the model reached for a tool it could no
-        # longer see, which is why the budget is enforced at the tool too.
-        parts.append(f"{refused} over-budget read(s) refused")
-    return ", ".join(parts)
+    return f"{reads} direct read(s) by the orchestrator, each with an explorer reminder"
 
 
 @command("resume", "List past sessions, or resume one: /resume [n | thread-id]")

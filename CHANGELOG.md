@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Changed
+
+- **The orchestrator's read budget is gone; every direct read now carries a
+  reminder instead.** `read_file` used to be metered — four direct reads per user
+  turn, then the tool was withdrawn and an extra call refused. It is now never
+  withdrawn: each result the orchestrator gets back ends with one line saying that
+  anything larger than a targeted check (mapping how something works, tracing a
+  flow, reading several files) belongs to `explorer`, spawned with `task`. The
+  nudge lands exactly when the model is reading, a legitimate run of
+  confirmations is no longer cut off mid-review, and because it rides on the tool
+  result it never touches the cached prompt prefix. The structural split is
+  unchanged: the orchestrator still has no `ls`, `glob`, `grep`, edit or shell
+  tool, and `--airgap` still has no `read_file` at all.
+  `orchestrator_read_budget` is no longer read — an existing setting is ignored;
+  use `--airgap` if you want no direct reads. `/cost` and `/status` now report how
+  many direct reads the orchestrator made instead of what the budget withheld.
+  ([`middleware/delegation_reminder.py`](loom/middleware/delegation_reminder.py))
+
 ### Added
 
 - **`loom uninstall` — the counterpart to `loom update`.** Loom could install

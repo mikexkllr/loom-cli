@@ -463,7 +463,7 @@ charged at the Sonnet-tier default but marked `~`, so an estimate never reads as
 bill.
 
 `/cost` breaks the session down per role — model, where it ran, calls, cached
-share, and cost — plus what the read budget did. `/status` shows the same
+share, and cost — plus how often the orchestrator read files itself. `/status` shows the same
 delegation ratio alongside the session totals.
 
 ### Knowledge graph — GraphRAG (`/graphify`)
@@ -592,10 +592,6 @@ subagents:
 advisor: claude-opus-4-8       # consulted on-demand only
 ollama_endpoint: http://localhost:11434
 
-# Direct read_file calls the orchestrator gets per turn before the tool is
-# withdrawn and it has to delegate. 0 forbids them; -1 removes the cap.
-orchestrator_read_budget: 4
-
 # Fraction of each model's own context window at which it auto-compacts.
 compaction_threshold: 0.70
 ```
@@ -723,18 +719,18 @@ manually.
   commands exist only inside subagents. This used to be prompt guidance
   ("delegate, don't investigate yourself"), which strong cloud models read,
   agreed with, and then ignored — mapping the tree themselves at cloud prices.
-- **Read budget** — `read_file` survives, because confirming the one path a
-  subagent just named is genuinely the orchestrator's job. It is metered:
-  `orchestrator_read_budget` (default 4) direct reads per user turn, after which
-  the tool is *removed from the request* and delegation is the only way forward.
-  Withdrawing it is not enough on its own — the tool node still holds every tool
-  the agent was built with, so a model that calls it anyway (having just watched
-  four such calls succeed) would get its file. So the budget is enforced twice:
-  withdrawn at the model call, and refused at the tool call with a message naming
-  the subagent to hand the reading to. The system prompt states the budget, so
-  neither reads as a broken harness. `/cost` reports both counts — a refusal means
-  the model reached for a tool it could no longer see. See
-  [`middleware/delegation_guard.py`](loom/middleware/delegation_guard.py).
+- **Delegation reminder** — `read_file` survives, because confirming the one
+  path a subagent just named is genuinely the orchestrator's job, and it is never
+  withdrawn. Instead every result it returns ends with a one-line reminder: for
+  anything larger than a targeted check (mapping how something works, tracing a
+  flow, reading several files), spawn `explorer` and work from its summary. The
+  nudge arrives exactly when the model is reading, which is when "confirm this
+  line" drifts into "let me look around". It rides on the tool result rather than
+  the system prompt, so it never touches the cached prompt prefix, and the system
+  prompt announces it, so the model reads it as the harness working rather than
+  as news. `/cost` and `/status` count the orchestrator's direct reads — a number
+  that climbs turn after turn means the reminder is not landing. See
+  [`middleware/delegation_reminder.py`](loom/middleware/delegation_reminder.py).
 - **Prompt-size guard** — if a local subagent's prompt nears its context window,
   that single call escalates instead of failing, up a two-rung ladder: first to
   the roomiest **local** model your daemon is already serving, and only if none
@@ -785,7 +781,7 @@ loom/
 ├── subagents/              # explorer, editor, bash, searcher, reviewer, general-purpose, tester
 ├── middleware/
 │   ├── prompt_size_guard.py
-│   ├── delegation_guard.py # meter the orchestrator's own reads per turn
+│   ├── delegation_reminder.py # nudge the orchestrator toward explorer on every read
 │   ├── tool_exclusion.py   # last-mile tool removal (what an allowlist can't express)
 │   └── policy.py           # enforce permissions + run hooks per tool call
 ├── tools/                  # sandboxed fs / shell / search tools
@@ -807,7 +803,7 @@ evals/                      # eval tasks + fixtures (scripts/eval.py)
 Built on [`deepagents`](https://docs.langchain.com/oss/python/deepagents) /
 LangChain. deepagents supplies the `task` (delegation) tool and the filesystem
 layer; Loom supplies every system prompt, the `write_todos` middleware, the
-`consult` tool, the tool allowlists, the read budget, the prompt-size guard, and
+`consult` tool, the tool allowlists, the delegation reminder, the prompt-size guard, and
 window-aware summarization.
 
 ## Tests

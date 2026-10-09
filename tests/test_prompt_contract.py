@@ -85,7 +85,7 @@ def test_orchestrator_prompt_matches_the_registered_fleet():
     advertise one that does not exist."""
     from loom.core.orchestrator import orchestrator_system_prompt
 
-    prompt = orchestrator_system_prompt(4)
+    prompt = orchestrator_system_prompt()
     for name in SPECS:
         assert f"`{name}`" in prompt, f"{name} is missing from the fleet listing"
     for named in _MENTION.findall(prompt):
@@ -99,7 +99,7 @@ def test_orchestrator_prompt_matches_the_registered_fleet():
 def test_orchestrator_prompt_does_not_claim_search_tools():
     from loom.core.orchestrator import _orchestrator_excluded_tools, orchestrator_system_prompt
 
-    prompt = orchestrator_system_prompt(4)
+    prompt = orchestrator_system_prompt()
     excluded = _orchestrator_excluded_tools(airgap=False)
     # They are named exactly once, in the sentence declaring they are quarantined.
     assert "You have no" in prompt
@@ -143,11 +143,10 @@ def test_the_root_convention_rules_out_the_wider_filesystem():
     assert "no home directory" in preamble
 
 
-@pytest.mark.parametrize("budget", [-1, 4])
-def test_the_orchestrator_is_told_the_root_whenever_it_can_read(budget):
+def test_the_orchestrator_is_told_the_root_whenever_it_can_read():
     from loom.core.orchestrator import orchestrator_system_prompt
 
-    prompt = orchestrator_system_prompt(budget)
+    prompt = orchestrator_system_prompt(can_read=True)
     assert "read_file" in prompt
     assert "project root is `/`" in prompt
 
@@ -156,12 +155,14 @@ def test_the_orchestrator_is_not_told_about_paths_when_it_cannot_read():
     """Airgap mode: no filesystem tools, so path conventions are noise."""
     from loom.core.orchestrator import orchestrator_system_prompt
 
-    assert "project root is `/`" not in orchestrator_system_prompt(0)
+    assert "project root is `/`" not in orchestrator_system_prompt(can_read=False)
 
 
-def test_the_budget_prompt_warns_that_an_over_budget_call_is_refused():
-    """The guard refuses the call as well as withdrawing the tool, so the prompt
-    has to predict both or the refusal reads as a broken harness."""
+def test_the_prompt_announces_the_reminder_on_read_results():
+    """DelegationReminder appends a line to every read_file result, so the prompt
+    has to predict it or the model treats it as news to react to."""
     from loom.core.orchestrator import orchestrator_system_prompt
 
-    assert "refused" in orchestrator_system_prompt(4)
+    prompt = _flat(orchestrator_system_prompt())
+    assert "Every `read_file` result ends with a one-line reminder" in prompt
+    assert "`explorer`" in prompt

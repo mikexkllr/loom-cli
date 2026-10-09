@@ -64,7 +64,7 @@ from yourself the job itself, not an optimization.
 
 - `task(description, subagent_type)` — delegate. This is your primary verb.
 - `write_todos` — the plan, for anything past a couple of steps.
-- `read_file` — {budget_phrase}
+- `read_file` — {read_phrase}
 - `consult(question, context_summary)` — the strongest available model, for
   judgment calls. It advises; it cannot act.
 
@@ -149,12 +149,13 @@ Synthesize the reports — never paste one back verbatim, and never narrate your
 own routing ("now I will delegate to explorer"); the user already sees the tool
 calls. Keep it tight."""
 
-_READING_RULE_BUDGETED = """You get {budget} direct `read_file` calls per user turn. \
-After that the tool is withdrawn until the next turn — expect this, it is not an
-error, and a call made anyway comes back refused. Spend those reads on
-confirmation, never on investigation: the exact path a subagent just named, or the
-region of a change you are about to approve. Anything that begins with "let me
-look around" belongs to `explorer`.
+_READING_RULE = """`read_file` is for confirmation, never for investigation: the \
+exact path a subagent just named, or the region of a change you are about to
+approve. Anything larger — mapping how something works, tracing a flow, reading
+several files, anything that begins with "let me look around" — is a job for
+`explorer`: spawn it with `task` and work from its summary. Every `read_file`
+result ends with a one-line reminder of this rule; it is not an error and not new
+information.
 
 The project root is `/`, so `src/app.py` and `/src/app.py` are the same file.
 Nothing exists outside the root."""
@@ -163,16 +164,8 @@ _READING_RULE_NONE = """You have no `read_file` tool. Every fact about this \
 codebase reaches you through a subagent's report. If you need to see a specific
 region of a file, ask `explorer` for that region and what to note about it."""
 
-_READING_RULE_UNLIMITED = """`read_file` is uncapped in this configuration, which \
-makes discipline yours to keep: use it to confirm a path a subagent named or a
-change it reported, and route anything exploratory to `explorer` anyway.
-
-The project root is `/`, so `src/app.py` and `/src/app.py` are the same file.
-Nothing exists outside the root."""
-
-_BUDGET_PHRASE_BUDGETED = "a hard budget of {budget} direct reads per turn (see Reading)."
-_BUDGET_PHRASE_NONE = "unavailable in this run (see Reading)."
-_BUDGET_PHRASE_UNLIMITED = "targeted confirmation of a path a subagent named."
+_READ_PHRASE = "confirm one specific spot; anything larger goes to `explorer` (see Reading)."
+_READ_PHRASE_NONE = "unavailable in this run (see Reading)."
 
 # deepagents 0.7 dropped TodoListMiddleware from the defaults, so `write_todos`
 # is only present because Loom adds it back — and its prompt is Loom's to write.
@@ -238,22 +231,19 @@ them to prefer the graph too. Fall back to a subagent when you need exact code
 bodies or the graph lacks the detail."""
 
 
-def orchestrator_system_prompt(read_budget: int) -> str:
-    """The base system prompt, with the read-budget rule filled in.
+def orchestrator_system_prompt(can_read: bool = True) -> str:
+    """The base system prompt, with the reading rule filled in.
 
-    The budget is stated in the prompt because :class:`DelegationGuard` enforces
-    it by *removing* ``read_file`` mid-turn. A model that was told the rule reads
-    the disappearance as the rule working; a model that was not reads it as a
-    broken harness and starts working around it.
+    The rule announces the reminder :class:`DelegationReminder` attaches to every
+    ``read_file`` result, so the model reads it as the harness working rather than
+    as something new to react to. ``can_read=False`` is airgap: no ``read_file``
+    at all, so no reminder and no path conventions either.
     """
-    if read_budget < 0:
-        reading, phrase = _READING_RULE_UNLIMITED, _BUDGET_PHRASE_UNLIMITED
-    elif read_budget == 0:
-        reading, phrase = _READING_RULE_NONE, _BUDGET_PHRASE_NONE
+    if can_read:
+        reading, phrase = _READING_RULE, _READ_PHRASE
     else:
-        reading = _READING_RULE_BUDGETED.format(budget=read_budget)
-        phrase = _BUDGET_PHRASE_BUDGETED.format(budget=read_budget)
-    return _ORCHESTRATOR_SYSTEM_TEMPLATE.format(budget_phrase=phrase, reading_rule=reading)
+        reading, phrase = _READING_RULE_NONE, _READ_PHRASE_NONE
+    return _ORCHESTRATOR_SYSTEM_TEMPLATE.format(read_phrase=phrase, reading_rule=reading)
 
 
 # Subagents permitted in plan mode. general-purpose stays (built read-only in
@@ -287,8 +277,9 @@ def _orchestrator_excluded_tools(*, airgap: bool) -> set[str]:
     themselves instead of routing recon to a local explorer, defeating the
     context-quarantine design. Removing the tools makes the split structural
     instead of advisory. read_file stays available for the small targeted
-    confirmations the system prompt calls for — and is itself metered per turn by
-    :class:`DelegationGuard`. Airgap strips every filesystem tool, no exception.
+    confirmations the system prompt calls for — and every result it returns ends
+    with a reminder to hand anything larger to explorer
+    (:class:`DelegationReminder`). Airgap strips every filesystem tool, no exception.
 
     As of deepagents 0.7 this is the second of two layers: the orchestrator's
     ``FilesystemMiddleware`` is built with a matching allowlist so most of these
@@ -485,9 +476,9 @@ class OrchestratorBundle:
     active_config: LoomConfig | None = None
     # PromptSizeGuard instances, so the UI can report escalation counts.
     guards: list[Any] = field(default_factory=list)
-    # The orchestrator's read-budget guard, so /status can report how often the
-    # orchestrator hit the cap and had to delegate instead.
-    delegation_guard: Any | None = None
+    # The orchestrator's DelegationReminder (None in airgap, which has no
+    # read_file), so /status and /cost can report how often it read files itself.
+    delegation_reminder: Any | None = None
 
 
 def build_orchestrator(
@@ -648,8 +639,7 @@ def build_orchestrator(
         tools.extend(graph_tools)
 
     # ----- system prompt (kept prefix-stable for prompt caching) -----
-    read_budget = 0 if airgap else config.orchestrator_read_budget
-    system = orchestrator_system_prompt(read_budget)
+    system = orchestrator_system_prompt(can_read=not airgap)
     if plan:
         system += PLAN_SUFFIX
     if local_only:
@@ -725,12 +715,15 @@ def build_orchestrator(
     excluded_tools = _orchestrator_excluded_tools(airgap=airgap)
     middleware.append(ToolExclusionMiddleware(excluded_tools))
 
-    # Meter the reads that remain. Prompt wording alone does not hold this line
-    # (see loom/middleware/delegation_guard.py).
-    from loom.middleware.delegation_guard import DelegationGuard
+    # The one read tool that remains carries a nudge on every result: anything
+    # larger than a targeted check goes to explorer
+    # (see loom/middleware/delegation_reminder.py). Airgap has no read_file.
+    delegation_reminder = None
+    if not airgap:
+        from loom.middleware.delegation_reminder import DelegationReminder
 
-    delegation_guard = DelegationGuard(read_budget)
-    middleware.append(delegation_guard)
+        delegation_reminder = DelegationReminder()
+        middleware.append(delegation_reminder)
 
     kwargs: dict[str, Any] = dict(
         model=orch_model,
@@ -765,7 +758,7 @@ def build_orchestrator(
         substitutions=substitutions,
         active_config=config,
         guards=guards,
-        delegation_guard=delegation_guard,
+        delegation_reminder=delegation_reminder,
         model_string=orch_model_string,
         subagent_names=[s["name"] for s in subagents],
         mode="plan"

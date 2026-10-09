@@ -23,7 +23,7 @@ Durable, hard-won knowledge lives in `memories/` (migrated from Claude Code's me
 | File | Read when |
 |---|---|
 | [memories/loom-project-context.md](memories/loom-project-context.md) | Any work in this repo — device constraints, deepagents 0.7 gotchas |
-| [memories/loom-enforce-routing-structurally.md](memories/loom-enforce-routing-structurally.md) | "Make the orchestrator/subagent stop doing X" — tool allowlists, exclusion, read budget |
+| [memories/loom-enforce-routing-structurally.md](memories/loom-enforce-routing-structurally.md) | "Make the orchestrator/subagent stop doing X" — tool allowlists, exclusion, delegation reminder |
 | [memories/loom-cloud-fallback-needs-anthropic-key.md](memories/loom-cloud-fallback-needs-anthropic-key.md) | Provider/auth failures, OpenCode Zen/Go credentials, free models, Go region gates |
 | [memories/loom-test-end-to-end.md](memories/loom-test-end-to-end.md) | Testing Loom — why unit tests miss real bugs, the four test layers incl. pty REPL testing |
 | [memories/loom-approval-prompts-race-the-renderer.md](memories/loom-approval-prompts-race-the-renderer.md) | Anything that prints during a turn — tool calls run on LangGraph worker threads, so prompts race the stream |

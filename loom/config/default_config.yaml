@@ -75,17 +75,6 @@ escalation_threshold: 0.85
 # and replaced in-context with a path reference.
 artifact_offload_tokens: 2000
 
-# How many `read_file` calls the orchestrator may make itself per user turn
-# before the tool is withdrawn for the rest of that turn and it has to delegate.
-# The orchestrator has no ls/glob/grep at all — recon lives in explorer — but a
-# strong cloud model handed `read_file` will still sweep a dozen files "just to
-# be sure", which is the context pollution subagents exist to prevent, at cloud
-# prices. Prompt wording does not hold that line, so the cap is enforced by
-# removing the tool. Enough to confirm the paths a subagent named; not enough to
-# explore. 0 forbids direct reads entirely (what --airgap does); -1 disables the
-# cap and leaves the discipline to the model.
-orchestrator_read_budget: 4
-
 # When to consult the advisor automatically: low | medium | high.
 # "high" => only before genuinely high-risk decisions; "low" => consult freely.
 advisor_threshold: medium
