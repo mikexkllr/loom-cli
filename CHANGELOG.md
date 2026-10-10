@@ -14,6 +14,14 @@
 
 ### Fixed
 
+- **Ctrl-C now stops subagents too.** Interrupting a turn ended the stream, but
+  a subagent kept running on its worker thread: in a live run a general-purpose
+  subagent made 23 more model calls, about a million tokens, in the five minutes
+  after the interrupt, and an editor could have kept writing files. Each turn
+  now carries a cancel handler in its callbacks; once the turn is interrupted
+  or over, any model or tool call that tries to start under it, in any
+  subagent, is refused. The call already in flight finishes; nothing after it
+  starts.
 - **A provider refusal is no longer retried as a full synchronous turn.** When
   the stream failed with HTTP 401, 402 or 403 (bad key, account out of credit
   or over its plan limit, no access to the model), Loom fell back to running

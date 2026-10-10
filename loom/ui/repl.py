@@ -26,6 +26,7 @@ from loom.core import settings as settings_mod
 from loom.core import telemetry
 from loom.core import undo
 from loom.core.settings import Settings
+from loom.core.cancel import TurnCancel
 from loom.core.usage import UsageTracker
 from loom.middleware import policy
 from loom.tools import sandbox
@@ -325,6 +326,10 @@ class Session:
             inputs = {"messages": list(self.messages)}
 
         run_config = self._run_config()
+        # Only this turn's run carries it: a later /compact must not inherit a
+        # cancelled handler.
+        cancel = TurnCancel()
+        run_config["callbacks"] = [*run_config["callbacks"], cancel]
         final_text: str | None = None
         failed = False
         self.weave.reset()
@@ -337,6 +342,7 @@ class Session:
             final_text = self._stream(bundle.agent, inputs, run_config)
         except KeyboardInterrupt:
             self._interrupted = True
+            cancel.cancel()
             self.weave.aside(
                 Text(
                     "interrupted — partial work may have landed; /undo rolls back this turn's writes",
@@ -368,6 +374,9 @@ class Session:
                 return None
             final_text = self._absorb_result(result)
         finally:
+            # However the turn ended, nothing it started may keep running: a
+            # subagent on a worker thread outlives an abandoned stream.
+            cancel.cancel()
             working.stop()
             self.weave.working = None
             undo.current_turn_id.set("")
