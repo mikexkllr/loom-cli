@@ -1,4 +1,4 @@
-# Loom evals — Terminal-Bench 2.1
+# Loom evals — Terminal-Bench 2.1 and SWE-bench Pro
 
 Loom is measured on **[Terminal-Bench 2.1](https://www.tbench.ai/)**: 89 tasks
 (4 easy / 55 medium / 30 hard) in Docker containers, graded by hidden tests
@@ -14,7 +14,7 @@ it exits or the task's agent timeout fires (official timeouts, no multiplier).
 |---|---|
 | `loom_agent.py` | Harbor installed-agent adapter. Builds nothing itself: installs the wheel from `.build/` with versions pinned to `uv.lock`, writes a `LOOM_HOME/settings.json` with the model routing, runs `loom --yolo --root $(pwd) "<task>"`, and parses `LOOM_USAGE_LOG` for per-role tokens and Loom's own cost receipt. |
 | `tbench.py` | Runner: `build`, `run <config>`, `report`, `pilot`. |
-| `results/` | Committed: `REPORT.md` (tables) and `results.json` (per-trial rows). |
+| `results/<bench>/` | Committed: `REPORT.md` (tables) and `results.json` (per-trial rows), one folder per benchmark (`tb21`, `swepro`). |
 | `jobs/`, `.build/`, `.dataset/` | Gitignored Harbor output, wheel, downloaded tasks. |
 
 ## Running
@@ -25,6 +25,17 @@ python3 evals/tbench.py build   # after any code change
 python3 evals/tbench.py run loom-hybrid --tasks pilot -n 2
 python3 evals/tbench.py run terminus-argon --tasks pilot -n 2
 python3 evals/tbench.py report
+```
+
+`--bench swepro` (before the subcommand) switches every command to SWE-bench Pro
+(`scale-ai/swe-bench-pro`, 731 tasks, 50-minute limit); its pilot is one task per
+repository, same seed. `mini-argon` runs mini-swe-agent, SWE-bench's reference
+harness, on the same model:
+
+```bash
+python3 evals/tbench.py --bench swepro run loom-cloud --tasks pilot -n 1
+python3 evals/tbench.py --bench swepro run mini-argon --tasks pilot -n 1
+python3 evals/tbench.py --bench swepro report
 ```
 
 `--tasks` takes `pilot` (seeded 12-task stratified sample: 1 easy, 7 medium, 4
@@ -47,6 +58,7 @@ container would otherwise size the KV cache from the container, not the Mac.
 | `loom-cloud` | Loom | Gemini 4 Argon | Gemini 4 Argon |
 | `terminus-argon` | Terminus-2 | Gemini 4 Argon | — (single agent) |
 | `terminus-qwen` | Terminus-2 | Qwen3.8-27B local | — (single agent) |
+| `mini-argon` | mini-swe-agent | Gemini 4 Argon | — (single agent) |
 
 Same models, different harness. The harness is the variable being measured.
 

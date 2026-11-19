@@ -552,7 +552,7 @@ hidden-test tasks in Docker), the benchmark the coding-agent leaderboards use
 for Claude Code, Codex CLI, Gemini CLI and friends. `evals/loom_agent.py` is a
 [Harbor](https://github.com/laude-institute/harbor) adapter that installs this
 checkout into each task container; `evals/tbench.py` runs Loom and reference
-harnesses on the same models and writes `evals/results/REPORT.md`. See
+harnesses on the same models and writes `evals/results/<bench>/REPORT.md`. See
 [evals/README.md](evals/README.md).
 
 ### One-shot

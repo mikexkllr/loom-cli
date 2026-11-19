@@ -35,8 +35,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 EVALS = ROOT / "evals"
 BUILD = EVALS / ".build"
-JOBS = EVALS / "jobs"
-RESULTS = EVALS / "results"
+# Set per benchmark by _select(): the Harbor dataset, where its jobs and results
+# live, its broken tasks, its published numbers and its pilot sampler.
+JOBS = EVALS / "jobs" / "tb21"
+RESULTS = EVALS / "results" / "tb21"
 DATASET = "terminal-bench/terminal-bench-2-1"
 UV_VERSION = "0.9.5"
 
@@ -57,6 +59,10 @@ CONFIGS: dict[str, tuple[str, str, list[str], str]] = {
         "terminus-2", "gemini/gemini-4-argon", [],
         "Terminus-2 (Terminal-Bench reference harness) on Gemini 4 Argon",
     ),
+    "mini-argon": (
+        "mini-swe-agent", "gemini/gemini-4-argon", [],
+        "mini-swe-agent (SWE-bench's reference harness) on Gemini 4 Argon",
+    ),
     "terminus-qwen": (
         "terminus-2", "ollama_chat/qwen3.8:27b-mlx",
         ["--ak", "api_base=http://localhost:11434",
@@ -65,20 +71,48 @@ CONFIGS: dict[str, tuple[str, str, list[str], str]] = {
     ),
 }
 
-# Tasks whose *grader* cannot run here, for any agent — excluded from every
-# config's score and listed in the report.
-BROKEN_TASKS = {
-    "qemu-alpine-ssh": "tests/test.sh apt-installs curl; the Debian security mirror 404s "
-    "those package versions (2026-11-19), so the grader dies before testing anything",
+BENCHES = {
+    "tb21": {
+        "title": "Terminal-Bench 2.1",
+        "dataset": "terminal-bench/terminal-bench-2-1",
+        # Tasks whose *grader* cannot run here, for any agent — excluded from
+        # every config's score and listed in the report.
+        "broken": {
+            "qemu-alpine-ssh": "tests/test.sh apt-installs curl; the Debian security mirror 404s "
+            "those package versions (2026-11-19), so the grader dies before testing anything",
+        },
+        # Published numbers for the same models (fetched 2026-11-19; see README.md).
+        "published": [
+            ("Vals AI harness", "Gemini 4 Argon", "TB 2.1, 89 tasks", 57.7, "independent"),
+            ("Vals AI harness", "Qwen3.8-27B", "TB 2.1, 89 tasks", 58.4, "independent"),
+            ("Terminus", "Qwen3.8-27B", "TB 2.1, 89 tasks", 73.0, "self-reported by Qwen"),
+            ("Antigravity CLI", "Gemini 4 Argon (high)", "TB 4.1, 66 tasks", 55.5, "official leaderboard"),
+        ],
+    },
+    "swepro": {
+        "title": "SWE-bench Pro (public)",
+        "dataset": "scale-ai/swe-bench-pro",
+        "broken": {},
+        "published": [
+            ("Claude Code (Qwen-run)", "Qwen3.8-27B", "SWE-bench Pro, corrected set", 61.7,
+             "self-reported by Qwen"),
+        ],
+    },
 }
+BROKEN_TASKS: dict[str, str] = {}
+PUBLISHED: list[tuple] = []
+BENCH = "tb21"
 
-# Published numbers for the same models (fetched 2026-11-19; see README.md).
-PUBLISHED = [
-    ("Vals AI harness", "Gemini 4 Argon", "TB 2.1, 89 tasks", 57.7, "independent"),
-    ("Vals AI harness", "Qwen3.8-27B", "TB 2.1, 89 tasks", 58.4, "independent"),
-    ("Terminus", "Qwen3.8-27B", "TB 2.1, 89 tasks", 73.0, "self-reported by Qwen"),
-    ("Antigravity CLI", "Gemini 4 Argon (high)", "TB 4.1, 66 tasks", 55.5, "official leaderboard"),
-]
+
+def _select(bench: str) -> None:
+    global BENCH, DATASET, JOBS, RESULTS, BROKEN_TASKS, PUBLISHED
+    b = BENCHES[bench]
+    BENCH, DATASET = bench, b["dataset"]
+    JOBS, RESULTS = EVALS / "jobs" / bench, EVALS / "results" / bench
+    BROKEN_TASKS, PUBLISHED = b["broken"], b["published"]
+
+
+_select("tb21")
 
 
 # --------------------------------------------------------------------- helpers
@@ -107,8 +141,18 @@ def _tasks_meta() -> dict[str, dict]:
 
 
 def pilot_subset(n_easy: int = 1, n_medium: int = 7, n_hard: int = 4, seed: int = 2026) -> list[str]:
-    """Seeded, difficulty-stratified sample roughly proportional to the full set
-    (4 easy / 55 medium / 30 hard). Fixed seed: every config gets the same tasks."""
+    """Seeded pilot sample; fixed seed, so every config gets the same tasks.
+
+    Terminal-Bench: stratified by difficulty, roughly proportional to the full
+    set (4 easy / 55 medium / 30 hard). SWE-bench Pro has no difficulty split
+    (every task is "medium"), so it takes one task per repository instead.
+    """
+    if BENCH == "swepro":
+        by_repo: dict[str, list[str]] = defaultdict(list)
+        for name in _tasks_meta():
+            by_repo[name.split("__")[1].split("-")[0]].append(name)
+        rng = random.Random(seed)
+        return [rng.choice(sorted(by_repo[repo])) for repo in sorted(by_repo)]
     by: dict[str, list[str]] = defaultdict(list)
     for name, meta in _tasks_meta().items():
         by[meta["difficulty"]].append(name)
@@ -285,7 +329,7 @@ def cmd_report(_args) -> int:
     meta = _tasks_meta()
     RESULTS.mkdir(parents=True, exist_ok=True)
     (RESULTS / "results.json").write_text(json.dumps(rows, indent=2, default=str))
-    lines = [f"# Terminal-Bench 2.1 — Loom vs reference harnesses ({date.today()})", ""]
+    lines = [f"# {BENCHES[BENCH]['title']} — Loom vs reference harnesses ({date.today()})", ""]
     lines += ["| Config | Graded | Passed | Pass rate | Hit timeout | Ungraded (infra) | "
               "Cloud cost | Median agent time |",
               "|---|---|---|---|---|---|---|---|"]
@@ -333,6 +377,8 @@ def cmd_report(_args) -> int:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--bench", choices=list(BENCHES), default="tb21",
+                   help="tb21 = Terminal-Bench 2.1 (default), swepro = SWE-bench Pro")
     sub = p.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build")
     b.add_argument("--out", help="build dir (default evals/.build)")
@@ -346,6 +392,7 @@ def main() -> int:
     sub.add_parser("report")
     sub.add_parser("pilot")
     args = p.parse_args()
+    _select(args.bench)
     if args.cmd == "pilot":
         print("\n".join(pilot_subset()))
         return 0

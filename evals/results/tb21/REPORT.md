@@ -2,9 +2,9 @@
 
 | Config | Graded | Passed | Pass rate | Hit timeout | Ungraded (infra) | Cloud cost | Median agent time |
 |---|---|---|---|---|---|---|---|
-| loom-cloud-fixed | 7 | 6 | 86% | 2 | 0 | $7.21 | 5.4 min |
+| loom-cloud-fixed | 10 | 8 | 80% | 3 | 1 | $10.53 | 15.0 min |
 | loom-cloud | 11 | 7 | 64% | 3 | 0 | $8.91 | 8.1 min |
-| loom-hybrid | 7 | 3 | 43% | 5 | 0 | $0.70 | 15.0 min |
+| loom-hybrid | 11 | 3 | 27% | 8 | 0 | $0.83 | 15.0 min |
 | terminus-argon | 11 | 3 | 27% | 7 | 0 | $0.55 | 15.0 min |
 
 Loom cost: every cloud call in the trial's usage log, priced with Loom's table (Gemini 4 Argon at list $4/$20 per MTok, cached input 95% off) — includes trials the timeout killed. Terminus cost: LiteLLM's own estimate, which omits Gemini's thinking tokens.
@@ -22,11 +22,11 @@ Loom cost: every cloud call in the trial's usage log, priced with Loom's table (
 | make-doom-for-mips | hard | ❌ 15m AgentTimeoutError | ❌ 15m AgentTimeoutError | ❌ 15m AgentTimeoutError | ❌ 15m AgentTimeoutError |
 | mteb-retrieve | medium | ✅ 26m | ❌ 9m | ❌ 30m AgentTimeoutError | ❌ 30m AgentTimeoutError |
 | password-recovery | hard | ✅ 5m | ✅ 7m | ❌ 15m AgentTimeoutError | ❌ 15m AgentTimeoutError |
-| path-tracing-reverse | hard | — | ✅ 11m | — | ❌ 8m |
-| pypi-server | medium | — | ✅ 7m | — | ✅ 3m |
-| qemu-alpine-ssh | medium | — | ❌ 2m | — | ❌ 15m AgentTimeoutError |
-| torch-pipeline-parallelism | hard | — | ❌ 15m AgentTimeoutError | — | ❌ 15m AgentTimeoutError |
-| vulnerable-secret | medium | — | ❌ 0m | — | ❌ 15m AgentTimeoutError |
+| path-tracing-reverse | hard | ✅ 28m | ✅ 11m | ❌ 30m AgentTimeoutError | ❌ 8m |
+| pypi-server | medium | ✅ 4m | ✅ 7m | ❌ 15m AgentTimeoutError | ✅ 3m |
+| qemu-alpine-ssh | medium | ⚠️ NonZeroAgentExitCodeError | ❌ 2m | ⚠️ NonZeroAgentExitCodeError | ❌ 15m AgentTimeoutError |
+| torch-pipeline-parallelism | hard | ❌ 15m AgentTimeoutError | ❌ 15m AgentTimeoutError | ❌ 178m AgentTimeoutError | ❌ 15m AgentTimeoutError |
+| vulnerable-secret | medium | ⚠️ NetworkConnectionError | ❌ 0m | ❌ 0m | ❌ 15m AgentTimeoutError |
 
 ## Published numbers, same models
 

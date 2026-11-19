@@ -8,7 +8,7 @@
   Harbor adapter that installs this checkout into each task container (the way
   the leaderboards run Claude Code, Codex CLI and Gemini CLI); `evals/tbench.py`
   runs Loom and reference harnesses on the same models and writes
-  `evals/results/REPORT.md`. `scripts/eval.py` and its three fixture tasks are
+  `evals/results/<bench>/REPORT.md` (Terminal-Bench 2.1 and SWE-bench Pro). `scripts/eval.py` and its three fixture tasks are
   gone — nothing published could be compared against them.
 
 - **`LOOM_USAGE_LOG=<file>`: the per-call record behind every receipt.** Each

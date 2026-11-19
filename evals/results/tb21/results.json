@@ -24,7 +24,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 211.480324,
-      "trial": "jobs/loom-cloud-fixed-pilot/chess-best-move__eRHwuZW"
+      "trial": "jobs/tb21/loom-cloud-fixed-pilot/chess-best-move__eRHwuZW"
     },
     "cobol-modernization": {
       "reward": 1.0,
@@ -60,7 +60,7 @@
         "loom_exit_code": null
       },
       "seconds": 900.095167,
-      "trial": "jobs/loom-cloud-fixed-pilot/cobol-modernization__GpZfBem"
+      "trial": "jobs/tb21/loom-cloud-fixed-pilot/cobol-modernization__GpZfBem"
     },
     "distribution-search": {
       "reward": 1.0,
@@ -92,7 +92,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 229.533665,
-      "trial": "jobs/loom-cloud-fixed-pilot/distribution-search__o5d5oGg"
+      "trial": "jobs/tb21/loom-cloud-fixed-pilot/distribution-search__o5d5oGg"
     },
     "git-leak-recovery": {
       "reward": 1.0,
@@ -117,7 +117,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 164.704198,
-      "trial": "jobs/loom-cloud-fixed-pilot/git-leak-recovery__2rToUqu"
+      "trial": "jobs/tb21/loom-cloud-fixed-pilot/git-leak-recovery__2rToUqu"
     },
     "make-doom-for-mips": {
       "reward": 0.0,
@@ -148,7 +148,7 @@
         "loom_exit_code": null
       },
       "seconds": 900.039445,
-      "trial": "jobs/loom-cloud-fixed-pilot/make-doom-for-mips__Wmc7sdK"
+      "trial": "jobs/tb21/loom-cloud-fixed-pilot/make-doom-for-mips__Wmc7sdK"
     },
     "mteb-retrieve": {
       "reward": 1.0,
@@ -173,7 +173,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 1545.146293,
-      "trial": "jobs/loom-cloud-fixed-pilot/mteb-retrieve__rxyCnsj"
+      "trial": "jobs/tb21/loom-cloud-fixed-pilot/mteb-retrieve__rxyCnsj"
     },
     "password-recovery": {
       "reward": 1.0,
@@ -201,7 +201,108 @@
         "loom_exit_code": "0"
       },
       "seconds": 323.245205,
-      "trial": "jobs/loom-cloud-fixed-pilot/password-recovery__9GiRY3B"
+      "trial": "jobs/tb21/loom-cloud-fixed-pilot/password-recovery__9GiRY3B"
+    },
+    "path-tracing-reverse": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 2.9971,
+      "in": 1271321,
+      "out": 61027,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 14,
+          "explorer": 4,
+          "bash": 36,
+          "editor": 12,
+          "reviewer": 3
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 13,
+          "orchestrator:task": 12,
+          "explorer:ls": 2,
+          "explorer:read_file": 1,
+          "explorer:grep": 2,
+          "bash:ls": 2,
+          "bash:execute": 27,
+          "bash:read_file": 18,
+          "editor:ls": 1,
+          "editor:write_file": 1,
+          "editor:read_file": 5,
+          "editor:edit_file": 4,
+          "reviewer:ls": 2,
+          "reviewer:read_file": 3
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 1674.081436,
+      "trial": "jobs/tb21/loom-cloud-fixed-pilot/path-tracing-reverse__MWowqnx"
+    },
+    "pypi-server": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.3262,
+      "in": 87659,
+      "out": 5310,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 6,
+          "bash": 10,
+          "editor": 3
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 5,
+          "orchestrator:task": 4,
+          "bash:ls": 1,
+          "bash:execute": 7,
+          "editor:ls": 1,
+          "editor:write_file": 2,
+          "orchestrator:read_file": 2
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 238.605949,
+      "trial": "jobs/tb21/loom-cloud-fixed-pilot/pypi-server__AbeZSXT"
+    },
+    "qemu-alpine-ssh": {
+      "reward": null,
+      "exception": "NonZeroAgentExitCodeError",
+      "cost": null,
+      "in": null,
+      "out": null,
+      "meta": {},
+      "seconds": null,
+      "trial": "jobs/tb21/loom-cloud-fixed-pilot/qemu-alpine-ssh__HtfuPDe"
+    },
+    "torch-pipeline-parallelism": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.0,
+      "in": 0,
+      "out": 0,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {},
+        "tool_calls": {},
+        "loom_exit_code": null
+      },
+      "seconds": 900.00258,
+      "trial": "jobs/tb21/loom-cloud-fixed-pilot/torch-pipeline-parallelism__UBtXDZZ"
+    },
+    "vulnerable-secret": {
+      "reward": null,
+      "exception": "NetworkConnectionError",
+      "cost": null,
+      "in": null,
+      "out": null,
+      "meta": {},
+      "seconds": null,
+      "trial": "jobs/tb21/loom-cloud-fixed-pilot/vulnerable-secret__zpUoaCM"
     }
   },
   "loom-cloud": {
@@ -229,7 +330,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 250.840346,
-      "trial": "jobs/loom-cloud-pilot/chess-best-move__wQVdpfb"
+      "trial": "jobs/tb21/loom-cloud-pilot/chess-best-move__wQVdpfb"
     },
     "cobol-modernization": {
       "reward": 1.0,
@@ -265,7 +366,7 @@
         "loom_exit_code": null
       },
       "seconds": 900.059493,
-      "trial": "jobs/loom-cloud-pilot/cobol-modernization__DnY4vce"
+      "trial": "jobs/tb21/loom-cloud-pilot/cobol-modernization__DnY4vce"
     },
     "distribution-search": {
       "reward": 1.0,
@@ -296,7 +397,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 272.235424,
-      "trial": "jobs/loom-cloud-pilot/distribution-search__jVk8xLN"
+      "trial": "jobs/tb21/loom-cloud-pilot/distribution-search__jVk8xLN"
     },
     "git-leak-recovery": {
       "reward": 1.0,
@@ -326,7 +427,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 487.962644,
-      "trial": "jobs/loom-cloud-pilot/git-leak-recovery__GDgEbX2"
+      "trial": "jobs/tb21/loom-cloud-pilot/git-leak-recovery__GDgEbX2"
     },
     "make-doom-for-mips": {
       "reward": 0.0,
@@ -357,7 +458,7 @@
         "loom_exit_code": null
       },
       "seconds": 899.990782,
-      "trial": "jobs/loom-cloud-pilot/make-doom-for-mips__HU6yPJb"
+      "trial": "jobs/tb21/loom-cloud-pilot/make-doom-for-mips__HU6yPJb"
     },
     "mteb-retrieve": {
       "reward": 0.0,
@@ -386,7 +487,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 558.7975,
-      "trial": "jobs/loom-cloud-pilot/mteb-retrieve__cpoozCS"
+      "trial": "jobs/tb21/loom-cloud-pilot/mteb-retrieve__cpoozCS"
     },
     "password-recovery": {
       "reward": 1.0,
@@ -413,7 +514,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 395.200805,
-      "trial": "jobs/loom-cloud-pilot/password-recovery__V9xLahr"
+      "trial": "jobs/tb21/loom-cloud-pilot/password-recovery__V9xLahr"
     },
     "path-tracing-reverse": {
       "reward": 1.0,
@@ -447,7 +548,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 686.391549,
-      "trial": "jobs/loom-cloud-pilot/path-tracing-reverse__9SMJzbV"
+      "trial": "jobs/tb21/loom-cloud-pilot/path-tracing-reverse__9SMJzbV"
     },
     "pypi-server": {
       "reward": 1.0,
@@ -474,7 +575,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 396.392508,
-      "trial": "jobs/loom-cloud-pilot/pypi-server__BtUhvnA"
+      "trial": "jobs/tb21/loom-cloud-pilot/pypi-server__BtUhvnA"
     },
     "qemu-alpine-ssh": {
       "reward": 0.0,
@@ -497,7 +598,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 113.31462,
-      "trial": "jobs/loom-cloud-retry/qemu-alpine-ssh__mJk7F5f"
+      "trial": "jobs/tb21/loom-cloud-retry/qemu-alpine-ssh__mJk7F5f"
     },
     "torch-pipeline-parallelism": {
       "reward": 0.0,
@@ -537,7 +638,7 @@
         "loom_exit_code": null
       },
       "seconds": 900.036069,
-      "trial": "jobs/loom-cloud-pilot/torch-pipeline-parallelism__cgDd86S"
+      "trial": "jobs/tb21/loom-cloud-pilot/torch-pipeline-parallelism__cgDd86S"
     },
     "vulnerable-secret": {
       "reward": 0.0,
@@ -553,7 +654,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 19.623293,
-      "trial": "jobs/loom-cloud-pilot/vulnerable-secret__BQD34kt"
+      "trial": "jobs/tb21/loom-cloud-pilot/vulnerable-secret__BQD34kt"
     }
   },
   "loom-hybrid": {
@@ -585,7 +686,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 349.505465,
-      "trial": "jobs/loom-hybrid-pilot/chess-best-move__o7dp7sD"
+      "trial": "jobs/tb21/loom-hybrid-pilot/chess-best-move__o7dp7sD"
     },
     "cobol-modernization": {
       "reward": 0.0,
@@ -616,7 +717,7 @@
         "loom_exit_code": null
       },
       "seconds": 900.05754,
-      "trial": "jobs/loom-hybrid-pilot/cobol-modernization__PSvKznh"
+      "trial": "jobs/tb21/loom-hybrid-pilot/cobol-modernization__PSvKznh"
     },
     "distribution-search": {
       "reward": 1.0,
@@ -655,7 +756,7 @@
         "loom_exit_code": null
       },
       "seconds": 3600.076859,
-      "trial": "jobs/loom-hybrid-pilot/distribution-search__EGP6yVn"
+      "trial": "jobs/tb21/loom-hybrid-pilot/distribution-search__EGP6yVn"
     },
     "git-leak-recovery": {
       "reward": 1.0,
@@ -681,7 +782,7 @@
         "loom_exit_code": "0"
       },
       "seconds": 404.993254,
-      "trial": "jobs/loom-hybrid-pilot/git-leak-recovery__SyrBx7W"
+      "trial": "jobs/tb21/loom-hybrid-pilot/git-leak-recovery__SyrBx7W"
     },
     "make-doom-for-mips": {
       "reward": 0.0,
@@ -709,7 +810,7 @@
         "loom_exit_code": null
       },
       "seconds": 900.036486,
-      "trial": "jobs/loom-hybrid-pilot/make-doom-for-mips__PiWTT7V"
+      "trial": "jobs/tb21/loom-hybrid-pilot/make-doom-for-mips__PiWTT7V"
     },
     "mteb-retrieve": {
       "reward": 0.0,
@@ -738,7 +839,7 @@
         "loom_exit_code": null
       },
       "seconds": 1800.057344,
-      "trial": "jobs/loom-hybrid-pilot/mteb-retrieve__L5593av"
+      "trial": "jobs/tb21/loom-hybrid-pilot/mteb-retrieve__L5593av"
     },
     "password-recovery": {
       "reward": 0.0,
@@ -764,7 +865,100 @@
         "loom_exit_code": null
       },
       "seconds": 899.988139,
-      "trial": "jobs/loom-hybrid-pilot/password-recovery__FfNoqs9"
+      "trial": "jobs/tb21/loom-hybrid-pilot/password-recovery__FfNoqs9"
+    },
+    "path-tracing-reverse": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.0312,
+      "in": 5619,
+      "out": 435,
+      "meta": {
+        "local_input_tokens": 317372,
+        "local_output_tokens": 22361,
+        "llm_calls_by_role": {
+          "orchestrator": 1,
+          "bash": 9
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 1,
+          "orchestrator:task": 1,
+          "bash:execute": 16
+        },
+        "loom_exit_code": null
+      },
+      "seconds": 1800.011385,
+      "trial": "jobs/tb21/loom-hybrid-pilot/path-tracing-reverse__NDje2sS"
+    },
+    "pypi-server": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.0,
+      "in": 0,
+      "out": 0,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {},
+        "tool_calls": {},
+        "loom_exit_code": null
+      },
+      "seconds": 900.002494,
+      "trial": "jobs/tb21/loom-hybrid-pilot/pypi-server__bLmgoW9"
+    },
+    "qemu-alpine-ssh": {
+      "reward": null,
+      "exception": "NonZeroAgentExitCodeError",
+      "cost": null,
+      "in": null,
+      "out": null,
+      "meta": {},
+      "seconds": null,
+      "trial": "jobs/tb21/loom-hybrid-pilot/qemu-alpine-ssh__xCMVWmk"
+    },
+    "torch-pipeline-parallelism": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.0964,
+      "in": 26170,
+      "out": 721,
+      "meta": {
+        "local_input_tokens": 64011,
+        "local_output_tokens": 6270,
+        "llm_calls_by_role": {
+          "orchestrator": 4,
+          "explorer": 6,
+          "bash": 11
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 1,
+          "orchestrator:task": 4,
+          "explorer:ls": 6,
+          "explorer:glob": 3,
+          "explorer:read_file": 2,
+          "explorer:grep": 1,
+          "bash:execute": 20
+        },
+        "loom_exit_code": null
+      },
+      "seconds": 10652.065527,
+      "trial": "jobs/tb21/loom-hybrid-pilot/torch-pipeline-parallelism__LUCbZ4o"
+    },
+    "vulnerable-secret": {
+      "reward": 0.0,
+      "exception": null,
+      "cost": 0.0,
+      "in": 0,
+      "out": 0,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {},
+        "tool_calls": {},
+        "loom_exit_code": "0"
+      },
+      "seconds": 15.390084,
+      "trial": "jobs/tb21/loom-hybrid-pilot/vulnerable-secret__G2nbVS8"
     }
   },
   "terminus-argon": {
@@ -787,7 +981,7 @@
         "summarization_count": 0
       },
       "seconds": 899.998102,
-      "trial": "jobs/terminus-argon-pilot/chess-best-move__nrUryqA"
+      "trial": "jobs/tb21/terminus-argon-pilot/chess-best-move__nrUryqA"
     },
     "cobol-modernization": {
       "reward": 0.0,
@@ -806,7 +1000,7 @@
         "summarization_count": 0
       },
       "seconds": 900.009569,
-      "trial": "jobs/terminus-argon-pilot/cobol-modernization__vVMCSZX"
+      "trial": "jobs/tb21/terminus-argon-pilot/cobol-modernization__vVMCSZX"
     },
     "distribution-search": {
       "reward": 1.0,
@@ -828,7 +1022,7 @@
         "summarization_count": 0
       },
       "seconds": 827.061227,
-      "trial": "jobs/terminus-argon-pilot/distribution-search__8iCfbXg"
+      "trial": "jobs/tb21/terminus-argon-pilot/distribution-search__8iCfbXg"
     },
     "git-leak-recovery": {
       "reward": 1.0,
@@ -848,7 +1042,7 @@
         "summarization_count": 0
       },
       "seconds": 684.268863,
-      "trial": "jobs/terminus-argon-pilot/git-leak-recovery__4vVNvac"
+      "trial": "jobs/tb21/terminus-argon-pilot/git-leak-recovery__4vVNvac"
     },
     "make-doom-for-mips": {
       "reward": 0.0,
@@ -868,7 +1062,7 @@
         "summarization_count": 0
       },
       "seconds": 899.998676,
-      "trial": "jobs/terminus-argon-pilot/make-doom-for-mips__yw55Urp"
+      "trial": "jobs/tb21/terminus-argon-pilot/make-doom-for-mips__yw55Urp"
     },
     "mteb-retrieve": {
       "reward": 0.0,
@@ -896,7 +1090,7 @@
         "summarization_count": 0
       },
       "seconds": 1800.060355,
-      "trial": "jobs/terminus-argon-pilot/mteb-retrieve__fadrRrs"
+      "trial": "jobs/tb21/terminus-argon-pilot/mteb-retrieve__fadrRrs"
     },
     "password-recovery": {
       "reward": 0.0,
@@ -916,7 +1110,7 @@
         "summarization_count": 0
       },
       "seconds": 900.06057,
-      "trial": "jobs/terminus-argon-pilot/password-recovery__fByM8Zz"
+      "trial": "jobs/tb21/terminus-argon-pilot/password-recovery__fByM8Zz"
     },
     "path-tracing-reverse": {
       "reward": 0.0,
@@ -939,7 +1133,7 @@
         "summarization_count": 0
       },
       "seconds": 451.9362,
-      "trial": "jobs/terminus-argon-pilot/path-tracing-reverse__PRpMGfg"
+      "trial": "jobs/tb21/terminus-argon-pilot/path-tracing-reverse__PRpMGfg"
     },
     "pypi-server": {
       "reward": 1.0,
@@ -959,7 +1153,7 @@
         "summarization_count": 0
       },
       "seconds": 166.270948,
-      "trial": "jobs/terminus-argon-pilot/pypi-server__fb5WYUv"
+      "trial": "jobs/tb21/terminus-argon-pilot/pypi-server__fb5WYUv"
     },
     "qemu-alpine-ssh": {
       "reward": 0.0,
@@ -982,7 +1176,7 @@
         "summarization_count": 0
       },
       "seconds": 900.022134,
-      "trial": "jobs/terminus-argon-pilot/qemu-alpine-ssh__AjauCXw"
+      "trial": "jobs/tb21/terminus-argon-pilot/qemu-alpine-ssh__AjauCXw"
     },
     "torch-pipeline-parallelism": {
       "reward": 0.0,
@@ -1005,7 +1199,7 @@
         "summarization_count": 0
       },
       "seconds": 900.011531,
-      "trial": "jobs/terminus-argon-pilot/torch-pipeline-parallelism__EpsM65v"
+      "trial": "jobs/tb21/terminus-argon-pilot/torch-pipeline-parallelism__EpsM65v"
     },
     "vulnerable-secret": {
       "reward": 0.0,
@@ -1193,7 +1387,7 @@
         "summarization_count": 0
       },
       "seconds": 899.998886,
-      "trial": "jobs/terminus-argon-pilot/vulnerable-secret__4uE4gwb"
+      "trial": "jobs/tb21/terminus-argon-pilot/vulnerable-secret__4uE4gwb"
     }
   }
 }
