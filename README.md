@@ -547,11 +547,13 @@ When sharing is on, Loom says so once per session. Change any of it with
 
 ### Evals
 
-`uv run scripts/eval.py` runs the task suite in [evals/tasks.yaml](evals/tasks.yaml)
-against fixture projects — each task runs headless, its `check` command
-decides pass/fail, and the report records wall time, local/cloud token split,
-actual cloud spend, and the all-cloud estimate. Use it to validate model
-routing choices (`/model editor …`) with numbers instead of vibes.
+Loom is benchmarked on [Terminal-Bench 2.1](https://www.tbench.ai/) (89
+hidden-test tasks in Docker), the benchmark the coding-agent leaderboards use
+for Claude Code, Codex CLI, Gemini CLI and friends. `evals/loom_agent.py` is a
+[Harbor](https://github.com/laude-institute/harbor) adapter that installs this
+checkout into each task container; `evals/tbench.py` runs Loom and reference
+harnesses on the same models and writes `evals/results/REPORT.md`. See
+[evals/README.md](evals/README.md).
 
 ### One-shot
 
@@ -818,7 +820,7 @@ loom/
 ├── config/
 │   ├── default_config.yaml   # model routing defaults
 │   └── default_settings.json # permissions / hooks / env / ui / mcp defaults
-evals/                      # eval tasks + fixtures (scripts/eval.py)
+evals/                      # Terminal-Bench adapter + runner + results
 ```
 
 Built on [`deepagents`](https://docs.langchain.com/oss/python/deepagents) /

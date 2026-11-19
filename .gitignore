@@ -22,5 +22,7 @@ telemetry-proxy/.wrangler/
 .pytest_cache/
 .ruff_cache/
 .playwright-mcp/
-evals/report.md
+evals/jobs/
+evals/.build*/
+evals/.dataset/
 memories/

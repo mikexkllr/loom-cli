@@ -4,13 +4,22 @@
 
 ### Added
 
+- **Terminal-Bench 2.1 evals replace the toy suite.** `evals/loom_agent.py` is a
+  Harbor adapter that installs this checkout into each task container (the way
+  the leaderboards run Claude Code, Codex CLI and Gemini CLI); `evals/tbench.py`
+  runs Loom and reference harnesses on the same models and writes
+  `evals/results/REPORT.md`. `scripts/eval.py` and its three fixture tasks are
+  gone — nothing published could be compared against them.
+
 - **`LOOM_USAGE_LOG=<file>`: the per-call record behind every receipt.** Each
   model call (role, context window, model, input, cached and output tokens),
   each tool call (who made it), and the size of each summary a subagent or the
   advisor handed back are appended as JSON lines. A receipt can now be checked
   against the numbers it was summed from, and a whole session analysed after
   the fact: which role read what, how big each context window grew, and how
-  much of each subagent's work came back to the orchestrator.
+  much of each subagent's work came back to the orchestrator. Tool calls now
+  carry their input (first 400 characters), so a call that never returned —
+  a hung shell command — can be named.
 
 ### Changed
 
@@ -24,6 +33,26 @@
   write tasks disjoint files or run them one after another.
 
 ### Fixed
+
+Found running Terminal-Bench 2.1:
+
+- **A backgrounded process no longer holds `execute` hostage.** Output was
+  captured through pipes, so `python3 -m http.server &` kept the pipe open: the
+  call blocked for the full timeout, reported "timed out", and the server was
+  killed with it — every "leave a service running" task failed. Output now goes
+  to a temporary file, the call returns when the shell exits, background
+  children keep running, and a timeout stops the whole process group.
+- **Shell roles are told where the project really is.** File tools call the
+  project root `/`; the shell does not. A run read `/src/program.cbl`, then ran
+  `cp /src/program.cbl` and lost minutes finding the project at `/app`. Roles
+  that hold `execute` now get the real root and the mapping between the two.
+- **A turn that says nothing is a failed turn.** Gemini blocking a prompt
+  (`block_reason=OTHER`, on security CTF tasks) returns an empty message and no
+  usage; Loom closed it "✔ turn complete" and `loom "task"` exited 0. It now
+  says the provider may have blocked the prompt, closes as failed, and exits 1.
+- **Gemini 4 Argon is priced.** It billed at the unknown-model fallback
+  ($3/$15, marked estimated); it is now its list price, $4/$20 per MTok with
+  cached input 95% off.
 
 A full review of the app; each item below was a defect in shipped behaviour.
 

@@ -1,0 +1,1199 @@
+{
+  "loom-cloud-fixed": {
+    "chess-best-move": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.2767,
+      "in": 62586,
+      "out": 7748,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 4,
+          "general-purpose": 5
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 3,
+          "orchestrator:read_file": 2,
+          "orchestrator:task": 1,
+          "general-purpose:read_file": 3,
+          "general-purpose:execute": 3,
+          "general-purpose:write_file": 1
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 211.480324,
+      "trial": "jobs/loom-cloud-fixed-pilot/chess-best-move__eRHwuZW"
+    },
+    "cobol-modernization": {
+      "reward": 1.0,
+      "exception": "AgentTimeoutError",
+      "cost": 1.4147,
+      "in": 652233,
+      "out": 24751,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 7,
+          "explorer": 5,
+          "bash": 21,
+          "editor": 5,
+          "reviewer": 3
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 5,
+          "orchestrator:task": 6,
+          "explorer:ls": 3,
+          "explorer:read_file": 9,
+          "explorer:grep": 5,
+          "orchestrator:read_file": 2,
+          "bash:read_file": 6,
+          "bash:execute": 16,
+          "editor:read_file": 2,
+          "editor:ls": 1,
+          "editor:write_file": 1,
+          "reviewer:read_file": 6,
+          "reviewer:ls": 3
+        },
+        "loom_exit_code": null
+      },
+      "seconds": 900.095167,
+      "trial": "jobs/loom-cloud-fixed-pilot/cobol-modernization__GpZfBem"
+    },
+    "distribution-search": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.3495,
+      "in": 98109,
+      "out": 7869,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 5,
+          "explorer": 3,
+          "general-purpose": 7,
+          "bash": 2
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 4,
+          "orchestrator:task": 3,
+          "explorer:ls": 2,
+          "explorer:glob": 1,
+          "general-purpose:execute": 3,
+          "general-purpose:write_file": 1,
+          "general-purpose:read_file": 1,
+          "general-purpose:edit_file": 1,
+          "bash:execute": 1,
+          "bash:read_file": 1
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 229.533665,
+      "trial": "jobs/loom-cloud-fixed-pilot/distribution-search__o5d5oGg"
+    },
+    "git-leak-recovery": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.2021,
+      "in": 59880,
+      "out": 3344,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 4,
+          "bash": 7
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 2,
+          "orchestrator:task": 1,
+          "bash:execute": 5,
+          "bash:read_file": 1,
+          "orchestrator:read_file": 2
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 164.704198,
+      "trial": "jobs/loom-cloud-fixed-pilot/git-leak-recovery__2rToUqu"
+    },
+    "make-doom-for-mips": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 2.0864,
+      "in": 1685679,
+      "out": 21295,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 7,
+          "explorer": 47,
+          "bash": 7,
+          "advisor": 1
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 4,
+          "orchestrator:task": 7,
+          "explorer:ls": 15,
+          "explorer:read_file": 109,
+          "explorer:glob": 3,
+          "bash:execute": 6,
+          "explorer:grep": 68,
+          "orchestrator:read_file": 2,
+          "orchestrator:consult": 1
+        },
+        "loom_exit_code": null
+      },
+      "seconds": 900.039445,
+      "trial": "jobs/loom-cloud-fixed-pilot/make-doom-for-mips__Wmc7sdK"
+    },
+    "mteb-retrieve": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 2.4145,
+      "in": 3818921,
+      "out": 42858,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 3,
+          "general-purpose": 58
+        },
+        "tool_calls": {
+          "orchestrator:task": 1,
+          "general-purpose:ls": 1,
+          "general-purpose:execute": 55,
+          "general-purpose:read_file": 4,
+          "orchestrator:read_file": 1
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 1545.146293,
+      "trial": "jobs/loom-cloud-fixed-pilot/mteb-retrieve__rxyCnsj"
+    },
+    "password-recovery": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.4638,
+      "in": 179962,
+      "out": 7387,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 4,
+          "general-purpose": 8,
+          "bash": 7
+        },
+        "tool_calls": {
+          "orchestrator:task": 2,
+          "general-purpose:ls": 2,
+          "general-purpose:glob": 1,
+          "general-purpose:execute": 5,
+          "general-purpose:read_file": 5,
+          "bash:execute": 6,
+          "orchestrator:read_file": 1
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 323.245205,
+      "trial": "jobs/loom-cloud-fixed-pilot/password-recovery__9GiRY3B"
+    }
+  },
+  "loom-cloud": {
+    "chess-best-move": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.4543,
+      "in": 88219,
+      "out": 14322,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 5,
+          "bash": 6,
+          "editor": 2
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 4,
+          "orchestrator:task": 3,
+          "orchestrator:read_file": 2,
+          "bash:execute": 4,
+          "editor:write_file": 1
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 250.840346,
+      "trial": "jobs/loom-cloud-pilot/chess-best-move__wQVdpfb"
+    },
+    "cobol-modernization": {
+      "reward": 1.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.8777,
+      "in": 259425,
+      "out": 20723,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 8,
+          "explorer": 2,
+          "bash": 10,
+          "editor": 9,
+          "reviewer": 6
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 5,
+          "orchestrator:task": 8,
+          "explorer:read_file": 5,
+          "orchestrator:read_file": 2,
+          "bash:read_file": 10,
+          "bash:execute": 5,
+          "bash:ls": 6,
+          "editor:read_file": 3,
+          "editor:ls": 1,
+          "editor:write_file": 1,
+          "reviewer:read_file": 8,
+          "reviewer:ls": 3,
+          "editor:edit_file": 2
+        },
+        "loom_exit_code": null
+      },
+      "seconds": 900.059493,
+      "trial": "jobs/loom-cloud-pilot/cobol-modernization__DnY4vce"
+    },
+    "distribution-search": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.3289,
+      "in": 79190,
+      "out": 7339,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 5,
+          "explorer": 3,
+          "general-purpose": 5,
+          "bash": 2
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 4,
+          "orchestrator:task": 3,
+          "explorer:ls": 2,
+          "explorer:glob": 2,
+          "general-purpose:ls": 1,
+          "general-purpose:execute": 3,
+          "general-purpose:write_file": 1,
+          "orchestrator:read_file": 1,
+          "bash:execute": 1
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 272.235424,
+      "trial": "jobs/loom-cloud-pilot/distribution-search__jVk8xLN"
+    },
+    "git-leak-recovery": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.4385,
+      "in": 128162,
+      "out": 7950,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 5,
+          "bash": 13,
+          "general-purpose": 5
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 4,
+          "orchestrator:task": 3,
+          "bash:execute": 5,
+          "bash:glob": 1,
+          "bash:grep": 5,
+          "bash:ls": 5,
+          "bash:read_file": 8,
+          "general-purpose:execute": 4,
+          "orchestrator:read_file": 1
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 487.962644,
+      "trial": "jobs/loom-cloud-pilot/git-leak-recovery__GDgEbX2"
+    },
+    "make-doom-for-mips": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 2.2941,
+      "in": 1179923,
+      "out": 29694,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 8,
+          "explorer": 31,
+          "bash": 24
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 4,
+          "orchestrator:task": 10,
+          "explorer:ls": 13,
+          "explorer:read_file": 84,
+          "explorer:glob": 1,
+          "bash:ls": 4,
+          "bash:execute": 17,
+          "explorer:grep": 18,
+          "bash:read_file": 1,
+          "orchestrator:read_file": 4
+        },
+        "loom_exit_code": null
+      },
+      "seconds": 899.990782,
+      "trial": "jobs/loom-cloud-pilot/make-doom-for-mips__HU6yPJb"
+    },
+    "mteb-retrieve": {
+      "reward": 0.0,
+      "exception": null,
+      "cost": 0.7253,
+      "in": 408124,
+      "out": 12947,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 6,
+          "explorer": 3,
+          "bash": 28
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 4,
+          "orchestrator:task": 4,
+          "explorer:ls": 1,
+          "explorer:read_file": 2,
+          "explorer:glob": 2,
+          "bash:execute": 20,
+          "bash:grep": 2,
+          "bash:read_file": 4
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 558.7975,
+      "trial": "jobs/loom-cloud-pilot/mteb-retrieve__cpoozCS"
+    },
+    "password-recovery": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.5,
+      "in": 316756,
+      "out": 7996,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 3,
+          "general-purpose": 16
+        },
+        "tool_calls": {
+          "orchestrator:task": 1,
+          "general-purpose:glob": 1,
+          "general-purpose:ls": 1,
+          "general-purpose:execute": 13,
+          "general-purpose:read_file": 6,
+          "general-purpose:write_file": 1,
+          "orchestrator:read_file": 1
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 395.200805,
+      "trial": "jobs/loom-cloud-pilot/password-recovery__V9xLahr"
+    },
+    "path-tracing-reverse": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 1.9049,
+      "in": 1163332,
+      "out": 39878,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 6,
+          "bash": 10,
+          "general-purpose": 11,
+          "reviewer": 3
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 3,
+          "orchestrator:task": 4,
+          "bash:ls": 1,
+          "bash:execute": 7,
+          "bash:read_file": 1,
+          "general-purpose:execute": 7,
+          "general-purpose:read_file": 2,
+          "general-purpose:write_file": 1,
+          "general-purpose:edit_file": 1,
+          "orchestrator:read_file": 1,
+          "reviewer:ls": 1,
+          "reviewer:read_file": 2
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 686.391549,
+      "trial": "jobs/loom-cloud-pilot/path-tracing-reverse__9SMJzbV"
+    },
+    "pypi-server": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.3553,
+      "in": 94931,
+      "out": 5928,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 6,
+          "bash": 12,
+          "editor": 3
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 5,
+          "orchestrator:task": 4,
+          "bash:ls": 1,
+          "bash:execute": 9,
+          "editor:ls": 1,
+          "editor:write_file": 3
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 396.392508,
+      "trial": "jobs/loom-cloud-pilot/pypi-server__BtUhvnA"
+    },
+    "qemu-alpine-ssh": {
+      "reward": 0.0,
+      "exception": null,
+      "cost": 0.1155,
+      "in": 23941,
+      "out": 2221,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 1,
+          "bash": 5
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 1,
+          "orchestrator:task": 1,
+          "bash:execute": 4
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 113.31462,
+      "trial": "jobs/loom-cloud-retry/qemu-alpine-ssh__mJk7F5f"
+    },
+    "torch-pipeline-parallelism": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 1.0352,
+      "in": 355610,
+      "out": 19578,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {
+          "orchestrator": 9,
+          "explorer": 2,
+          "bash": 26,
+          "searcher": 3,
+          "advisor": 1,
+          "editor": 5
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 4,
+          "orchestrator:task": 7,
+          "explorer:glob": 1,
+          "explorer:grep": 1,
+          "explorer:ls": 1,
+          "bash:execute": 22,
+          "searcher:ls": 1,
+          "searcher:web_search": 3,
+          "searcher:glob": 1,
+          "orchestrator:consult": 1,
+          "editor:ls": 2,
+          "editor:write_file": 1,
+          "editor:read_file": 1,
+          "orchestrator:read_file": 1,
+          "bash:read_file": 2,
+          "bash:ls": 2
+        },
+        "loom_exit_code": null
+      },
+      "seconds": 900.036069,
+      "trial": "jobs/loom-cloud-pilot/torch-pipeline-parallelism__cgDd86S"
+    },
+    "vulnerable-secret": {
+      "reward": 0.0,
+      "exception": null,
+      "cost": 0.0,
+      "in": 0,
+      "out": 0,
+      "meta": {
+        "local_input_tokens": 0,
+        "local_output_tokens": 0,
+        "llm_calls_by_role": {},
+        "tool_calls": {},
+        "loom_exit_code": "0"
+      },
+      "seconds": 19.623293,
+      "trial": "jobs/loom-cloud-pilot/vulnerable-secret__BQD34kt"
+    }
+  },
+  "loom-hybrid": {
+    "chess-best-move": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.1231,
+      "in": 45792,
+      "out": 2400,
+      "meta": {
+        "local_input_tokens": 147758,
+        "local_output_tokens": 7058,
+        "llm_calls_by_role": {
+          "orchestrator": 6,
+          "general-purpose": 16,
+          "bash": 6
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 3,
+          "orchestrator:read_file": 2,
+          "orchestrator:task": 2,
+          "general-purpose:execute": 11,
+          "general-purpose:ls": 1,
+          "general-purpose:read_file": 2,
+          "general-purpose:write_file": 3,
+          "general-purpose:edit_file": 2,
+          "bash:execute": 5
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 349.505465,
+      "trial": "jobs/loom-hybrid-pilot/chess-best-move__o7dp7sD"
+    },
+    "cobol-modernization": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.0738,
+      "in": 30002,
+      "out": 760,
+      "meta": {
+        "local_input_tokens": 372141,
+        "local_output_tokens": 22498,
+        "llm_calls_by_role": {
+          "orchestrator": 4,
+          "explorer": 5,
+          "bash": 29
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 1,
+          "orchestrator:task": 2,
+          "explorer:ls": 4,
+          "explorer:read_file": 6,
+          "explorer:glob": 1,
+          "orchestrator:read_file": 2,
+          "bash:ls": 3,
+          "bash:read_file": 6,
+          "bash:execute": 26,
+          "bash:glob": 1
+        },
+        "loom_exit_code": null
+      },
+      "seconds": 900.05754,
+      "trial": "jobs/loom-hybrid-pilot/cobol-modernization__PSvKznh"
+    },
+    "distribution-search": {
+      "reward": 1.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.1135,
+      "in": 30841,
+      "out": 2720,
+      "meta": {
+        "local_input_tokens": 159376,
+        "local_output_tokens": 18697,
+        "llm_calls_by_role": {
+          "orchestrator": 4,
+          "explorer": 5,
+          "general-purpose": 11,
+          "bash": 7,
+          "reviewer": 4
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 3,
+          "orchestrator:task": 4,
+          "explorer:ls": 7,
+          "explorer:glob": 1,
+          "explorer:read_file": 2,
+          "general-purpose:execute": 8,
+          "general-purpose:write_file": 1,
+          "general-purpose:edit_file": 2,
+          "orchestrator:read_file": 1,
+          "bash:execute": 6,
+          "bash:ls": 1,
+          "bash:read_file": 1,
+          "reviewer:ls": 1,
+          "reviewer:read_file": 3,
+          "reviewer:glob": 1,
+          "reviewer:grep": 1
+        },
+        "loom_exit_code": null
+      },
+      "seconds": 3600.076859,
+      "trial": "jobs/loom-hybrid-pilot/distribution-search__EGP6yVn"
+    },
+    "git-leak-recovery": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.1179,
+      "in": 40931,
+      "out": 2562,
+      "meta": {
+        "local_input_tokens": 158201,
+        "local_output_tokens": 9409,
+        "llm_calls_by_role": {
+          "orchestrator": 5,
+          "bash": 9,
+          "general-purpose": 15
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 4,
+          "orchestrator:task": 3,
+          "bash:execute": 12,
+          "general-purpose:execute": 21,
+          "orchestrator:read_file": 1
+        },
+        "loom_exit_code": "0"
+      },
+      "seconds": 404.993254,
+      "trial": "jobs/loom-hybrid-pilot/git-leak-recovery__SyrBx7W"
+    },
+    "make-doom-for-mips": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.0685,
+      "in": 11964,
+      "out": 1034,
+      "meta": {
+        "local_input_tokens": 888343,
+        "local_output_tokens": 10177,
+        "llm_calls_by_role": {
+          "orchestrator": 2,
+          "explorer": 29,
+          "bash": 9
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 1,
+          "orchestrator:task": 4,
+          "explorer:glob": 26,
+          "bash:execute": 15,
+          "explorer:read_file": 27,
+          "explorer:grep": 27,
+          "explorer:ls": 1
+        },
+        "loom_exit_code": null
+      },
+      "seconds": 900.036486,
+      "trial": "jobs/loom-hybrid-pilot/make-doom-for-mips__PiWTT7V"
+    },
+    "mteb-retrieve": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.1709,
+      "in": 91847,
+      "out": 2461,
+      "meta": {
+        "local_input_tokens": 1126357,
+        "local_output_tokens": 44829,
+        "llm_calls_by_role": {
+          "orchestrator": 7,
+          "explorer": 9,
+          "bash": 77
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 2,
+          "orchestrator:task": 7,
+          "explorer:ls": 7,
+          "explorer:glob": 17,
+          "explorer:read_file": 4,
+          "bash:execute": 139,
+          "bash:read_file": 13,
+          "bash:grep": 1
+        },
+        "loom_exit_code": null
+      },
+      "seconds": 1800.057344,
+      "trial": "jobs/loom-hybrid-pilot/mteb-retrieve__L5593av"
+    },
+    "password-recovery": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.033,
+      "in": 5859,
+      "out": 478,
+      "meta": {
+        "local_input_tokens": 49079,
+        "local_output_tokens": 2877,
+        "llm_calls_by_role": {
+          "orchestrator": 1,
+          "explorer": 11
+        },
+        "tool_calls": {
+          "orchestrator:write_todos": 1,
+          "orchestrator:task": 1,
+          "explorer:ls": 14,
+          "explorer:grep": 11,
+          "explorer:read_file": 19,
+          "explorer:glob": 8
+        },
+        "loom_exit_code": null
+      },
+      "seconds": 899.988139,
+      "trial": "jobs/loom-hybrid-pilot/password-recovery__FfNoqs9"
+    }
+  },
+  "terminus-argon": {
+    "chess-best-move": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.0297274,
+      "in": 13857,
+      "out": 470,
+      "meta": {
+        "n_episodes": 7,
+        "api_request_times_msec": [
+          15644.834041595459,
+          13488.487243652344,
+          15773.867130279541,
+          436663.60807418823,
+          152964.4260406494,
+          45748.59619140625
+        ],
+        "summarization_count": 0
+      },
+      "seconds": 899.998102,
+      "trial": "jobs/terminus-argon-pilot/chess-best-move__nrUryqA"
+    },
+    "cobol-modernization": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.021775899999999997,
+      "in": 13511,
+      "out": 315,
+      "meta": {
+        "n_episodes": 5,
+        "api_request_times_msec": [
+          9430.83906173706,
+          356735.98623275757,
+          217727.18214988708,
+          198956.80618286133
+        ],
+        "summarization_count": 0
+      },
+      "seconds": 900.009569,
+      "trial": "jobs/terminus-argon-pilot/cobol-modernization__vVMCSZX"
+    },
+    "distribution-search": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.0365777,
+      "in": 34148,
+      "out": 392,
+      "meta": {
+        "n_episodes": 7,
+        "api_request_times_msec": [
+          5667.529106140137,
+          27437.193870544434,
+          23344.636917114258,
+          24548.511028289795,
+          705591.5269851685,
+          24914.298057556152,
+          6987.651109695435
+        ],
+        "summarization_count": 0
+      },
+      "seconds": 827.061227,
+      "trial": "jobs/terminus-argon-pilot/distribution-search__8iCfbXg"
+    },
+    "git-leak-recovery": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.0471955,
+      "in": 17292,
+      "out": 1644,
+      "meta": {
+        "n_episodes": 5,
+        "api_request_times_msec": [
+          11195.375680923462,
+          12373.353958129883,
+          25756.47473335266,
+          615144.8338031769,
+          10242.110013961792
+        ],
+        "summarization_count": 0
+      },
+      "seconds": 684.268863,
+      "trial": "jobs/terminus-argon-pilot/git-leak-recovery__4vVNvac"
+    },
+    "make-doom-for-mips": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.0559019,
+      "in": 31990,
+      "out": 256,
+      "meta": {
+        "n_episodes": 6,
+        "api_request_times_msec": [
+          6618.46399307251,
+          13301.485061645508,
+          357289.08586502075,
+          252269.2220211029,
+          146506.89315795898
+        ],
+        "summarization_count": 0
+      },
+      "seconds": 899.998676,
+      "trial": "jobs/terminus-argon-pilot/make-doom-for-mips__yw55Urp"
+    },
+    "mteb-retrieve": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.0914381,
+      "in": 141894,
+      "out": 700,
+      "meta": {
+        "n_episodes": 14,
+        "api_request_times_msec": [
+          5692.816972732544,
+          9291.827201843262,
+          43474.95985031128,
+          7935.790061950684,
+          55907.665729522705,
+          98375.02193450928,
+          118125.64516067505,
+          54023.340940475464,
+          120911.00692749023,
+          67117.00892448425,
+          35711.67707443237,
+          200117.52915382385,
+          259109.81607437134
+        ],
+        "summarization_count": 0
+      },
+      "seconds": 1800.060355,
+      "trial": "jobs/terminus-argon-pilot/mteb-retrieve__fadrRrs"
+    },
+    "password-recovery": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.0594603,
+      "in": 24797,
+      "out": 1181,
+      "meta": {
+        "n_episodes": 6,
+        "api_request_times_msec": [
+          9934.364795684814,
+          9602.5550365448,
+          66264.94884490967,
+          141306.17690086365,
+          638020.7262039185
+        ],
+        "summarization_count": 0
+      },
+      "seconds": 900.06057,
+      "trial": "jobs/terminus-argon-pilot/password-recovery__fByM8Zz"
+    },
+    "path-tracing-reverse": {
+      "reward": 0.0,
+      "exception": null,
+      "cost": 0.09616859999999999,
+      "in": 90553,
+      "out": 654,
+      "meta": {
+        "n_episodes": 8,
+        "api_request_times_msec": [
+          18562.60585784912,
+          25397.59588241577,
+          19977.665901184082,
+          267971.60172462463,
+          70879.43291664124,
+          16272.043943405151,
+          11337.444067001343,
+          12681.466817855835
+        ],
+        "summarization_count": 0
+      },
+      "seconds": 451.9362,
+      "trial": "jobs/terminus-argon-pilot/path-tracing-reverse__PRpMGfg"
+    },
+    "pypi-server": {
+      "reward": 1.0,
+      "exception": null,
+      "cost": 0.0440498,
+      "in": 13257,
+      "out": 2251,
+      "meta": {
+        "n_episodes": 5,
+        "api_request_times_msec": [
+          23733.816862106323,
+          9858.811140060425,
+          8487.154006958008,
+          26927.58822441101,
+          87361.97805404663
+        ],
+        "summarization_count": 0
+      },
+      "seconds": 166.270948,
+      "trial": "jobs/terminus-argon-pilot/pypi-server__fb5WYUv"
+    },
+    "qemu-alpine-ssh": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.0439966,
+      "in": 22896,
+      "out": 422,
+      "meta": {
+        "n_episodes": 9,
+        "api_request_times_msec": [
+          9195.924043655396,
+          14799.197912216187,
+          53385.73217391968,
+          60452.682971954346,
+          168235.79335212708,
+          38814.18418884277,
+          117267.63892173767,
+          297752.2277832031
+        ],
+        "summarization_count": 0
+      },
+      "seconds": 900.022134,
+      "trial": "jobs/terminus-argon-pilot/qemu-alpine-ssh__AjauCXw"
+    },
+    "torch-pipeline-parallelism": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.0340378,
+      "in": 24840,
+      "out": 134,
+      "meta": {
+        "n_episodes": 9,
+        "api_request_times_msec": [
+          6187.739849090576,
+          11978.262186050415,
+          38302.120208740234,
+          27860.579013824463,
+          54887.49384880066,
+          18936.079025268555,
+          282254.36902046204,
+          247771.82006835938
+        ],
+        "summarization_count": 0
+      },
+      "seconds": 900.011531,
+      "trial": "jobs/terminus-argon-pilot/torch-pipeline-parallelism__EpsM65v"
+    },
+    "vulnerable-secret": {
+      "reward": 0.0,
+      "exception": "AgentTimeoutError",
+      "cost": 0.033533,
+      "in": 17707,
+      "out": 114,
+      "meta": {
+        "n_episodes": 174,
+        "api_request_times_msec": [
+          14180.474758148193,
+          16281.416893005371,
+          19013.4539604187,
+          10399.76692199707,
+          17855.318069458008,
+          21385.679244995117,
+          4382.251024246216,
+          3364.3887042999268,
+          13525.796175003052,
+          3692.99578666687,
+          3199.786901473999,
+          3637.517213821411,
+          7800.4310131073,
+          3536.369800567627,
+          3178.8320541381836,
+          4204.006910324097,
+          3909.5680713653564,
+          4059.065818786621,
+          3147.7530002593994,
+          3006.5670013427734,
+          4021.7788219451904,
+          6032.829999923706,
+          4184.983968734741,
+          3661.03196144104,
+          4776.7088413238525,
+          4149.552822113037,
+          3826.35498046875,
+          3709.5348834991455,
+          3693.6182975769043,
+          3560.633897781372,
+          9473.636865615845,
+          3522.3381519317627,
+          3786.7228984832764,
+          4313.488006591797,
+          3039.8612022399902,
+          4520.370006561279,
+          3865.9720420837402,
+          3596.940040588379,
+          3236.103057861328,
+          3999.7620582580566,
+          4045.2020168304443,
+          3953.3870220184326,
+          11949.14722442627,
+          3818.859100341797,
+          3556.757926940918,
+          3665.189027786255,
+          3104.8429012298584,
+          3773.519992828369,
+          3014.6050453186035,
+          3106.788158416748,
+          3102.036952972412,
+          3676.9518852233887,
+          3070.176839828491,
+          3975.2888679504395,
+          4385.359048843384,
+          3681.7679405212402,
+          3636.7318630218506,
+          8243.794918060303,
+          4197.2198486328125,
+          3363.1370067596436,
+          3314.6848678588867,
+          3821.67387008667,
+          3415.973901748657,
+          3776.459217071533,
+          4218.169927597046,
+          3800.053834915161,
+          3042.543649673462,
+          3448.5220909118652,
+          3181.4117431640625,
+          4127.9542446136475,
+          4553.21478843689,
+          3564.25404548645,
+          2900.4769325256348,
+          4197.033882141113,
+          4470.278024673462,
+          3778.920888900757,
+          4554.460287094116,
+          3268.39280128479,
+          5784.6128940582275,
+          3721.385955810547,
+          3614.1817569732666,
+          3044.402837753296,
+          3319.9400901794434,
+          3933.8932037353516,
+          4204.506874084473,
+          3371.393918991089,
+          3162.0397567749023,
+          10461.21883392334,
+          6577.89421081543,
+          3664.987087249756,
+          3725.6669998168945,
+          4195.246934890747,
+          4211.349010467529,
+          3796.2141036987305,
+          4109.2517375946045,
+          3977.144956588745,
+          3660.5849266052246,
+          4551.468133926392,
+          8594.620943069458,
+          3621.5147972106934,
+          3717.304229736328,
+          4092.360019683838,
+          5991.121768951416,
+          6480.694055557251,
+          4626.600980758667,
+          4466.133832931519,
+          5719.877004623413,
+          4573.707103729248,
+          4800.328969955444,
+          3923.297882080078,
+          5163.965940475464,
+          4004.908800125122,
+          4962.294101715088,
+          4622.592926025391,
+          5040.313243865967,
+          4573.934078216553,
+          4624.322175979614,
+          7856.908082962036,
+          3634.615182876587,
+          4084.7327709198,
+          3767.841100692749,
+          5654.039144515991,
+          4117.557048797607,
+          3518.7368392944336,
+          6121.13881111145,
+          3681.457757949829,
+          3798.3391284942627,
+          4493.169069290161,
+          2922.839879989624,
+          5635.509014129639,
+          7046.717166900635,
+          5629.250049591064,
+          4905.745029449463,
+          4386.469125747681,
+          4241.93000793457,
+          10002.439022064209,
+          5205.816745758057,
+          6057.890892028809,
+          4948.369026184082,
+          4287.841081619263,
+          4668.17569732666,
+          4450.091123580933,
+          4944.78702545166,
+          4660.746097564697,
+          4157.467842102051,
+          4814.065217971802,
+          3982.830047607422,
+          4730.199813842773,
+          3915.0238037109375,
+          4068.981885910034,
+          4800.379037857056,
+          5075.154066085815,
+          4847.195863723755,
+          4004.1022300720215,
+          3533.186912536621,
+          3780.0471782684326,
+          3879.8599243164062,
+          5145.366191864014,
+          3560.6698989868164,
+          10928.355932235718,
+          4079.3588161468506,
+          21456.452131271362,
+          4064.1238689422607,
+          4455.554962158203,
+          3533.5700511932373,
+          4535.991191864014,
+          4368.418216705322,
+          3928.4541606903076,
+          5559.674978256226,
+          5292.273998260498,
+          4991.703748703003,
+          5295.101881027222,
+          4532.672882080078
+        ],
+        "summarization_count": 0
+      },
+      "seconds": 899.998886,
+      "trial": "jobs/terminus-argon-pilot/vulnerable-secret__4uE4gwb"
+    }
+  }
+}
