@@ -150,7 +150,7 @@ class SubagentSpec:
         return {
             "name": self.name,
             "description": self.description,
-            "system_prompt": self.system_prompt,
+            "system_prompt": self.system_prompt + (shell_root_note() if "execute" in allowed else ""),
             "tools": list(self.tools),
             "model": model,
             "middleware": middleware,
@@ -235,6 +235,26 @@ Shell paths: `execute` already starts in the project root, so use relative paths
 in commands (`./ci.sh`, `pytest tests/`) and never `cd /` — in a real shell that
 is the machine's own root, not the project.
 """
+
+def shell_root_note() -> str:
+    """The real path behind the virtual ``/``, for roles that hold ``execute``.
+
+    File tools see the project root as ``/``; the shell sees the real tree. With
+    only "use relative paths" to go on, a Terminal-Bench run read
+    ``/src/program.cbl`` through ``read_file`` and then ran ``cp /src/program.cbl``
+    in the shell — no such file — and spent a quarter of its budget discovering
+    the project lives at ``/app``. Naming the mapping removes the guesswork.
+    """
+    from loom.tools.sandbox import get_root
+
+    root = get_root().as_posix()
+    if root == "/":
+        return ""
+    return (
+        f"On the real filesystem the project root is `{root}`: the file-tool path "
+        f"`/src/x.py` is `{root}/src/x.py` (or `src/x.py`) in a shell command.\n"
+    )
+
 
 ISOLATION_PREAMBLE = """You are a Loom subagent — an isolated worker with your own fresh context window.
 

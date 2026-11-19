@@ -129,3 +129,21 @@ def test_reviewer_subagent_is_built_on_the_inherited_model():
     )
     reviewer = next(s for s in build_all_subagents(config) if s["name"] == "reviewer")
     assert getattr(reviewer["model"], "model", None) == "qwen3:27b"
+
+
+def test_shell_roles_are_told_the_real_root_behind_the_virtual_one(tmp_path):
+    # File tools call the project root `/`; the shell does not. A live
+    # Terminal-Bench run read `/src/program.cbl`, then ran `cp /src/program.cbl`
+    # in the shell and lost minutes finding the project at /app.
+    from loom.tools import sandbox
+
+    previous = sandbox.get_root()
+    sandbox.set_root(tmp_path)
+    try:
+        config = _config()
+        root = tmp_path.resolve().as_posix()
+        assert f"`{root}`" in SPECS["bash"].build(config)["system_prompt"]
+        assert f"`{root}`" in SPECS["general-purpose"].build(config)["system_prompt"]
+        assert root not in SPECS["explorer"].build(config)["system_prompt"]
+    finally:
+        sandbox.set_root(previous)
