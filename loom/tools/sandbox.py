@@ -1,8 +1,8 @@
 """Path sandboxing shared by the filesystem and shell tools.
 
-All tool file access is confined to a *root* directory (the project, or a
-subagent's git worktree). This keeps an isolated write agent from wandering
-outside its tree, and makes the tools safe to hand to a local model.
+All tool file access is confined to a *root* directory (the project root).
+This keeps a write agent from wandering outside the project, and makes the
+tools safe to hand to a local model.
 """
 
 from __future__ import annotations
@@ -56,6 +56,6 @@ def resolve_in_sandbox(relative_or_abs: str) -> Path:
     if root not in full.parents and full != root:
         raise ValueError(
             f"Path {relative_or_abs!r} escapes the sandbox root {root}. "
-            "Tools may only touch files under the project / worktree root."
+            "Tools may only touch files under the project root."
         )
     return full

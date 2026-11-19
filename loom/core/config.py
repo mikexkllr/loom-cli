@@ -56,7 +56,6 @@ class LoomConfig(BaseModel):
 
     advisor_threshold: str = "medium"
     max_nesting_depth: int = 2
-    worktree_isolation: bool = True
 
     # ----- validation -----
 

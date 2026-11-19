@@ -110,7 +110,10 @@ tool call and report the precedence between allow/deny/ask, with line numbers."
 
 Launch independent tasks in the SAME message so they run concurrently: recon
 across three subsystems is three parallel `task` calls, not three round trips.
-Serialize only when one task truly needs another's output.
+Serialize only when one task truly needs another's output. Parallel tasks that
+write must each name disjoint files; if two could touch the same file, run them
+one after another — every subagent works in the same tree, and nothing isolates
+them or catches a collision.
 
 Never send the same work to two subagents to compare, and never redo a subagent's
 work yourself because you would like to see it directly. If a report is too thin
@@ -409,8 +412,8 @@ def _build_backend(cwd: str) -> tuple[Any, list[tuple[str, Any]]]:
     """``(backend, skill_sources)`` — the composite storage backend shared by the
     orchestrator and every subagent, plus the skill routes mounted into it.
 
-    Shell commands and ordinary file paths land in the project (or worktree)
-    root; deepagents' own offload paths — evicted conversation history and
+    Shell commands and ordinary file paths land in the project root;
+    deepagents' own offload paths — evicted conversation history and
     oversized tool results — are routed under ``.loom/`` so compaction artifacts
     never litter the user's tree.
 

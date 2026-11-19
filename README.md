@@ -707,6 +707,10 @@ deepagents hands out a *recursive* delete whenever the backend supports one and
 classifies it as an ordinary write, and nothing Loom delegates needs it (`bash`
 can `rm` through `execute`, which the policy gate prompts for by name).
 
+Parallel write agents share the working tree — there is no per-agent isolation.
+The orchestrator is told to give parallel `editor` tasks disjoint files and to
+run them one after another otherwise.
+
 **Advisor** (`consult` tool): the strongest cloud model, called on-demand at
 decision gates. It only advises — it never acts. How readily the orchestrator
 reaches for it is set by `advisor_threshold` / `--advisor-threshold`: `medium`
@@ -774,11 +778,6 @@ manually.
   derives its own trigger from the model's published profile, which Ollama models
   don't have — leaving them on a flat 170K-token trigger a 32K model can never
   reach before overflowing.
-- **Worktree isolation** — *not wired in yet.* [`core/worktree.py`](loom/core/worktree.py)
-  can give an agent its own git worktree, but nothing calls it: parallel write
-  agents currently share the working tree, and the `worktree_isolation` and
-  `max_nesting_depth` config keys are accepted and ignored. Keep parallel
-  `editor` tasks on disjoint files.
 
 ## Architecture
 
@@ -789,7 +788,6 @@ loom/
 │   ├── advisor.py          # consult() tool + ReviewVerdict risk model
 │   ├── model_router.py     # provider resolution + escalation logic
 │   ├── artifact_store.py   # large-output offload + summarization middleware
-│   ├── worktree.py         # git worktree isolation
 │   ├── ollama.py           # local model status / pull / context length
 │   ├── local_pool.py       # what the daemon serves: local-first routing + escalation ladder
 │   ├── config.py           # config.yaml (model routing) loader + validation
@@ -836,7 +834,7 @@ uv run pytest                    # unit tests
 uv run scripts/smoke.py          # wiring smoke test — no API calls, no Ollama
 ```
 
-Tests that don't need the heavy LLM stack (config, model routing, worktree) run
+Tests that don't need the heavy LLM stack (config, model routing) run
 standalone; those that exercise tools/subagents `importorskip` the optional deps
 so the suite degrades gracefully.
 

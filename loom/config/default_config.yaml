@@ -85,8 +85,6 @@ artifact_offload_tokens: 2000
 advisor_threshold: medium
 
 # Reserved — not wired into the run loop yet. Subagents do not spawn
-# subagents today (none of them holds the `task` tool), and parallel write
-# agents share the working tree; these keys are accepted so existing configs
-# keep loading, and changing them has no effect.
+# subagents today (none of them holds the `task` tool); this key is accepted so
+# existing configs keep loading, and changing it has no effect.
 max_nesting_depth: 2
-worktree_isolation: true

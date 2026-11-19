@@ -49,8 +49,20 @@ def test_set_value_nested_and_persisted(tmp_path):
 def test_set_value_coerces_scalars(tmp_path):
     target = tmp_path / "config.yaml"
     cfg.save_config(cfg.load_config(path=cfg.DEFAULT_CONFIG_PATH), path=target)
-    cfg.set_value("worktree_isolation", "false", path=target)
     cfg.set_value("max_nesting_depth", "3", path=target)
     reloaded = cfg.load_config(path=target)
-    assert reloaded.worktree_isolation is False
     assert reloaded.max_nesting_depth == 3
+    # LoomConfig has no bool field left to round-trip, so check the coercion itself.
+    assert cfg._coerce("true") is True
+    assert cfg._coerce("False") is False
+
+
+def test_removed_worktree_isolation_key_still_loads(tmp_path):
+    """Existing ~/.loom/config.yaml files are copies of the old packaged
+    default and still carry ``worktree_isolation``; they must keep loading,
+    and the dead key must not be written back out."""
+    target = tmp_path / "config.yaml"
+    target.write_text("orchestrator: gpt-4o\nworktree_isolation: true\n")
+    loaded = cfg.load_config(path=target)
+    assert loaded.orchestrator == "gpt-4o"
+    assert "worktree_isolation" not in loaded.model_dump()

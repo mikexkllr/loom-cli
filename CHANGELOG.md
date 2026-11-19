@@ -16,9 +16,12 @@
 
 - `artifact_offload_tokens` is now read: it is the floor of every role's
   tool-result offload threshold (the default, 2000, is what the code hardcoded).
-- `max_nesting_depth` and `worktree_isolation` are documented as reserved —
-  nothing reads them, and the README no longer claims parallel write agents
-  are isolated in worktrees.
+- `max_nesting_depth` is documented as reserved — nothing reads it.
+- The unused worktree module (`loom/core/worktree.py`) and the
+  `worktree_isolation` config key are removed: nothing ever called them, and
+  parallel write agents share the working tree. Existing configs that still
+  carry the key keep loading. The orchestrator is now told to give parallel
+  write tasks disjoint files or run them one after another.
 
 ### Fixed
 

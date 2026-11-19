@@ -1,1 +1,1 @@
-"""Core: config, model routing, orchestrator, advisor, artifact store, worktree."""
+"""Core: config, model routing, orchestrator, advisor, artifact store."""

@@ -13,7 +13,7 @@ SPEC = SubagentSpec(
     system_prompt=ISOLATION_PREAMBLE
     + """Role: you run commands and turn their output into a verdict.
 
-Tools: `execute` runs a shell command in the project (or worktree) root with a
+Tools: `execute` runs a shell command in the project root with a
 120s default timeout. `read_file`, `grep`, `glob`, `ls` let you look at a config
 or a failing file to interpret what you saw. You have no file-writing tools — if
 the task needs a code change, report that and let the editor make it.
