@@ -86,6 +86,22 @@ def test_a_subagents_own_tool_calls_name_the_subagent(tmp_path, monkeypatch):
     assert events == [("turn", None, None), ("tool", "task", "orchestrator"), ("tool", "grep", "bash")]
 
 
+def test_a_tool_call_logs_its_input_truncated(tmp_path, monkeypatch):
+    # A shell command that never returns leaves only its start line behind;
+    # without the input there is no telling which command hung.
+    log = tmp_path / "usage.jsonl"
+    monkeypatch.setenv(USAGE_LOG_ENV, str(log))
+    t = _tracker()
+    t.start_turn()
+    t.on_tool_start({"name": "execute"}, "{'command': 'python3 -m http.server &'}",
+                    run_id=uuid.uuid4(), parent_run_id=None)
+    t.on_tool_start({"name": "write_file"}, "x" * 5_000, run_id=uuid.uuid4(), parent_run_id=None)
+
+    _, short, long = _lines(log)
+    assert short["input"] == "{'command': 'python3 -m http.server &'}"
+    assert 0 < len(long["input"]) < 1_000
+
+
 def test_an_unwritable_log_never_breaks_accounting(tmp_path, monkeypatch):
     monkeypatch.setenv(USAGE_LOG_ENV, str(tmp_path / "missing-dir" / "usage.jsonl"))
     t = _tracker()

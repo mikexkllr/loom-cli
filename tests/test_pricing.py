@@ -72,6 +72,14 @@ def test_a_known_model_is_not_flagged_as_an_estimate():
     assert not price_entry("gpt-5.6-terra").estimated
 
 
+def test_gemini_4_argon_is_priced_not_estimated():
+    # It ran as the orchestrator in the Terminal-Bench evals and was billed at
+    # the Sonnet-tier fallback ($3/$15) with "estimated" on every receipt.
+    p = price_entry("google:gemini-4-argon")
+    assert (p.inp, p.out, p.estimated) == (4.0, 20.0, False)
+    assert cost_usd("gemini-4-argon", 1_000_000, 0, cache_read_tokens=1_000_000) == pytest.approx(0.2)
+
+
 def test_an_unknown_model_is_flagged_as_an_estimate():
     """It still gets a conservative price — a receipt with a hole in it is worse —
     but the UI has to be able to say the number is a guess."""

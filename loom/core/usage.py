@@ -85,6 +85,10 @@ CLOUD_PRICES: dict[str, Price] = {
     "gpt-5.6": Price(5.0, 30.0, cache_write=1.0),  # bare alias routes to Sol
     "gpt-4o": Price(2.5, 10.0, cache_write=1.0),
     "gpt-4.1": Price(2.0, 8.0, cache_write=1.0),
+    # Google: cached input 95% off, implicit caching has no write charge. List
+    # price (2026-11); the $2/$10 launch discount ends 2026-11-30, and a receipt
+    # that undercounts is worse than one that is briefly generous.
+    "gemini-4-argon": Price(4.0, 20.0, cache_read=0.05, cache_write=1.0),
 }
 _DEFAULT_CLOUD_PRICE = Price(3.0, 15.0, estimated=True)
 FREE_PRICE = Price(0.0, 0.0)
@@ -111,6 +115,7 @@ ROLE_KEY = "loom_role"
 # subagent/advisor result is appended to it as one JSON line, so a receipt can
 # be checked against the per-call numbers it was summed from.
 USAGE_LOG_ENV = "LOOM_USAGE_LOG"
+_LOG_INPUT_CHARS = 400
 
 
 def _result_text(output: Any) -> str:
@@ -560,7 +565,11 @@ class UsageTracker(BaseCallbackHandler):
             name = (serialized or {}).get("name") or kwargs.get("name") or ""
             if self._log_path:
                 caller, thread = self._owner(kwargs.get("parent_run_id"))
-                self._log({"event": "tool", "role": caller, "thread": thread, "name": name})
+                # The input, truncated: a call that never returns (a shell
+                # command left waiting on a pipe) is otherwise invisible — the
+                # log shows a tool started and then nothing.
+                self._log({"event": "tool", "role": caller, "thread": thread, "name": name,
+                           "input": str(input_str or "")[:_LOG_INPUT_CHARS]})
             if name == "task":
                 inputs = kwargs.get("inputs") or {}
                 sub = inputs.get("subagent_type") if isinstance(inputs, dict) else None
