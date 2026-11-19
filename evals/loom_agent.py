@@ -140,9 +140,23 @@ class LoomAgent(BaseInstalledAgent):
                 "set -euo pipefail; "
                 f"export UV_PYTHON_INSTALL_DIR={PREFIX}/python UV_CACHE_DIR=/tmp/loom-uv-cache; "
                 f"chmod +x {PREFIX}/bin/uv; "
-                f"{PREFIX}/bin/uv venv -q --python 3.12 {VENV}; "
-                f"{PREFIX}/bin/uv pip install -q --python {VENV}/bin/python "
-                f"-r {PREFIX}/dist/requirements.txt {PREFIX}/dist/{wheel.name}; "
+                # 3.13, not 3.12: python-build-standalone's musl 3.11/3.12
+                # report a glibc EXT_SUFFIX, so musllinux wheels (pydantic-core)
+                # install but never import on Alpine images. Rust-built wheels
+                # there also need libgcc_s, which bare Alpine lacks.
+                "if [ -f /etc/alpine-release ]; then apk add -q libgcc >/dev/null; fi; "
+                f"{PREFIX}/bin/uv venv -q --python 3.13 {VENV}; "
+                # requirements.txt is uv.lock's full closure, so --no-deps
+                # installs exactly it. On musl (Alpine images) sqlite-vec has
+                # no wheel and would fail the whole resolve; only
+                # langgraph.store.sqlite imports it, never the SqliteSaver
+                # checkpointer Loom uses, so it is left out there.
+                f"reqs={PREFIX}/dist/requirements.txt; "
+                "if ldd --version 2>&1 | grep -qi musl || [ -f /etc/alpine-release ]; then "
+                f"grep -v '^sqlite-vec==' $reqs > {PREFIX}/dist/requirements-musl.txt; "
+                f"reqs={PREFIX}/dist/requirements-musl.txt; fi; "
+                f"{PREFIX}/bin/uv pip install -q --no-deps --python {VENV}/bin/python "
+                f"-r $reqs {PREFIX}/dist/{wheel.name}; "
                 "rm -rf /tmp/loom-uv-cache; "
                 f"chmod -R a+rX {PREFIX}; chmod -R a+rwX {LOOM_HOME}"
             ),
