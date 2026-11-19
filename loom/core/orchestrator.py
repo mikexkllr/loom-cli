@@ -422,7 +422,9 @@ def _build_backend(cwd: str) -> tuple[Any, list[tuple[str, Any]]]:
     subagent that built one without it would silently fall back to an in-memory
     StateBackend and lose the real filesystem.
     """
-    from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
+    from deepagents.backends import CompositeBackend, FilesystemBackend
+
+    from loom.tools.shell import LoomShellBackend
 
     from loom.core.skills import skill_sources
 
@@ -443,7 +445,7 @@ def _build_backend(cwd: str) -> tuple[Any, list[tuple[str, Any]]]:
     for route, real_dir in sources:
         routes[route] = FilesystemBackend(root_dir=real_dir, virtual_mode=True)
     backend = CompositeBackend(
-        default=LocalShellBackend(root_dir=get_root(), virtual_mode=True, inherit_env=True),
+        default=LoomShellBackend(root_dir=get_root(), virtual_mode=True, inherit_env=True),
         routes=routes,
     )
     return backend, sources
