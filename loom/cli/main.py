@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Optional
 
 import typer
+from rich.markup import escape
 from rich.text import Text
 
 from loom.core import config as cfg
@@ -140,15 +141,36 @@ def main(
         )
         raise typer.Exit(2)
 
+    if advisor_threshold is not None:
+        advisor_threshold = advisor_threshold.strip().lower()
+        if advisor_threshold not in ("low", "medium", "high"):
+            render.note(console, "--advisor-threshold takes low, medium or high", kind="bad")
+            raise typer.Exit(2)
+    if not prompt and (loop or until):
+        # These describe a task, and the REPL has none yet — silently dropping
+        # them left `loom --loop 5` looking as though it had armed something.
+        render.note(console, "--loop and --until need a task: loom --loop 5 \"fix the tests\"", kind="bad")
+        console.print("  [loom.muted]inside the REPL, use[/loom.muted] /loop [N] <task> [--until \"cmd\"]")
+        raise typer.Exit(2)
+
     _maybe_offer_update()
 
     sandbox.set_root(root)
-    settings = settings_mod.load_settings(root)
+    settings = _load_settings_or_exit(root)
 
     if not prompt:
         from loom.ui import repl
 
-        repl.run(settings, cwd=root, plan=plan, local_only=local_only, yolo=yolo, airgap=airgap)
+        repl.run(
+            settings,
+            cwd=root,
+            plan=plan,
+            local_only=local_only,
+            yolo=yolo,
+            airgap=airgap,
+            accept_edits=accept_edits,
+            advisor_threshold=advisor_threshold,
+        )
         raise typer.Exit()
 
     _run_task(
@@ -164,6 +186,7 @@ def chat(
     local_only: bool = typer.Option(False, "--local-only"),
     airgap: bool = typer.Option(False, "--airgap"),
     yolo: bool = typer.Option(False, "--yolo"),
+    accept_edits: bool = typer.Option(False, "--accept-edits"),
     root: str = typer.Option(".", "--root"),
 ) -> None:
     """Open the interactive Loom REPL (same as running `loom` with no task)."""
@@ -173,7 +196,48 @@ def chat(
     sandbox.set_root(root)
     from loom.ui import repl
 
-    repl.run(settings_mod.load_settings(root), cwd=root, plan=plan, local_only=local_only, yolo=yolo, airgap=airgap)
+    repl.run(
+        _load_settings_or_exit(root),
+        cwd=root,
+        plan=plan,
+        local_only=local_only,
+        yolo=yolo,
+        airgap=airgap,
+        accept_edits=accept_edits,
+    )
+
+
+def _load_settings_or_exit(root: str):
+    """The merged settings, or a readable error naming the broken file.
+
+    A stray comma in a hand-edited settings.json used to surface as
+    "cli:repl crashed — JSONDecodeError: Expecting ',' delimiter: line 12
+    column 3" with no hint of *which* of the four layered files it was in, and
+    a crash report sent for what is the user's typo.
+    """
+    import json
+
+    try:
+        return settings_mod.load_settings(root)
+    except (json.JSONDecodeError, ValueError) as exc:
+        culprit = _broken_settings_file(root)
+        where = f" in {culprit}" if culprit else ""
+        render.note(console, f"settings could not be loaded{where}", kind="bad")
+        console.print(f"  [loom.muted]{escape(' '.join(str(exc).split())[:400])}[/loom.muted]")
+        raise typer.Exit(2)
+
+
+def _broken_settings_file(root: str) -> str | None:
+    """The first settings layer that isn't valid JSON, if that is the problem."""
+    import json
+
+    for path in (settings_mod.USER_SETTINGS_PATH, *settings_mod.project_settings_paths(root)):
+        try:
+            if path.exists():
+                json.loads(path.read_text(encoding="utf-8") or "{}")
+        except (OSError, ValueError):
+            return str(path)
+    return None
 
 
 def _maybe_offer_update() -> None:
@@ -211,7 +275,9 @@ def _maybe_offer_update() -> None:
     except SystemExit:
         raise
     except Exception as exc:
-        console.print(f"[loom.bad.b]update failed:[/loom.bad.b] {exc} — continuing with the current version")
+        console.print(
+            f"[loom.bad.b]update failed:[/loom.bad.b] {escape(str(exc))} — continuing with the current version"
+        )
 
 
 def _run_task(
@@ -234,8 +300,6 @@ def _run_task(
     from loom.ui.repl import Session
 
     settings.apply_env()
-    if advisor_threshold is not None:
-        settings.models = settings.models.model_copy(update={"advisor_threshold": advisor_threshold})
 
     # Same consent, same reporting as the REPL. This used to be REPL-only, so
     # every crash in a headless run — CI, scripts, `loom "task"`, and every
@@ -248,8 +312,16 @@ def _run_task(
     except Exception:
         pass
 
-    session = Session(settings, cwd=root, plan=plan, local_only=local_only, yolo=yolo, airgap=airgap)
-    session.accept_edits = accept_edits
+    session = Session(
+        settings,
+        cwd=root,
+        plan=plan,
+        local_only=local_only,
+        yolo=yolo,
+        airgap=airgap,
+        accept_edits=accept_edits,
+        advisor_threshold=advisor_threshold,
+    )
 
     try:
         bundle = session.ensure_bundle()
@@ -257,7 +329,7 @@ def _run_task(
         from loom.core import update
 
         fix = "reinstall Loom" if update.is_frozen() else "install with `uv sync`"
-        render.note(session.console, f"missing dependency: {exc} — {fix}", kind="bad")
+        render.note(session.console, f"missing dependency: {escape(str(exc))} — {fix}", kind="bad")
         telemetry.report("startup.dependency", exc)
         telemetry.flush()
         raise typer.Exit(1)
@@ -265,12 +337,12 @@ def _run_task(
         # The parent class, deliberately: an optional provider that isn't
         # installed raises ImportError with its own guidance already attached.
         # Catching only ModuleNotFoundError let those escape as a traceback.
-        render.note(session.console, str(exc), kind="bad")
+        render.note(session.console, escape(str(exc)), kind="bad")
         telemetry.report("startup.import", exc)
         telemetry.flush()
         raise typer.Exit(1)
     except RuntimeError as exc:  # e.g. local-only without Ollama
-        render.note(session.console, str(exc), kind="bad")
+        render.note(session.console, escape(str(exc)), kind="bad")
         telemetry.report("startup.runtime", exc)
         telemetry.flush()
         raise typer.Exit(1)
@@ -279,7 +351,7 @@ def _run_task(
     if settings.ui.show_fleet_panel:
         out.print()
         render.rule(out, f"fleet {ink(out).dot} {bundle.mode}")
-        out.print(render.fleet_table(out, _fleet_rows(settings.models, bundle), header=False))
+        out.print(render.fleet_table(out, _fleet_rows(session), header=False))
     out.print()
     render.rule(out, "task")
     out.print(render.kv([("", Text(prompt, style="loom.bright"))]))
@@ -292,30 +364,53 @@ def _run_task(
             session.run_turn(prompt)
     except KeyboardInterrupt:
         render.note(session.console, "interrupted", kind="warn")
+        raise typer.Exit(130)
     except Exception as exc:
         # A headless crash printed a bare traceback and exited 0-ish through
         # Typer. Report it, say it plainly, and fail the exit code so a script
         # or CI job notices.
-        render.note(session.console, f"task failed: {type(exc).__name__}: {exc}", kind="bad")
+        render.note(session.console, f"task failed: {type(exc).__name__}: {escape(str(exc))}", kind="bad")
         telemetry.report("task", exc)
         raise typer.Exit(1)
     finally:
         telemetry.flush()
+    if session._interrupted:
+        # Ctrl-C inside a turn is caught there (it has subagents to stop), so
+        # it never reaches the handler above. A script must still be able to
+        # tell an interrupted run from a finished one.
+        raise typer.Exit(130)
     if session.last_turn_failed:
         # The turn already said why; the exit code is for the script or CI job
         # that ran it, which otherwise saw a failed run exit 0.
         raise typer.Exit(1)
 
 
-def _fleet_rows(config: cfg.LoomConfig, bundle):
+def _fleet_rows(session):
     """(role, model, is_local, note) for the roster a headless run prints
-    before it starts — the same shape the REPL's welcome card uses."""
-    rows = [("orchestrator", bundle.model_string, config.is_local(bundle.model_string), "")]
-    for name in bundle.subagent_names:
-        model = config.subagents.get(name, "(inherit)")
-        rows.append((name, model, config.is_local(model), ""))
-    if bundle.mode != "local-only":
-        rows.append(("advisor", config.advisor, config.is_local(config.advisor), "on demand"))
+    before it starts.
+
+    Asked of the session, which reports what each role is *running on*: the
+    model a role inherited, the stand-in for a tag that isn't pulled, the
+    billed fallback when Ollama is down. This used to read the settings map,
+    so it printed the configured local model next to a run that was about to
+    bill every one of those roles to the cloud.
+    """
+    bundle = session.bundle
+    rows = []
+    for role in ("orchestrator", *bundle.subagent_names):
+        origin = session.model_origin(role)
+        if origin is None:
+            continue
+        note = ""
+        if role in (bundle.fallbacks or {}):
+            note = "cloud fallback"
+        elif role in (bundle.substitutions or {}):
+            note = "stand-in"
+        rows.append((role, origin[0], origin[1], note))
+    if getattr(bundle, "has_advisor", True):
+        origin = session.model_origin("advisor")
+        if origin is not None:
+            rows.append(("advisor", origin[0], origin[1], "on demand"))
     return rows
 
 
@@ -360,7 +455,7 @@ def config_set(key: str, value: str, root: str = typer.Option(".", "--root")) ->
     try:
         settings_mod.set_value(f"models.{key}", value, root)
     except Exception as exc:
-        console.print(f"[loom.bad.b]invalid:[/loom.bad.b] {exc}")
+        console.print(f"[loom.bad.b]invalid:[/loom.bad.b] {escape(str(exc))}")
         raise typer.Exit(1)
     console.print(f"[loom.good]set[/loom.good] {key} = {value} [loom.muted]in {settings_mod.USER_SETTINGS_PATH}[/loom.muted]")
 
@@ -414,9 +509,12 @@ def settings_set(key: str, value: str, root: str = typer.Option(".", "--root")) 
     try:
         settings_mod.set_value(key, value, root)
     except Exception as exc:
-        console.print(f"[loom.bad.b]invalid:[/loom.bad.b] {exc}")
+        console.print(f"[loom.bad.b]invalid:[/loom.bad.b] {escape(str(exc))}")
         raise typer.Exit(1)
-    console.print(f"[loom.good]set[/loom.good] {key} = {value}")
+    console.print(
+        f"[loom.good]set[/loom.good] {escape(key)} = {escape(value)} "
+        f"[loom.muted]in {settings_mod.USER_SETTINGS_PATH}[/loom.muted]"
+    )
 
 
 @settings_app.command("path")
@@ -445,12 +543,24 @@ def settings_init(root: str = typer.Option(".", "--root")) -> None:
 # ----------------------------------------------------------------------------
 
 
+def _models(root: str) -> cfg.LoomConfig:
+    """The model routing in force for ``root`` — every settings layer merged.
+
+    `loom agents list` and the `loom models …` commands read ``config.yaml``
+    on its own, a layer that ``/setup``, ``/model`` and ``loom config set`` all
+    write *over*. After any of those they listed, checked and pulled the
+    packaged defaults instead of the models actually configured.
+    """
+    return _load_settings_or_exit(root).models
+
+
 @agents_app.command("list")
-def agents_list() -> None:
+def agents_list(root: str = typer.Option(".", "--root")) -> None:
     """Show registered subagents and their assigned models."""
     from loom.subagents import describe_subagents
 
-    config = cfg.load_config()
+    _retheme(root)
+    config = _models(root)
     console.print()
     render.rule(console, "fleet")
     table = render.table(
@@ -479,11 +589,12 @@ def agents_list() -> None:
 
 
 @models_app.command("status")
-def models_status() -> None:
+def models_status(root: str = typer.Option(".", "--root")) -> None:
     """Check the Ollama daemon and which required models are installed."""
     from loom.core import ollama
 
-    config = cfg.load_config()
+    _retheme(root)
+    config = _models(root)
     st = ollama.status(config)
     # What matters is a reachable daemon at the configured endpoint — the
     # binary is optional (the endpoint may be a remote host).
@@ -500,11 +611,12 @@ def models_status() -> None:
 
 
 @models_app.command("list")
-def models_list() -> None:
+def models_list(root: str = typer.Option(".", "--root")) -> None:
     """List required local models and whether each is installed."""
     from loom.core import ollama
 
-    config = cfg.load_config()
+    _retheme(root)
+    config = _models(root)
     st = ollama.status(config)
     have = set(st.models)
     g = ink(console)
@@ -517,7 +629,7 @@ def models_list() -> None:
         ("", {"overflow": "fold"}),
     )
     for tag in ollama.required_local_models(config):
-        installed = tag in have
+        installed = ollama.is_served(tag, have)  # `qwen3` and `qwen3:latest` are one model
         table.add_row(
             Text(g.ok if installed else g.fail, style="loom.good" if installed else "loom.bad"),
             Text(tag, style="loom.local" if installed else "loom.muted"),
@@ -536,7 +648,7 @@ def models_install(root: str = typer.Option(".", "--root")) -> None:
     settings = settings_mod.load_settings(root)
     if not onboarding.ensure_ollama(console, settings.models):
         raise typer.Exit(1)
-    models_pull(None)
+    models_pull(None, root)
 
 
 @models_app.command("serve")
@@ -594,13 +706,22 @@ def models_rm(
 
 @models_app.command("pull")
 def models_pull(
-    model: Optional[str] = typer.Argument(None, help="Specific model tag; omit to pull all missing.")
+    model: Optional[str] = typer.Argument(None, help="Specific model tag; omit to pull all missing."),
+    root: str = typer.Option(".", "--root"),
 ) -> None:
     """Pull local models through the Ollama daemon's HTTP API (works with
     remote endpoints; no ollama binary needed)."""
     from loom.core import ollama
 
-    config = cfg.load_config()
+    _retheme(root)
+    config = _models(root)
+    if model:
+        # Accept the config spelling too: `loom models pull ollama/qwen3.5:9b`
+        # is what the config file shows, and the daemon only knows the tag.
+        from loom.core.model_router import resolve
+
+        resolved = resolve(model)
+        model = resolved.name if resolved.is_local else model
     targets = [model] if model else ollama.missing_models(config)
     if not targets:
         render.note(console, "nothing to pull — all required models present", kind="good")
@@ -664,140 +785,17 @@ def doctor(
     checks prove a key is present; only a call proves it is accepted for that
     model — a distinction that otherwise surfaces mid-task.
     """
-    import os
-    import sys as _sys
-
-    from loom.core import model_router, ollama, providers
-    from loom.core.mcp import mcp_status
+    from loom.ui import doctor as doctor_mod
 
     _retheme(root)
-    settings = settings_mod.load_settings(root)
-    config = settings.models
-
-    def effective_env(key: str) -> str | None:
-        """Value ``key`` would resolve to without mutating the real process
-        env (doctor is read-only): real env wins, else settings.json's env."""
-        return os.environ.get(key) or settings.env.get(key)
-
-    g = ink(console)
-
-    def row(ok, label, detail):
-        mark, style = (g.ok, "loom.good") if ok else ((g.pending, "loom.warn") if ok is None else (g.fail, "loom.bad"))
-        return (
-            Text(f"{mark} ", style=style) + Text(label, style="loom.text"),
-            Text(detail, style="loom.muted" if ok else style),
-        )
-
-    # What the config actually routes to. Doctor reports on the providers in
-    # use, not on a fixed list of infrastructure — a red ✘ for an Ollama daemon
-    # or an Anthropic key that no role touches reads as "your setup is broken"
-    # when nothing is.
-    routed = [*config.all_models().values(), config.escalation_model, config.cloud_fallback]
-    has_local_roles = any(model_router.resolve(m).is_local for m in routed if m)
-
-    lines = [row(_sys.version_info >= (3, 11), "python", _sys.version.split()[0])]
-    st = ollama.status(config)
-    if not has_local_roles and not st.running:
-        # All-cloud config: the daemon being down is a non-event.
-        lines.append(row(None, "ollama", "not running — no local roles configured"))
-    elif st.running:
-        detail = f"running @ {st.endpoint}" + ("" if st.installed else " (remote — no local binary)")
-        lines.append(row(True, "ollama", detail))
-        missing = ollama.missing_models(config)
-        lines.append(row(not missing, "local models", ", ".join(missing) + " missing" if missing else "all present"))
-        if missing:
-            # A missing tag only costs money if nothing local can cover it.
-            from loom.core.local_pool import build_pool, plan_local_roles
-
-            plan = plan_local_roles(config, build_pool(config, st))
-            if plan.cloud:
-                lines.append(row(None, "cloud fallback", f"{', '.join(sorted(plan.cloud))} will run on {config.cloud_fallback} (billed)"))
-            if plan.substituted:
-                lines.append(row(None, "local fallback", f"{', '.join(sorted(plan.substituted))} will run on another local model (free)"))
-    else:
-        lines.append(row(False, "ollama", f"not reachable @ {st.endpoint}" + ("" if st.installed else ", binary not installed")))
-        lines.append(row(None, "cloud fallback", f"local roles will run on {config.cloud_fallback} (billed)"))
-    for provider_id in providers.routed_providers(routed):
-        names = providers.credential_keys(provider_id)
-        if not names:  # needs no key (e.g. Vertex's ADC)
-            continue
-        found = next((n for n in names if effective_env(n)), None)
-        lines.append(
-            row(bool(found), providers.get(provider_id).label, f"{found} set" if found else f"{names[0]} not set")
-        )
-    from loom.core import playwright_setup
-
-    pw = playwright_setup.status()
-    lines.append(row(pw.npx_available, "npx", "found" if pw.npx_available else "not found (Playwright MCP needs Node)"))
-    if pw.npx_available:
-        lines.append(
-            row(
-                pw.browsers_installed,
-                "playwright browsers",
-                "installed" if pw.browsers_installed else "missing — run `loom playwright install`",
-            )
-        )
-    for r in mcp_status(settings):
-        ok = True if r["state"] == "connected" else (None if r["state"] in ("not connected", "disabled") else False)
-        lines.append(row(ok, f"mcp:{r['name']}", r["state"]))
-    from loom.ui import privacy as privacy_mod
-
-    lines.append(row(*privacy_mod.doctor_row(root)))
-    console.print()
-    render.rule(console, "doctor")
-    console.print(render.kv(lines, justify="left"))
+    settings = _load_settings_or_exit(root)
+    doctor_mod.checkup(console, settings, root)
     if not probe:
         render.note(console, "`loom doctor --probe` also calls every configured model", kind="tip")
         return
-    _probe_models(settings)
-
-
-def _probe_models(settings) -> None:
-    from loom.core import preflight
-
-    g = ink(console)
-    models = settings.models
-    settings.apply_env()
-    plan = {
-        "orchestrator": models.orchestrator,
-        "advisor": models.advisor,
-        "escalation": models.escalation_model,
-        **models.subagents,
-    }
-    console.print()
-    render.rule(console, "probe")
-    table = render.table(
-        console,
-        ("", {"no_wrap": True}),
-        ("roles", {"overflow": "ellipsis"}),
-        ("", {"justify": "center", "no_wrap": True}),
-        ("model", {"no_wrap": True, "overflow": "ellipsis"}),
-        ("", {"overflow": "fold"}),
-    )
-    failed = []
-    with render.Working(console, "probing models"):
-        results = list(preflight.check_plan(plan, models))
-    for roles, check in results:
-        if not check.ok:
-            failed.append(check)
-        mark, style = (g.ok, "loom.good") if check.ok else (
-            (g.pending, "loom.warn") if check.state in ("not-pulled", "offline") else (g.fail, "loom.bad")
-        )
-        is_local = models.is_local(check.model)
-        table.add_row(
-            Text(mark, style=style),
-            Text(", ".join(sorted(roles)), style="loom.text"),
-            render.where(console, is_local),
-            Text(check.model, style="loom.local" if is_local else "loom.cloud"),
-            Text(check.detail, style="loom.muted" if check.ok else style),
-        )
-    console.print(table)
-    console.print()
-    for check in failed:
-        if check.hint:
-            render.note(console, f"[loom.text]{check.model}[/loom.text] — {check.hint}", kind="tip")
+    failed = doctor_mod.probe(console, settings)
     if failed:
-        render.note(console, f"{len(failed)} model(s) won't answer", kind="warn")
+        render.note(console, f"{failed} model(s) won't answer", kind="warn")
         raise typer.Exit(1)
     render.note(console, "every configured model answered", kind="good")
 
@@ -819,7 +817,7 @@ def update() -> None:
     try:
         result = update_mod.check()
     except Exception as exc:
-        console.print(f"[loom.bad.b]update check failed:[/loom.bad.b] {exc}")
+        console.print(f"[loom.bad.b]update check failed:[/loom.bad.b] {escape(str(exc))}")
         raise typer.Exit(1)
 
     if result.up_to_date:
@@ -830,7 +828,7 @@ def update() -> None:
     try:
         update_mod.apply(result, console=console)
     except Exception as exc:
-        console.print(f"[loom.bad.b]update failed:[/loom.bad.b] {exc}")
+        console.print(f"[loom.bad.b]update failed:[/loom.bad.b] {escape(str(exc))}")
         raise typer.Exit(1)
 
 
@@ -1140,7 +1138,9 @@ def run() -> None:
         except Exception:
             pass  # a failure to report must not replace the error being reported
 
-        render.note(console, f"{where} crashed — {type(exc).__name__}: {exc}", kind="bad")
+        # Escaped: this is somebody else's text going through a markup parser,
+        # and a `[/…]` in it raises from inside the handler meant to report it.
+        render.note(console, f"{where} crashed — {type(exc).__name__}: {escape(str(exc))}", kind="bad")
         if telemetry.current_mode() == "none":
             console.print(
                 f"  [loom.muted]report it at https://github.com/{update_mod.REPO}/issues "

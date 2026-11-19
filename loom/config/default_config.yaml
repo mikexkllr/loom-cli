@@ -71,16 +71,22 @@ context_windows:
 compaction_threshold: 0.70
 escalation_threshold: 0.85
 
-# Tool outputs larger than this many tokens are offloaded to .loom/artifacts/
-# and replaced in-context with a path reference.
+# Oversized tool results are offloaded to .loom/artifacts/ and replaced
+# in-context with a preview and a path. The cut-off is scaled to each role's
+# context window (a tenth of the orchestrator's, an eighth of a local
+# subagent's, 20K for a cloud subagent); this is the floor it never drops
+# below. Raise it if small models offload results they could have held.
 artifact_offload_tokens: 2000
 
-# When to consult the advisor automatically: low | medium | high.
-# "high" => only before genuinely high-risk decisions; "low" => consult freely.
+# How readily the orchestrator consults the advisor: low | medium | high.
+# "medium" is the built-in judgment gates; "high" keeps `consult` for genuinely
+# high-risk or irreversible decisions; "low" consults freely. Per run:
+# `--advisor-threshold`.
 advisor_threshold: medium
 
-# Max subagent nesting depth (a subagent may spawn one level of sub-subagent).
+# Reserved — not wired into the run loop yet. Subagents do not spawn
+# subagents today (none of them holds the `task` tool), and parallel write
+# agents share the working tree; these keys are accepted so existing configs
+# keep loading, and changing them has no effect.
 max_nesting_depth: 2
-
-# Give each parallel write-capable subagent its own git worktree.
 worktree_isolation: true

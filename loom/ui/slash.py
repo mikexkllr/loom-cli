@@ -10,8 +10,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from rich.markup import escape
 from rich.text import Text
 
+from loom.core.text import message_text
 from loom.ui import render
 from loom.ui.render import ink
 
@@ -210,7 +212,10 @@ def _loop(session: "Session", args: str) -> bool:
     return True
 
 
-_MODEL_ROLES = ("orchestrator", "advisor", "escalation")
+# `cloud_fallback` is not a role anyone delegates to, but it is a model string
+# the user has to be able to see and change from here: with Ollama down it is
+# what every local role runs on.
+_MODEL_ROLES = ("orchestrator", "advisor", "escalation", "cloud_fallback")
 
 
 def _model_roles(session: "Session") -> list[str]:
@@ -226,8 +231,9 @@ def _set_role_model(session: "Session", role: str, model: str) -> None:
         "orchestrator": "models.orchestrator",
         "advisor": "models.advisor",
         "escalation": "models.escalation_model",
+        "cloud_fallback": "models.cloud_fallback",
     }.get(role, f"models.subagents.{role}")
-    st.set_value(key, model)
+    st.set_value(key, model, session.cwd)
     session.reload_settings()
     session.rebuild()
 
@@ -328,12 +334,25 @@ def _model(session: "Session", args: str) -> bool:
     roles = _model_roles(session)
 
     if not parts:
+        from loom.subagents import SPECS, model_for
+
         console = session.console
+
+        def _subagent_row(name: str):
+            # Every registered role, with what it resolves to. Listing only
+            # `cfg.subagents` hid a role that inherits its model — the reviewer
+            # was in the fleet, billed, and absent from this table.
+            model = model_for(cfg, name)
+            inherited = "" if cfg.subagents.get(name) else f"inherits {SPECS[name].inherits}"
+            return (name, model, cfg.is_local(model), inherited)
+
         rows = [
             ("orchestrator", cfg.orchestrator, cfg.is_local(cfg.orchestrator), ""),
-            ("advisor", cfg.advisor, cfg.is_local(cfg.advisor), ""),
-            ("escalation", cfg.escalation_model, cfg.is_local(cfg.escalation_model), ""),
-            *((n, m, cfg.is_local(m), "") for n, m in cfg.subagents.items()),
+            ("advisor", cfg.advisor, cfg.is_local(cfg.advisor), "on demand"),
+            ("escalation", cfg.escalation_model, cfg.is_local(cfg.escalation_model), "oversized local prompts"),
+            *(_subagent_row(name) for name in SPECS),
+            *((n, m, cfg.is_local(m), "") for n, m in cfg.subagents.items() if n not in SPECS),
+            ("cloud_fallback", cfg.cloud_fallback, cfg.is_local(cfg.cloud_fallback), "when Ollama can't serve a role"),
         ]
         console.print()
         render.rule(console, "models")
@@ -372,11 +391,14 @@ def _model(session: "Session", args: str) -> bool:
     if not candidates:
         render.note(console, "no models found — is the Ollama daemon running?", kind="warn")
         return True
+    from loom.subagents import model_for
+
     current = {
         "orchestrator": cfg.orchestrator,
         "advisor": cfg.advisor,
         "escalation": cfg.escalation_model,
-    }.get(role) or cfg.subagents.get(role, "(inherit)")
+        "cloud_fallback": cfg.cloud_fallback,
+    }.get(role) or model_for(cfg, role)
     console.print()
     render.rule(console, f"model for {role}")
     render.note(console, f"currently [loom.text]{current}[/loom.text]")
@@ -468,11 +490,17 @@ def _ollama(session: "Session", args: str) -> bool:
         render.note(console, "[loom.warp]/ollama install[/loom.warp] does it for you", kind="tip")
         return True
     render.note(console, f"daemon running at {st.endpoint}", kind="good")
-    missing = ollama.missing_models(session.settings.models)
+    # Counted from what the config asks for, judged against the status already
+    # in hand: `len(st.models)` is everything installed on the daemon, which
+    # reported "all 14 configured models" to a setup that configures three.
+    required = ollama.required_local_models(session.settings.models)
+    missing = [tag for tag in required if not ollama.is_served(tag, st.models)]
     if missing:
         render.note(console, f"missing: {', '.join(missing)} — `loom models pull`", kind="warn")
+    elif required:
+        render.note(console, f"all {len(required)} configured model(s) downloaded", kind="good")
     else:
-        render.note(console, f"all {len(st.models)} configured model(s) downloaded", kind="good")
+        render.note(console, "no local models configured — every role runs on the cloud")
     return True
 
 
@@ -599,10 +627,22 @@ def _settings(session: "Session", args: str) -> bool:
 
     parts = args.split(maxsplit=1)
     if len(parts) == 2:
-        st.set_value(parts[0], parts[1])
+        try:
+            st.set_value(parts[0], parts[1], session.cwd)
+        except Exception as exc:
+            # A mistyped key or a value the schema rejects is the user's typo,
+            # not a crash to report — say which, and leave the file alone.
+            render.note(session.console, f"not set — {escape(' '.join(str(exc).split())[:300])}", kind="bad")
+            return True
         session.reload_settings()
         session.rebuild()
-        render.note(session.console, f"[loom.warp]{parts[0]}[/loom.warp] = {parts[1]}", kind="good")
+        render.note(session.console, f"[loom.warp]{escape(parts[0])}[/loom.warp] = {escape(parts[1])}", kind="good")
+    elif len(parts) == 1:
+        render.note(
+            session.console,
+            f"usage: [loom.warp]/settings {escape(parts[0])} <value>[/loom.warp] — or [loom.warp]/settings[/loom.warp] alone to show them",
+            kind="tip",
+        )
     else:
         import json
 
@@ -767,8 +807,8 @@ def _graphify(session: "Session", args: str) -> bool:
         if enabled:
             # Pin the resolved binary path — a fresh `uv tool install` lands in
             # ~/.local/bin, which may not be on the PATH the MCP spawn inherits.
-            st.set_value("mcp_servers.graphify.command", graphify.binary() or "graphify")
-        st.set_value("mcp_servers.graphify.enabled", "true" if enabled else "false")
+            st.set_value("mcp_servers.graphify.command", graphify.binary() or "graphify", session.cwd)
+        st.set_value("mcp_servers.graphify.enabled", "true" if enabled else "false", session.cwd)
         session.reload_settings()
         # MCP sessions are a process-wide singleton — restart so the next turn
         # (re)connects with the new server set.
@@ -1147,9 +1187,9 @@ def _compact(session: "Session", args: str) -> bool:
     lines = []
     for m in transcript:
         role = m[0] if isinstance(m, tuple) else getattr(m, "type", "?")
-        content = m[1] if isinstance(m, tuple) else getattr(m, "content", "")
+        content = message_text(m)
         if content and role in ("user", "human", "assistant", "ai"):
-            lines.append(f"{role}: {str(content)[:2000]}")
+            lines.append(f"{role}: {content[:2000]}")
     if not lines:
         session.console.print("[loom.muted]nothing to compact yet[/loom.muted]")
         return True
@@ -1157,8 +1197,11 @@ def _compact(session: "Session", args: str) -> bool:
     from loom.core.model_router import build_model
     from loom.core.usage import role_metadata
 
-    cfg = session.settings.models
-    model_string = cfg.subagents.get("general-purpose", cfg.orchestrator) if session.local_only else cfg.orchestrator
+    # The model the orchestrator is actually on — the stand-in when its own
+    # tag isn't served, the local one in local-only — built against the config
+    # the fleet resolved, so it gets the same context window and endpoint.
+    cfg = getattr(session.bundle, "active_config", None) or session.settings.models
+    model_string = session._orchestrator_model()
     try:
         model = build_model(model_string, cfg)
         prompt = (
@@ -1170,13 +1213,15 @@ def _compact(session: "Session", args: str) -> bool:
         # Billed to "compaction", not the orchestrator: it is housekeeping on the
         # transcript, and folding it into the orchestrator's share would make the
         # delegation ratio look worse every time the user compacts.
-        summary = str(
-            model.invoke(
-                prompt, config=role_metadata({"callbacks": [session.tracker]}, "compaction")
-            ).content
-        )
+        summary = message_text(
+            model.invoke(prompt, config=role_metadata({"callbacks": [session.tracker]}, "compaction"))
+        ).strip()
+        if not summary:
+            raise RuntimeError("the model returned an empty summary")
     except Exception as exc:
-        session.console.print(f"[loom.bad.b]compact failed:[/loom.bad.b] {exc}")
+        # The conversation is left exactly as it was: compaction replaces the
+        # transcript with the summary, so an empty one would erase the session.
+        session.console.print(f"[loom.bad.b]compact failed:[/loom.bad.b] {escape(str(exc))}")
         from loom.core import telemetry
 
         telemetry.report("compact", exc)
@@ -1189,145 +1234,27 @@ def _compact(session: "Session", args: str) -> bool:
 
 @command("doctor", "Check your setup; `/doctor probe` also calls every configured model")
 def _doctor(session: "Session", args: str) -> bool:
-    import os
-    import sys
+    # One implementation, shared with `loom doctor` (see loom/ui/doctor.py).
+    # This command used to carry its own copy, which still demanded an
+    # Anthropic key from setups that route nowhere near Anthropic.
+    from loom.ui import doctor as doctor_mod
 
+    console = session.console
     if args.strip() in ("probe", "models", "verify"):
-        return _probe(session)
-
-    from loom.core import ollama
-    from loom.core.mcp import mcp_status
-
-    console = session.console
-    g = ink(console)
-
-    def row(ok: bool | None, label: str, detail: str):
-        mark, style = (g.ok, "loom.good") if ok else ((g.pending, "loom.warn") if ok is None else (g.fail, "loom.bad"))
-        return (
-            Text(f"{mark} ", style=style) + Text(label, style="loom.text"),
-            Text(detail, style="loom.muted" if ok else style),
-        )
-
-    out = [row(sys.version_info >= (3, 11), "python", sys.version.split()[0])]
-
-    cfg = session.settings.models
-    st = ollama.status(cfg)
-    if st.running:
-        detail = f"running @ {st.endpoint}" + ("" if st.installed else " (remote — no local binary)")
-        out.append(row(True, "ollama", detail))
-        missing = ollama.missing_models(cfg)
-        out.append(row(not missing, "local models", ", ".join(missing) + " missing" if missing else "all present"))
-        if missing:
-            # A missing tag only costs money if nothing local can cover it.
-            from loom.core.local_pool import build_pool, plan_local_roles
-
-            plan = plan_local_roles(cfg, build_pool(cfg, st))
-            if plan.cloud:
-                out.append(row(None, "cloud fallback", f"{', '.join(sorted(plan.cloud))} run on {cfg.cloud_fallback} (billed)"))
-            if plan.substituted:
-                out.append(row(None, "local fallback", f"{', '.join(sorted(plan.substituted))} run on another local model (free)"))
-    else:
-        out.append(row(False, "ollama", f"not reachable @ {st.endpoint}" + ("" if st.installed else ", binary not installed")))
-        out.append(row(None, "cloud fallback", f"local roles run on {cfg.cloud_fallback} (billed)"))
-
-    def effective_env(key: str) -> str | None:
-        return os.environ.get(key) or session.settings.env.get(key)
-
-    key_set = bool(
-        effective_env("ANTHROPIC_API_KEY")
-        or effective_env("ANTHROPIC_AUTH_TOKEN")
-        or effective_env("AWS_BEARER_TOKEN_BEDROCK")
-    )
-    out.append(row(key_set, "anthropic_api_key", "set" if key_set else "not set"))
-
-    from loom.core import playwright_setup
-
-    pw = playwright_setup.status()
-    out.append(row(pw.npx_available, "npx", "found" if pw.npx_available else "not found (Playwright MCP needs Node)"))
-    if pw.npx_available:
-        out.append(
-            row(
-                pw.browsers_installed,
-                "playwright browsers",
-                "installed" if pw.browsers_installed else "missing — run `loom playwright install` or `/playwright install`",
+        failed = doctor_mod.probe(console, session.settings)
+        if not failed:
+            render.note(console, "every configured model answered", kind="good")
+        else:
+            render.note(
+                console,
+                f"{failed} model(s) won't answer — [loom.warp]/model <role>[/loom.warp] to change one, "
+                "or [loom.warp]/setup[/loom.warp] to redo it",
+                kind="warn",
             )
-        )
-    for r in mcp_status(session.settings):
-        ok: bool | None = True if r["state"] == "connected" else (None if r["state"] in ("not connected", "disabled") else False)
-        out.append(row(ok, f"mcp:{r['name']}", r["state"]))
+        return True
 
-    from loom.ui import privacy as privacy_mod
-
-    out.append(row(*privacy_mod.doctor_row(session.cwd)))
-
-    console.print()
-    render.rule(console, "doctor")
-    console.print(render.kv(out, justify="left"))
+    doctor_mod.checkup(console, session.settings, session.cwd)
     render.note(console, "[loom.warp]/doctor probe[/loom.warp] also calls every configured model", kind="tip")
-    return True
-
-
-def _probe(session: "Session") -> bool:
-    """Call every configured model once and report what answered.
-
-    The offline checks above prove a key is *present*; only a real call proves
-    it is *accepted for that model*. Those differ more often than you'd
-    think — wrong region, not opted in, not on your plan, retired, misspelt.
-    """
-    from loom.core import preflight
-
-    console = session.console
-    g = ink(console)
-    cfg_models = session.settings.models
-    session.settings.apply_env()
-    plan = {
-        "orchestrator": cfg_models.orchestrator,
-        "advisor": cfg_models.advisor,
-        "escalation": cfg_models.escalation_model,
-        **cfg_models.subagents,
-    }
-    console.print()
-    render.rule(console, "probe")
-    render.note(console, "one tiny prompt per distinct model — a few tokens each")
-    table = render.table(
-        console,
-        ("", {"no_wrap": True}),
-        ("roles", {"overflow": "ellipsis"}),
-        ("", {"justify": "center", "no_wrap": True}),
-        ("model", {"no_wrap": True, "overflow": "ellipsis"}),
-        ("", {"overflow": "fold"}),
-    )
-    failed = []
-    with render.Working(console, "probing models"):
-        results = list(preflight.check_plan(plan, cfg_models))
-    for roles, check in results:
-        if not check.ok:
-            failed.append(check)
-        mark, style = (g.ok, "loom.good") if check.ok else (
-            (g.pending, "loom.warn") if check.state in ("not-pulled", "offline") else (g.fail, "loom.bad")
-        )
-        is_local = cfg_models.is_local(check.model)
-        table.add_row(
-            Text(mark, style=style),
-            Text(", ".join(sorted(roles)), style="loom.text"),
-            render.where(console, is_local),
-            Text(check.model, style="loom.local" if is_local else "loom.cloud"),
-            Text(check.detail, style="loom.muted" if check.ok else style),
-        )
-    console.print(table)
-    console.print()
-    for check in failed:
-        if check.hint:
-            render.note(console, f"[loom.text]{check.model}[/loom.text] — {check.hint}", kind="tip")
-    if not failed:
-        render.note(console, "every configured model answered", kind="good")
-    else:
-        render.note(
-            console,
-            f"{len(failed)} model(s) won't answer — [loom.warp]/model <role>[/loom.warp] to change one, "
-            "or [loom.warp]/setup[/loom.warp] to redo it",
-            kind="warn",
-        )
     return True
 
 
@@ -1373,16 +1300,29 @@ def _memory(session: "Session", args: str) -> bool:
 def _export(session: "Session", args: str) -> bool:
     from datetime import datetime
 
-    target = Path(args.strip()) if args.strip() else session.cwd / f"loom-session-{datetime.now():%Y%m%d-%H%M%S}.md"
+    if args.strip():
+        target = Path(args.strip()).expanduser()
+        if not target.is_absolute():
+            target = session.cwd / target  # relative to the project, like every other path here
+    else:
+        target = session.cwd / f"loom-session-{datetime.now():%Y%m%d-%H%M%S}.md"
     lines = ["# Loom session\n"]
     for m in session.transcript():
         role = m[0] if isinstance(m, tuple) else getattr(m, "type", "?")
-        content = m[1] if isinstance(m, tuple) else getattr(m, "content", "")
-        if content and role in ("user", "human", "assistant", "ai"):
+        content = message_text(m)
+        if content.strip() and role in ("user", "human", "assistant", "ai"):
             who = "You" if role in ("user", "human") else "Loom"
             lines.append(f"## {who}\n\n{content}\n")
-    target.write_text("\n".join(lines), encoding="utf-8")
-    session.console.print(f"exported → [loom.warp.b]{target}[/loom.warp.b]")
+    if len(lines) == 1:
+        render.note(session.console, "nothing to export yet")
+        return True
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("\n".join(lines), encoding="utf-8")
+    except OSError as exc:
+        render.note(session.console, f"could not write {escape(str(target))} — {escape(exc.strerror or str(exc))}", kind="bad")
+        return True
+    session.console.print(Text("exported → ") + Text(str(target), style="loom.warp.b"))
     return True
 
 
@@ -1447,9 +1387,9 @@ def _theme(session: "Session", args: str) -> bool:
     from loom.core import settings as st
 
     try:
-        st.set_value("ui.theme", choice)
+        st.set_value("ui.theme", choice, session.cwd)
     except Exception as exc:
-        render.note(console, str(exc), kind="bad")
+        render.note(console, escape(" ".join(str(exc).split())[:300]), kind="bad")
         return True
     session.reload_settings()
     render.note(session.console, f"theme → [loom.warp]{choice}[/loom.warp]", kind="good")

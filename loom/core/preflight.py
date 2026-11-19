@@ -42,7 +42,9 @@ class Check:
 
     @property
     def is_local(self) -> bool:
-        return self.state == "not-pulled" or ":" in self.model and "/" in self.model
+        from loom.core.model_router import resolve
+
+        return resolve(self.model).is_local
 
 
 def check_model(model_string: str, config: cfg.LoomConfig, *, timeout: float = TIMEOUT_SECONDS) -> Check:
@@ -169,6 +171,16 @@ def _classify(model_string: str, exc: Exception) -> Check:
         return Check(
             model_string, False, "missing", message or "no such model", "check the model id, or pick another"
         )
+    if code == 402:
+        # The key is fine and so is the model; the account behind it is not.
+        # Picking another model on the same account will fail the same way.
+        return Check(
+            model_string,
+            False,
+            "error",
+            message or "payment required",
+            "the account is out of credit or over its plan's usage limit — check the provider's billing page",
+        )
     if code == 429:
         # Rate-limited means it answered the auth question affirmatively.
         return Check(model_string, True, "ok", "rate-limited, but the key and model are valid")
@@ -187,11 +199,26 @@ def _brief(exc: Exception) -> str:
 def check_plan(models: dict[str, str], config: cfg.LoomConfig, *, timeout: float = TIMEOUT_SECONDS):
     """Verify every distinct model in a role → model-string plan.
 
-    Yields ``(roles, Check)`` with the roles sharing that model collapsed, so a
-    fleet of seven subagents on one tag is probed (and billed) once.
+    Yields ``(roles, Check)`` in plan order, with the roles sharing a model
+    collapsed, so a fleet of seven subagents on one tag is probed (and billed)
+    once. Distinct models are probed concurrently: the bound on one probe is a
+    minute, and a setup naming four slow reasoning models should cost the user
+    one of those minutes, not four.
     """
     by_model: dict[str, list[str]] = {}
     for role, model_string in models.items():
-        by_model.setdefault(model_string, []).append(role)
-    for model_string, roles in by_model.items():
-        yield roles, check_model(model_string, config, timeout=timeout)
+        if model_string:
+            by_model.setdefault(model_string, []).append(role)
+    if not by_model:
+        return
+
+    def _probe(model_string: str) -> Check:
+        try:
+            return check_model(model_string, config, timeout=timeout)
+        except Exception as exc:  # one broken probe must not lose the others
+            return Check(model_string, False, "error", _brief(exc))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(by_model))) as pool:
+        futures = {model_string: pool.submit(_probe, model_string) for model_string in by_model}
+        for model_string, roles in by_model.items():
+            yield roles, futures[model_string].result()

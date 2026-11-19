@@ -135,8 +135,9 @@ class ToolErrorGuard(AgentMiddleware):
         """Report the defect, then hand the model something it can act on.
 
         The model gets the exception type and message so it can change course.
-        Sentry gets the stack; it does not get the message, which routinely
-        quotes a path or a line of the user's file.
+        Sentry gets the type and the stack; it does not get the message, which
+        routinely quotes a path or a line of the user's file —
+        ``telemetry.scrub_event`` redacts it for every ``tool.*`` report.
         """
         name, tool_call_id = call_identity(request)
         try:

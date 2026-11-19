@@ -94,20 +94,30 @@ def test_list_models_google_ai_studio_filters_to_generate_content(monkeypatch):
     assert catalog.list_models(prov.get("google_ai_studio"), {"GOOGLE_API_KEY": "x"}) == ["gemini-3.5-flash"]
 
 
-def test_list_models_opencode_zen_filters_unsupported_families(monkeypatch):
-    payload = {
-        "data": [
-            {"id": "gpt-5.5"},
-            {"id": "claude-sonnet-5"},
-            {"id": "minimax-m3"},
-            {"id": "qwen3.6-plus"},
-        ]
-    }
-    monkeypatch.setattr(catalog.httpx, "get", lambda url, **k: _FakeResponse(payload))
+_GATEWAY_LISTING = {
+    "data": [
+        {"id": "gpt-5.5"},
+        {"id": "claude-sonnet-5"},
+        {"id": "minimax-m3"},
+        {"id": "qwen3.6-plus"},
+    ]
+}
+
+
+def test_list_models_opencode_zen_offers_every_family_it_serves(monkeypatch):
+    # MiniMax and Qwen used to be filtered out as "not wired up". Both answer
+    # over the OpenAI-compatible API, so hiding them withheld working models.
+    monkeypatch.setattr(catalog.httpx, "get", lambda url, **k: _FakeResponse(_GATEWAY_LISTING))
     models = catalog.list_models(prov.get("opencode_zen"), {})
-    assert models == ["claude-sonnet-5", "gpt-5.5"]
-    assert "minimax-m3" not in models
-    assert "qwen3.6-plus" not in models
+    assert models == ["claude-sonnet-5", "gpt-5.5", "minimax-m3", "qwen3.6-plus"]
+
+
+def test_list_models_opencode_go_hides_the_models_it_cannot_serve_to_loom(monkeypatch):
+    # Go lists Claude models but only speaks the Anthropic protocol for them;
+    # Loom's OpenAI-compatible route gets 400 ModelProtocolUnsupported.
+    monkeypatch.setattr(catalog.httpx, "get", lambda url, **k: _FakeResponse(_GATEWAY_LISTING))
+    models = catalog.list_models(prov.get("opencode_go"), {})
+    assert models == ["gpt-5.5", "minimax-m3", "qwen3.6-plus"]
 
 
 def test_list_models_opencode_zen_works_without_credentials(monkeypatch):

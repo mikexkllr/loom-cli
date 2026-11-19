@@ -172,6 +172,12 @@ def _build_openai_compatible(provider: str, name: str) -> "BaseChatModel":
     )
     if not base_url:
         raise RuntimeError(f"{spec['base_url_env']} is not set — required for the {provider!r} provider.")
+    if not api_key and provider == "custom":
+        # A self-hosted endpoint (LM Studio, vLLM, llama.cpp) usually has no
+        # auth at all, which is why the provider registry marks this key
+        # optional. The OpenAI client still insists on a non-empty string, so
+        # hand it a placeholder rather than refusing an endpoint that works.
+        api_key = "not-needed"
     if not api_key:
         raise RuntimeError(
             f"{spec['api_key_env']} is not set — required for the {provider!r} provider "
@@ -229,8 +235,21 @@ def _build_cached(provider: str, name: str, ollama_endpoint: str, num_ctx: int) 
     return init_chat_model(name, model_provider=provider)
 
 
+def clear_model_cache() -> None:
+    """Forget every built model.
+
+    A built model keeps the credentials and routing it was constructed with —
+    the API key, the gateway base URL, whether ``claude-*`` goes to Bedrock.
+    Called when the settings ``env`` block changes those underneath a running
+    session (see :meth:`loom.core.settings.Settings.apply_env`).
+    """
+    _build_cached.cache_clear()
+
+
 def build_model(model: str, config: LoomConfig) -> "BaseChatModel":
     """Return a LangChain chat model for the given config model string."""
+    if not model or not model.strip():
+        raise ValueError("no model configured for this role (empty model string)")
     rm = resolve(model)
     num_ctx = config.context_window_for(rm.raw) if rm.is_local else 0
     return _build_cached(rm.provider, rm.name, config.ollama_endpoint, num_ctx)
@@ -257,6 +276,3 @@ def should_escalate(prompt_tokens: int, model: str, config: LoomConfig) -> bool:
     window = config.context_window_for(model)
     return prompt_tokens >= window * config.escalation_threshold
 
-
-def escalation_target(config: LoomConfig) -> str:
-    return config.escalation_model

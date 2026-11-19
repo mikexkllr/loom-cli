@@ -97,6 +97,13 @@ class LoomConfig(BaseModel):
             raise ValueError("max_nesting_depth must be >= 1")
         return v
 
+    @field_validator("artifact_offload_tokens")
+    @classmethod
+    def _valid_offload(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"artifact_offload_tokens must be a positive token count, got {v}")
+        return v
+
     @field_validator("max_local_context")
     @classmethod
     def _valid_local_context(cls, v: int | None) -> int | None:
@@ -107,8 +114,13 @@ class LoomConfig(BaseModel):
     # ----- helpers -----
 
     def is_local(self, model: str) -> bool:
-        """True if ``model`` is served by Ollama (local)."""
-        return model.startswith(("ollama/", "ollama:"))
+        """True if ``model`` is served by Ollama (local).
+
+        Case-insensitive on the prefix, like :func:`loom.core.model_router.resolve`:
+        ``Ollama/qwen3:4b`` built a local model there while reading as cloud
+        here, which billed it and skipped the prompt-size guard.
+        """
+        return (model or "").strip().lower().startswith(("ollama/", "ollama:"))
 
     def model_for(self, role: str, inherit: str = "general-purpose") -> str:
         """Resolve a subagent role to a model string.
@@ -205,7 +217,14 @@ def set_value(key: str, value: str, path: Path | None = None) -> LoomConfig:
     parts = key.split(".")
     cursor: Any = data
     for part in parts[:-1]:
-        cursor = cursor.setdefault(part, {})
+        nxt = cursor.get(part)
+        if not isinstance(nxt, dict):
+            # `orchestrator.foo` — a scalar has no keys to descend into.
+            if nxt is not None:
+                raise ValueError(f"{part!r} is a value, not a section — cannot set {key!r}")
+            nxt = {}
+            cursor[part] = nxt
+        cursor = nxt
     cursor[parts[-1]] = _coerce(value)
 
     updated = LoomConfig(**data)  # re-validate

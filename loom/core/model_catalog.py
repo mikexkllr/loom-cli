@@ -33,14 +33,21 @@ _LISTABLE = {
     "anthropic_bedrock",
 }
 
-# OpenCode's Zen/Go gateways list every model they route to, but a few
-# families are only reachable there via a non-OpenAI wire shape (Anthropic
-# Messages API, not chat/completions) that Loom's ChatOpenAI-based client
-# can't speak yet — see the opencode_zen/opencode_go notes in providers.py.
-# Filtered out here so the picker never offers a model that will fail.
+# A gateway lists every model it routes to, including ones it only serves over
+# a wire shape Loom's OpenAI-compatible client cannot speak. Filtered out here
+# so the picker never offers a model that is certain to fail.
+#
+# OpenCode Go lists Claude models but answers them only on the Anthropic
+# Messages protocol: a chat/completions request gets `400
+# ModelProtocolUnsupported` (seen live, Oct 2026). Zen serves Claude over the
+# OpenAI shape, so it is not filtered there.
+#
+# This used to hide MiniMax and Qwen on both gateways, on the strength of an
+# early note that they "aren't wired up". They are: both families answer over
+# the OpenAI-compatible API with working tool calls (verified live, and stated
+# in the provider notes) — the picker was withholding models that work.
 _UNSUPPORTED_PREFIXES: dict[str, tuple[str, ...]] = {
-    "opencode_zen": ("minimax", "qwen"),
-    "opencode_go": ("minimax", "qwen"),
+    "opencode_go": ("claude",),
 }
 
 

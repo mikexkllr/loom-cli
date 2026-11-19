@@ -103,14 +103,21 @@ class PromptSizeGuard(AgentMiddleware):
                 return swapped
 
         # Rung 2: the cloud. Only once no local model has the headroom.
-        self._escalations += 1
         swapped = self._swap(request, self.config.escalation_model)
-        # Can't build the cloud model (e.g. missing API key) → let the local
-        # model try rather than failing the whole call.
-        return swapped if swapped is not None else request
+        if swapped is None:
+            # Can't build the cloud model (no API key, or airgap, which blanks
+            # `escalation_model` on purpose) → let the local model try rather
+            # than failing the whole call. Not counted: nothing left the
+            # machine, and /status reporting "1 local→cloud" in an airgap
+            # session is the one number that mode must never show wrongly.
+            return request
+        self._escalations += 1
+        return swapped
 
     def _swap(self, request: "ModelRequest", model_string: str) -> "ModelRequest | None":
         """Rebind ``request`` to ``model_string``, or None if it can't be built."""
+        if not model_string:
+            return None
         try:
             return self._with_model(request, build_model(model_string, self.config))
         except Exception:

@@ -473,3 +473,46 @@ def test_swallowing_lets_control_flow_through(monkeypatch):
         with pytest.raises(control):
             with tel.swallowing("x"):
                 raise control()
+
+
+# ------------------------------------------------- tool crashes carry no text
+
+
+def _crash_event(where):
+    return {
+        "tags": {"where": where, "tool": "execute"},
+        "exception": {
+            "values": [
+                {
+                    "type": "UnicodeDecodeError",
+                    "value": "can't decode line: API_TOKEN=sk-live-123 in /repo/secrets.env",
+                    "stacktrace": {"frames": [{"filename": "loom/tools/x.py", "lineno": 3}]},
+                }
+            ]
+        },
+    }
+
+
+def test_a_tool_crash_report_keeps_the_type_and_stack_but_not_the_message():
+    """TELEMETRY.md promises tool reports carry "never the message body, which
+    routinely quotes a path or a line of the user's file". That held for the
+    two categories that send no exception — and not for a crash, which goes
+    through capture_exception with the message attached."""
+    event = tel.scrub_event(_crash_event("tool.crash"))
+    (exception,) = event["exception"]["values"]
+    assert exception["type"] == "UnicodeDecodeError"
+    assert exception["value"] == "<redacted>"
+    assert exception["stacktrace"]["frames"][0]["lineno"] == 3
+    assert "sk-live-123" not in json.dumps(event)
+
+
+def test_the_message_survives_where_it_is_loom_talking():
+    for where in ("turn", "cli:doctor", "mcp.connect", ""):
+        (exception,) = tel.scrub_event(_crash_event(where))["exception"]["values"]
+        assert "decode line" in exception["value"], where
+
+
+def test_the_where_tag_is_read_in_either_event_shape():
+    event = _crash_event("tool.crash")
+    event["tags"] = [["tool", "execute"], ["where", "tool.crash"]]
+    assert tel.scrub_event(event)["exception"]["values"][0]["value"] == "<redacted>"

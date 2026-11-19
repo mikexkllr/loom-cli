@@ -195,7 +195,10 @@ def _filesystem_middleware(
             # to the window so a noisy result gets offloaded to disk instead of
             # eating the whole context.
             grep_max_count=200 if is_local else 1000,
-            tool_token_limit_before_evict=max(2_000, window // 8) if is_local else 20_000,
+            # Never below the configured `artifact_offload_tokens` floor.
+            tool_token_limit_before_evict=max(
+                config.artifact_offload_tokens, window // 8 if is_local else 20_000
+            ),
         )
     except (TypeError, ValueError) as exc:  # pragma: no cover - deepagents API drift
         telemetry.report("subagent.fs_middleware.build", exc)

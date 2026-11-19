@@ -454,7 +454,7 @@ accumulate indefinitely.
 | Path | Role |
 | --- | --- |
 | `loom/core/telemetry.py` | modes, consent store, gating, Sentry/Langfuse init, `scrub_event` |
-| `loom/core/telemetry_setup.py` | `sentry` / `langfuse` CLI bridges used during setup |
+| `loom/core/telemetry_setup.py` | `sentry` CLI bridge and the Langfuse key check used during setup |
 | `loom/ui/privacy.py` | the wizard step, per-project gate, `/privacy` rendering |
 | `loom/ui/onboarding.py` | calls the privacy step in quick *and* advanced setup |
 | `loom/ui/repl.py` | "run setup now?", per-directory ask, activation, callbacks, crash capture, flush |

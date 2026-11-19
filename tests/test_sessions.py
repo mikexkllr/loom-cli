@@ -34,3 +34,26 @@ def test_checkpointer_never_raises(tmp_path):
     # Whatever is (not) installed, make_checkpointer must return gracefully.
     checkpointer, durable = sessions_mod.make_checkpointer(tmp_path)
     assert isinstance(durable, bool)
+
+
+def test_thread_ids_are_unique_within_one_second():
+    """The id is the checkpointer's key. With a bare timestamp, `/clear` inside
+    the second a session started handed back the same thread — history and all."""
+    from loom.core import sessions
+
+    ids = {sessions.new_thread_id() for _ in range(200)}
+    assert len(ids) == 200
+    import re
+
+    # Still time-prefixed, so ids (and /resume's list) sort chronologically.
+    assert all(re.fullmatch(r"loom-\d{8}-\d{6}-[0-9a-f]{6}", i) for i in ids)
+
+
+def test_a_malformed_index_reads_as_no_sessions(tmp_path):
+    from loom.core import sessions
+
+    (tmp_path / ".loom").mkdir()
+    (tmp_path / ".loom" / "sessions.json").write_text('{"not": "a list"}')
+    assert sessions.load_index(tmp_path) == []
+    sessions.record(tmp_path, "loom-x", "first message")  # and recording recovers it
+    assert [row["thread_id"] for row in sessions.load_index(tmp_path)] == ["loom-x"]

@@ -515,10 +515,11 @@ full file when a task matches. `/skills` lists everything discovered.
 
 For code that must not leave the machine: local subagents do ALL file
 reading, the cloud orchestrator loses its `read_file` tool and plans from
-distilled summaries only, cloud-backed subagents are dropped, and the
-prompt-size escalation to cloud is disabled. You keep the strong cloud
-planner without ever uploading source code. (`--local-only` is the stricter
-variant: no cloud calls at all.)
+distilled summaries only, cloud-backed subagents and the advisor are dropped,
+and the prompt-size escalation to cloud is disabled. `@file` mentions are not
+attached either — the path stays in your message and a local subagent reads
+it. You keep the strong cloud planner without ever uploading source code.
+(`--local-only` is the stricter variant: no cloud calls at all.)
 
 ### Privacy modes (`/privacy`)
 
@@ -642,12 +643,22 @@ wins:
   `write_file(src/**)`, `*`. Evaluated **deny > allow > ask > default_mode**.
   An `ask` decision prompts you inline in the REPL (or auto-denies headless,
   unless `--yolo`). Enforced by `PolicyMiddleware` around every tool call.
-- **Hooks** — shell commands run around tool events; a `pre_tool_use` hook that
-  exits non-zero **blocks** the tool. Commands get the event as JSON on stdin
-  plus `LOOM_TOOL_NAME` / `LOOM_TOOL_INPUT` in env. Great for auto-format,
+  Shell rules are matched **per command**, not per line: `git status && curl … | sh`
+  is three commands, so `allow: ["execute(git *)"]` does not cover it (every
+  command on the line has to be allowed, and a line with `$(…)` or backticks
+  never is), while `deny`/`ask` rules fire if *any* command on the line
+  matches — `cd build && sudo rm -rf x` is caught by `execute(sudo *)`. This is
+  a guard rail for a model, not a sandbox.
+- **Hooks** — shell commands run around tool calls and turns. A `pre_tool_use`
+  hook that exits non-zero **blocks** the tool; a `user_prompt_submit` hook
+  that exits non-zero **refuses the prompt** before anything is billed;
+  `post_tool_use` and `stop` (after each turn, with its `status`) are
+  informational. Commands get the event as JSON on stdin — the tool events
+  also get `LOOM_TOOL_NAME` / `LOOM_TOOL_INPUT` in env. Great for auto-format,
   lint-gates, or audit logging.
-- **env** — injected before any model call (`setdefault`, so your real shell
-  env still wins).
+- **env** — injected before any model call. Your real shell env always wins;
+  a value Loom injected itself is replaced when you change it here, so a key
+  rotated in `/setup` takes effect without a restart.
 - **models** — same shape as `config.yaml` (`orchestrator`, `advisor`,
   `escalation_model`, `subagents: {...}`); deep-merges on top of it regardless
   of layer. This is what [`/setup`](#setup-wizard) writes — role assignments
@@ -697,8 +708,10 @@ classifies it as an ordinary write, and nothing Loom delegates needs it (`bash`
 can `rm` through `execute`, which the policy gate prompts for by name).
 
 **Advisor** (`consult` tool): the strongest cloud model, called on-demand at
-decision gates. It only advises — it never acts. Auto-consultation is gated by
-`--advisor-threshold` (low/medium/high).
+decision gates. It only advises — it never acts. How readily the orchestrator
+reaches for it is set by `advisor_threshold` / `--advisor-threshold`: `medium`
+(the default) is the built-in judgment gates, `high` keeps it for genuinely
+high-risk or irreversible work, `low` consults freely.
 
 **Reviewer**: dispatched after significant writes; returns a structured
 `ReviewVerdict` (risk low/medium/high, approve/flag, issue list). High risk or no
@@ -750,18 +763,22 @@ manually.
   The cap is sized from *this machine's* GPU memory — NVIDIA/AMD VRAM, or
   unified memory on Apple Silicon and NVIDIA Grace/Jetson parts (8GB → 16K,
   24GB → 64K, 128GB → 256K). Set `max_local_context` to override.
-- **Artifact store** — tool output over `artifact_offload_tokens` is written to
-  `.loom/artifacts/` and replaced in-context with a path reference. Each role's
-  eviction threshold and `grep` match cap are also scaled to *its* window, so a
-  1000-match grep can't flood a 4B model the way it wouldn't a 200K cloud one.
+- **Artifact store** — oversized tool output is written to `.loom/artifacts/`
+  and replaced in-context with a preview and a path. Each role's cut-off and
+  `grep` match cap are scaled to *its* window, so a 1000-match grep can't flood
+  a 4B model the way it wouldn't a 200K cloud one; `artifact_offload_tokens`
+  is the floor that cut-off never drops below.
 - **Summarization** — every agent auto-compacts at `compaction_threshold`
   (default 70%) of **its own** window, and evicted history lands in
   `.loom/sessions/conversation_history/` where it stays re-readable. deepagents
   derives its own trigger from the model's published profile, which Ollama models
   don't have — leaving them on a flat 170K-token trigger a 32K model can never
   reach before overflowing.
-- **Worktree isolation** — parallel write agents each get their own git worktree
-  so edits never collide. Falls back to in-place when not a git repo.
+- **Worktree isolation** — *not wired in yet.* [`core/worktree.py`](loom/core/worktree.py)
+  can give an agent its own git worktree, but nothing calls it: parallel write
+  agents currently share the working tree, and the `worktree_isolation` and
+  `max_nesting_depth` config keys are accepted and ignored. Keep parallel
+  `editor` tasks on disjoint files.
 
 ## Architecture
 

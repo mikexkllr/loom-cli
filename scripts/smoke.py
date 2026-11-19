@@ -104,13 +104,34 @@ def test_prompt_size_guard() -> None:
     guard._maybe_escalate(small)
     check("small prompt: no escalation", guard.escalation_count == 0)
 
-    # For the big one, build_model may fail (no API key) — that's fine; we only
-    # assert the escalation was *attempted* (counter increments before build).
+    # The counter records escalations that *happened* — a call that really left
+    # for the escalation model — so the build is stubbed rather than left to
+    # whichever API keys this machine has. Without a buildable target the call
+    # stays local and must not be counted (that is what airgap relies on).
+    import loom.middleware.prompt_size_guard as guard_mod
+
+    real_build = guard_mod.build_model
+
+    def _no_key(model, config):
+        raise RuntimeError("no API key")
+
+    guard_mod.build_model = _no_key
     try:
-        guard._maybe_escalate(big)
-    except Exception:
-        pass
-    check("large prompt: escalation attempted", guard.escalation_count == 1)
+        kept = guard._maybe_escalate(big)
+    finally:
+        guard_mod.build_model = real_build
+    check("large prompt, no escalation target: stays local, not counted", kept is big and guard.escalation_count == 0)
+
+    big.override = lambda **kw: SimpleNamespace(**{**vars(big), **kw})
+    guard_mod.build_model = lambda model, config: f"<{model}>"
+    try:
+        moved = guard._maybe_escalate(big)
+    finally:
+        guard_mod.build_model = real_build
+    check(
+        "large prompt: escalated and counted",
+        guard.escalation_count == 1 and moved.model == f"<{s.models.escalation_model}>",
+    )
 
 
 # ---------------------------------------------------------------------------

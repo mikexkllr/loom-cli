@@ -1,10 +1,11 @@
-"""Bridges to the `sentry` and `langfuse` CLIs, used only during setup.
+"""Setup-time helpers for telemetry credentials: a bridge to the `sentry` CLI,
+and a Langfuse key check.
 
-Both tools are already installed on plenty of developer machines and both are
-already authenticated there. When they are, the privacy step can offer to fetch
-a DSN or verify a key pair instead of asking someone to go copy strings out of
-a web dashboard — which is the difference between an opt-in people complete and
-one they abandon.
+The `sentry` CLI is already installed and authenticated on plenty of developer
+machines. When it is, the privacy step can offer to fetch a DSN instead of
+asking someone to go copy a string out of a web dashboard — which is the
+difference between an opt-in people complete and one they abandon. A Langfuse
+key pair is verified with one HTTP call.
 
 Everything degrades: no binary, not logged in, no network, or a changed JSON
 shape all just mean "type it in yourself". Nothing here is on a hot path, and
@@ -185,47 +186,26 @@ def sentry_dsn(org: str, project: str) -> str | None:
 # ----------------------------------------------------------------------------
 
 
-def langfuse_cli() -> str | None:
-    return _which("langfuse")
-
-
 def langfuse_verify(public_key: str, secret_key: str, host: str = "") -> tuple[bool, str]:
     """Check a Langfuse key pair against the server.
 
-    Returns ``(ok, detail)``. Falls back to a plain HTTP call when the CLI
-    isn't installed, so a verified key doesn't depend on an optional npm
-    package. Never raises; a network failure reports as unverified, not as an
-    invalid key, because those two want different advice.
+    Returns ``(ok, detail)``. Never raises; a network failure reports as
+    unverified, not as an invalid key, because those two want different advice.
+
+    Always over HTTP. This used to prefer the ``langfuse`` CLI when one was
+    installed, handing it ``--secret-key <key>`` — which puts the secret in the
+    process table, readable by every other user on the machine for as long as
+    the command runs. The HTTP call asks the same endpoint the same question,
+    needs nothing that isn't already a hard dependency, and keeps the key in
+    an Authorization header where it belongs.
     """
     if not (public_key and secret_key):
         return False, "both keys are needed"
-    host = host or LANGFUSE_DEFAULT_HOST
-
-    binary = langfuse_cli()
-    if binary:
-        _code, out, err = _run(
-            [binary, "api", "projects", "get-public", "--public-key", public_key,
-             "--secret-key", secret_key, "--host", host]
-        )
-        # A rejected key is reported as a JSON body on *stderr* while a good
-        # one comes back on stdout, so both streams have to be read. Judging by
-        # exit code alone would call every failure "CLI unavailable" and judging
-        # by stdout alone would miss the one message that says what went wrong.
-        data = _json(out) or _json(err)
-        if isinstance(data, dict):
-            if data.get("message"):
-                return False, str(data["message"])
-            if data.get("data") or data.get("id") or data.get("name"):
-                return True, "key verified"
-        # Anything else (usage error, changed output shape, missing npm deps)
-        # is not a verdict about the key — fall through and ask the API directly.
-
-    return _langfuse_verify_http(public_key, secret_key, host)
+    return _langfuse_verify_http(public_key, secret_key, host or LANGFUSE_DEFAULT_HOST)
 
 
 def _langfuse_verify_http(public_key: str, secret_key: str, host: str) -> tuple[bool, str]:
-    """Same check over plain HTTP basic auth — httpx is already a hard
-    dependency, so this path always exists."""
+    """The check itself: one authenticated GET over HTTP basic auth."""
     try:
         import httpx
 

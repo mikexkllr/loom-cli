@@ -577,3 +577,212 @@ def test_a_failed_drain_closes_the_stream_before_the_fallback_runs(tmp_path):
     s._stream_multi = blows_up_mid_drain
     s.run_turn("hello")
     assert events == ["closed", "fallback"], "the abandoned stream outlived the fallback run"
+
+
+# ------------------------------------------- what a role is really running on
+
+
+def test_a_role_that_inherits_its_model_still_has_one(tmp_path):
+    """The default config gives the reviewer no entry of its own: it runs on
+    the advisor's model. `model_origin` read `subagents[role]` directly and so
+    answered None — no badge on the delegation, missing from the roster."""
+    s = _session(tmp_path)
+    cfg = s.settings.models
+    assert "reviewer" not in cfg.subagents
+    assert s.model_origin("reviewer") == (cfg.advisor, cfg.is_local(cfg.advisor))
+
+
+def test_the_orchestrator_badge_follows_the_model_it_is_built_on(tmp_path):
+    """Local-only puts the orchestrator on the general-purpose local model.
+    The status line went on showing the configured cloud one."""
+    from types import SimpleNamespace
+
+    s = _session(tmp_path)
+    cfg = s.settings.models
+    local = cfg.subagents["general-purpose"]
+    assert cfg.is_local(local) and not cfg.is_local(cfg.orchestrator)
+
+    s.local_only = True
+    assert s.model_origin("orchestrator") == (local, True)  # before the fleet is built
+    s.bundle = SimpleNamespace(model_string=local, fallbacks={}, persistent=False)
+    assert s.model_origin("orchestrator") == (local, True)  # and after
+    from loom.ui.repl import _toolbar_state
+
+    state = _toolbar_state(s)
+    assert state["model"] == local and state["is_local"] is True
+
+
+def test_a_built_fleet_overrides_the_settings_for_every_surface(tmp_path):
+    from types import SimpleNamespace
+
+    s = _session(tmp_path)
+    s.bundle = SimpleNamespace(
+        model_string="zen/gpt-5.5",
+        subagent_models={"explorer": "zen/claude-haiku-4-5", "editor": "ollama/qwen3.6:27b"},
+        fallbacks={"explorer": "ollama/qwen3.5:4b"},
+        substitutions={},
+        persistent=False,
+    )
+    assert s.model_origin("explorer") == ("zen/claude-haiku-4-5", False)
+    assert s.model_origin("editor") == ("ollama/qwen3.6:27b", True)
+    tags = s.local_model_tags()
+    assert "qwen3.6:27b" in tags  # what the editor is built on
+    assert "claude-haiku-4-5" not in tags  # the explorer's cloud stand-in is not local
+
+
+def test_the_roster_counts_the_whole_fleet(tmp_path):
+    from loom.subagents import SPECS
+    from loom.ui.repl import _roster
+
+    s = _session(tmp_path)
+    rows = {role: (model, is_local, note) for role, model, is_local, note in _roster(s)}
+    assert f"{len(SPECS)} roles" in rows["fleet"][2]
+    assert "1 on cloud" in rows["fleet"][2]  # the reviewer, on the advisor's model
+    s.airgap = True
+    assert "advisor" not in {role for role, *_ in _roster(s)}  # no `consult` in airgap
+
+
+# ------------------------------------------------- block-list content as text
+
+
+def _claude_style(text: str):
+    """An AI message the way Anthropic shapes one that also calls a tool."""
+    from langchain_core.messages import AIMessage
+
+    return AIMessage(
+        content=[
+            {"type": "text", "text": text},
+            {"type": "tool_use", "id": "tu1", "name": "task", "input": {"subagent_type": "explorer"}},
+        ]
+    )
+
+
+def test_non_streamed_text_is_printed_as_text_not_as_a_block_list(tmp_path, capsys):
+    """With `ui.streaming` off, a Claude reply that also called a tool printed
+    as `[{'type': 'text', …}, {'type': 'tool_use', …}]`."""
+    s = _session(tmp_path)
+    final = s._stream_updates(iter([{"model": {"messages": [_claude_style("Mapping the repo first.")]}}]))
+    out = capsys.readouterr().out
+    assert final == "Mapping the repo first."
+    assert "Mapping the repo first." in out
+    assert "tool_use" not in out and "{'type'" not in out
+
+
+def test_a_tool_only_reply_prints_no_empty_bubble(tmp_path, capsys):
+    from langchain_core.messages import AIMessage
+
+    s = _session(tmp_path)
+    msg = AIMessage(content=[{"type": "tool_use", "id": "tu1", "name": "task", "input": {}}])
+    assert s._stream_updates(iter([{"model": {"messages": [msg]}}])) is None
+    assert "tool_use" not in capsys.readouterr().out
+
+
+def test_the_synchronous_fallback_reads_block_content_too(tmp_path, capsys):
+    s = _session(tmp_path)
+    assert s._absorb_result({"messages": [_claude_style("All done.")]}) == "All done."
+    assert "{'type'" not in capsys.readouterr().out
+
+
+# ------------------------------------------------------------ airgap + @file
+
+
+def test_airgap_does_not_paste_a_mentioned_file_into_the_prompt(tmp_path, capsys):
+    """Airgap takes `read_file` away from the orchestrator because it is a cloud
+    model. `@file` then inlined the same raw source into the message it reads."""
+    (tmp_path / "secret.py").write_text("API_KEY = 'do-not-upload'\n")
+    s = Session(st.load_settings(tmp_path), cwd=str(tmp_path), airgap=True)
+    text = s._prepare_text("explain @secret.py")
+    assert "do-not-upload" not in text
+    assert "secret.py" in text and "NOT attached" in text
+    assert "not attaching secret.py" in capsys.readouterr().out
+
+    normal = Session(st.load_settings(tmp_path), cwd=str(tmp_path))
+    assert "do-not-upload" in normal._prepare_text("explain @secret.py")
+
+
+def test_airgap_says_nothing_when_nothing_was_withheld(tmp_path, capsys):
+    s = Session(st.load_settings(tmp_path), cwd=str(tmp_path), airgap=True)
+    s._memory_sent = True
+    assert s._prepare_text("mail me at dev@example.com") == "mail me at dev@example.com"
+    assert "airgap" not in capsys.readouterr().out
+
+
+# ----------------------------------------------------------------- turn hooks
+
+
+def test_a_user_prompt_submit_hook_can_refuse_the_turn(tmp_path, capsys):
+    from types import SimpleNamespace
+
+    from loom.core.settings import Hook
+
+    s = _session(tmp_path)
+    s.settings.hooks.user_prompt_submit = [Hook(command="echo 'no deploys on friday'; exit 2")]
+    ran = []
+
+    class Agent:
+        def stream(self, *a, **k):
+            ran.append(True)
+            return iter([])
+
+    s.bundle = SimpleNamespace(agent=Agent(), persistent=False, fallbacks={})
+    assert s.run_turn("deploy to prod") is None
+    out = capsys.readouterr().out
+    assert ran == [] and s.tracker.turns == 0  # nothing ran, nothing was billed
+    assert "no deploys on friday" in out
+    assert s.last_turn_failed is True  # so `loom "task"` exits non-zero
+
+
+def test_stop_hooks_run_after_the_turn_with_its_status(tmp_path):
+    from types import SimpleNamespace
+
+    from loom.core.settings import Hook
+
+    s = _session(tmp_path)
+    log = tmp_path / "stop.log"
+    s.settings.hooks.stop = [Hook(command=f"cat >> {log}; echo >> {log}")]
+
+    class Agent:
+        def __init__(self, exc=None):
+            self.exc = exc
+
+        def stream(self, *a, **k):
+            if self.exc:
+                raise self.exc
+            return iter([])
+
+        def invoke(self, *a, **k):
+            raise self.exc
+
+    s.bundle = SimpleNamespace(agent=Agent(), persistent=False, fallbacks={})
+    s.run_turn("one")
+    s.bundle = SimpleNamespace(agent=Agent(RuntimeError("boom")), persistent=False, fallbacks={})
+    s.run_turn("two")
+    import json
+
+    statuses = [json.loads(line)["status"] for line in log.read_text().splitlines() if line.strip()]
+    assert statuses == ["complete", "failed"]
+
+
+def test_every_turn_gets_its_own_undo_id(tmp_path):
+    """The id was `<thread>-t<counter>`, and the counter restarts with the
+    process — so a resumed thread reused ids that already had snapshots."""
+    from types import SimpleNamespace
+
+    from loom.core import undo
+
+    seen = []
+
+    class Agent:
+        def stream(self, *a, **k):
+            seen.append(undo.current_turn_id.get())
+            return iter([])
+
+    first = _session(tmp_path)
+    first.bundle = SimpleNamespace(agent=Agent(), persistent=False, fallbacks={})
+    first.run_turn("a")
+    resumed = _session(tmp_path)
+    resumed.thread_id = first.thread_id  # /resume
+    resumed.bundle = SimpleNamespace(agent=Agent(), persistent=False, fallbacks={})
+    resumed.run_turn("b")
+    assert len(set(seen)) == 2 and all(i.startswith(f"{first.thread_id}-t1-") for i in seen)
+    assert undo.current_turn_id.get() == ""

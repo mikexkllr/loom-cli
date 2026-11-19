@@ -289,3 +289,31 @@ def test_build_hands_every_local_subagent_the_escalation_ladder(monkeypatch):
     assert bundle.guards, "local subagents should carry prompt-size guards"
     for guard in bundle.guards:
         assert guard.ladder == (("ollama/qwen3:4b", 32_768), ("ollama/qwen3:27b", 65_536))
+
+
+def test_guard_does_not_count_a_cloud_escalation_that_never_happened(monkeypatch):
+    """Airgap blanks `escalation_model` so nothing can leave the machine. The
+    guard then keeps the call local — but it used to bump the cloud counter on
+    the way, and /status reported "1 local→cloud" in the one mode where that
+    number must be zero."""
+    config = _config().model_copy(update={"escalation_model": ""})
+    built: list[str] = []
+    guard = _guard(config, (), monkeypatch, built)
+
+    request = _Request("x" * 2_000_000)
+    assert guard._maybe_escalate(request) is request
+    assert built == []  # an empty model string is not even attempted
+    assert guard.escalation_count == 0 and guard.local_escalation_count == 0
+
+
+def test_guard_does_not_count_an_escalation_it_could_not_build(monkeypatch):
+    config = _config()
+
+    def _build(model, cfg):
+        raise RuntimeError("OPENAI_API_KEY is not set")
+
+    guard = PromptSizeGuard("ollama/small", config, ())
+    monkeypatch.setattr("loom.middleware.prompt_size_guard.build_model", _build)
+    request = _Request("x" * 2_000_000)
+    assert guard._maybe_escalate(request) is request
+    assert guard.escalation_count == 0

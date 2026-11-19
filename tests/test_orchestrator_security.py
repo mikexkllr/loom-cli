@@ -379,3 +379,164 @@ def test_the_guard_wraps_the_policy_gate_not_the_other_way_round():
     for sub in build_all_subagents(settings.models, settings, "."):
         kinds = [type(m).__name__ for m in sub["middleware"]]
         assert kinds.index("ToolErrorGuard") < kinds.index("PolicyMiddleware"), sub["name"]
+
+
+# ---------------------------------------------------------------------------
+# An excluded tool is refused at the call, not only hidden from the schema
+# ---------------------------------------------------------------------------
+
+
+def test_an_excluded_tool_is_refused_even_when_the_model_names_it():
+    """`read_file` cannot be left out of a FilesystemMiddleware allowlist, so in
+    airgap it is still registered with the tool node. Hiding its schema does
+    not stop a model that calls it by name — the prompt mentions it."""
+    from types import SimpleNamespace
+
+    mw = ToolExclusionMiddleware({"read_file", "execute"})
+    ran = []
+
+    def handler(request):
+        ran.append(request)
+        return "ran"
+
+    refused = mw.wrap_tool_call(
+        SimpleNamespace(tool_call={"name": "read_file", "args": {"file_path": "/src/app.py"}, "id": "c1"}),
+        handler,
+    )
+    assert ran == []
+    assert refused.tool_call_id == "c1"
+    assert "[policy]" in refused.content and "read_file" in refused.content
+    assert str(refused.status) != "error"  # a refusal is the system working, not a tool failure
+
+    allowed = SimpleNamespace(tool_call={"name": "task", "args": {}, "id": "c2"})
+    assert mw.wrap_tool_call(allowed, handler) == "ran"
+    assert ran == [allowed]
+
+
+def test_the_airgap_orchestrator_refuses_read_file_without_any_settings(monkeypatch):
+    """The bare-LoomConfig path has no PolicyMiddleware to fall back on, so the
+    exclusion middleware is the only thing between the model and the file."""
+    pytest.importorskip("deepagents")
+    from loom.core.orchestrator import _orchestrator_excluded_tools
+
+    assert "read_file" in _orchestrator_excluded_tools(airgap=True)
+    mw = ToolExclusionMiddleware(_orchestrator_excluded_tools(airgap=True))
+    from types import SimpleNamespace
+
+    out = mw.wrap_tool_call(
+        SimpleNamespace(tool_call={"name": "read_file", "args": {}, "id": "x"}), lambda r: "LEAKED"
+    )
+    assert out != "LEAKED"
+
+
+# ---------------------------------------------------------------------------
+# Config knobs that used to be read by nothing
+# ---------------------------------------------------------------------------
+
+
+def _captured_prompt(monkeypatch, settings, **mode) -> str:
+    """The system prompt `build_orchestrator` hands to deepagents."""
+    pytest.importorskip("deepagents")
+    import deepagents
+
+    _stub_ollama(monkeypatch)
+    seen = {}
+    monkeypatch.setattr(deepagents, "create_deep_agent", lambda **kw: seen.update(kw) or object())
+    from loom.core.orchestrator import build_orchestrator
+
+    build_orchestrator(settings, cwd=".", **mode)
+    return seen["system_prompt"]
+
+
+def _no_mcp(**kw) -> Settings:
+    return Settings(models=_config(**kw), mcp_servers={})
+
+
+def test_advisor_threshold_changes_what_the_orchestrator_is_told(monkeypatch):
+    """`advisor_threshold` / `--advisor-threshold` was validated, stored, shown
+    in `config show` and read by nothing."""
+    from loom.core.orchestrator import ADVISOR_THRESHOLD_SUFFIX, orchestrator_system_prompt
+
+    base = _captured_prompt(monkeypatch, _no_mcp())
+    assert "ADVISOR THRESHOLD" not in base  # medium is the base prompt, byte for byte
+    assert base.startswith(orchestrator_system_prompt())
+
+    high = _captured_prompt(monkeypatch, _no_mcp(), advisor_threshold="high")
+    low = _captured_prompt(monkeypatch, _no_mcp(advisor_threshold="low"))
+    assert high.endswith(ADVISOR_THRESHOLD_SUFFIX["high"])
+    assert low.endswith(ADVISOR_THRESHOLD_SUFFIX["low"])
+    # A suffix, so the cached prefix is the same prompt in all three.
+    assert high.startswith(base) and low.startswith(base)
+
+
+def test_advisor_threshold_is_not_mentioned_where_there_is_no_advisor(monkeypatch):
+    for mode in ({"local_only": True}, {"airgap": True}):
+        prompt = _captured_prompt(monkeypatch, _no_mcp(advisor_threshold="low"), **mode)
+        assert "ADVISOR THRESHOLD" not in prompt, mode
+
+
+def test_an_unknown_advisor_threshold_is_refused(monkeypatch):
+    with pytest.raises(ValueError, match="advisor_threshold"):
+        _captured_prompt(monkeypatch, _no_mcp(), advisor_threshold="sometimes")
+
+
+def test_airgap_says_the_advisor_is_gone(monkeypatch):
+    """The base prompt lists `consult` and tells the orchestrator when to use
+    it; airgap removes the tool, and used to say nothing about that."""
+    prompt = _captured_prompt(monkeypatch, _no_mcp(), airgap=True)
+    assert "AIRGAP MODE" in prompt
+    tail = prompt[prompt.index("AIRGAP MODE") :]
+    assert "consult" in tail and "cloud-backed subagent" in tail
+
+
+def test_artifact_offload_tokens_is_the_floor_of_every_eviction_threshold():
+    """Documented as the size past which tool output is offloaded; the code
+    carried its own literal 2000 and never read the setting."""
+    pytest.importorskip("deepagents")
+    from deepagents.backends import StateBackend
+
+    from loom.core.orchestrator import _orchestrator_filesystem_middleware
+    from loom.subagents.base import _filesystem_middleware
+
+    def limit(mw):
+        return mw._tool_token_limit_before_evict
+
+    backend = StateBackend()
+    small = _config(context_windows={"ollama/qwen3:4b": 8_000, "ollama/qwen3:14b": 8_000})
+    raised = small.model_copy(update={"artifact_offload_tokens": 6_000})
+
+    sub = _filesystem_middleware(frozenset({"read_file"}), backend, "ollama/qwen3:4b", small)
+    assert limit(sub) == 2_000  # 8000 // 8 = 1000, lifted to the default floor
+    sub = _filesystem_middleware(frozenset({"read_file"}), backend, "ollama/qwen3:4b", raised)
+    assert limit(sub) == 6_000
+
+    orch = _orchestrator_filesystem_middleware(backend, raised, "ollama/qwen3:14b", airgap=False)
+    assert limit(orch) == 6_000
+
+
+def test_the_bundle_says_what_each_subagent_runs_on(monkeypatch):
+    """A role with no entry of its own still runs on something — the reviewer
+    inherits the advisor's model — and every surface that read
+    `config.subagents` directly showed it as running on nothing."""
+    pytest.importorskip("deepagents")
+    import deepagents
+
+    _stub_ollama(monkeypatch)
+    monkeypatch.setattr(deepagents, "create_deep_agent", lambda **kw: object())
+    from loom.core.orchestrator import build_orchestrator
+
+    named = ("explorer", "editor", "bash", "searcher", "general-purpose")
+    config = LoomConfig(
+        orchestrator="ollama/qwen3:14b",
+        advisor="ollama/qwen3:14b",
+        subagents={n: "ollama/qwen3:4b" for n in named},
+    )
+    bundle = build_orchestrator(Settings(models=config, mcp_servers={}), cwd=".")
+    assert bundle.subagent_models["reviewer"] == "ollama/qwen3:14b"  # the advisor's
+    assert bundle.subagent_models["explorer"] == "ollama/qwen3:4b"
+    assert set(bundle.subagent_models) == set(bundle.subagent_names)
+    assert "tester" not in bundle.subagent_models  # no browser tools connected
+    assert bundle.has_advisor is True
+
+    assert build_orchestrator(Settings(models=config, mcp_servers={}), cwd=".", airgap=True).has_advisor is False
+    assert build_orchestrator(Settings(models=config, mcp_servers={}), cwd=".", local_only=True).has_advisor is False

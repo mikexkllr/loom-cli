@@ -271,3 +271,53 @@ def test_transient_classification():
     assert ollama._is_transient("i/o timeout")
     assert not ollama._is_transient("pull model manifest: file does not exist")
     assert not ollama._is_transient("model 'typo:9b' not found")
+
+
+# ---------------------------------------------------------------------------
+# status(): something else answering on the port is not an Ollama daemon
+# ---------------------------------------------------------------------------
+
+
+class _NotJson(_FakeResponse):
+    def json(self):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        _NotJson(None),  # a proxy's HTML login page
+        _FakeResponse(["not", "a", "mapping"]),
+        _FakeResponse({"models": [{"no_name_key": True}]}),
+        _FakeResponse({"models": None}),
+    ],
+)
+def test_status_survives_a_reply_that_is_not_ollamas(monkeypatch, response):
+    monkeypatch.setattr(ollama.httpx, "get", lambda url, **k: response)
+    st = ollama.status(LoomConfig())
+    assert st.models == []
+    # `{"models": null}` is a daemon with nothing pulled; the others are not a daemon.
+    assert st.running is (response._payload == {"models": None})
+
+
+def test_a_torn_progress_line_does_not_fail_the_pull(monkeypatch):
+    class _Stream:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_lines(self):
+            yield '{"status": "pulling manifest"}'
+            yield '{"status": "pulling", "digest": "sha256:abc", "tot'  # cut mid-object
+            yield "[]"
+            yield '{"status": "success"}'
+
+    monkeypatch.setattr(ollama.httpx, "stream", lambda *a, **k: _Stream())
+    assert ollama.pull("qwen3:4b", "http://x", attempts=1) == 0

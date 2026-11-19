@@ -177,8 +177,25 @@ def note(console: Console, message: str, *, kind: str = "muted") -> None:
     line = Text()
     if mark:
         line.append(f"{mark} ", style=style)
-    line.append_text(Text.from_markup(message, style="loom.muted" if kind == "muted" else "loom.text"))
+    line.append_text(_markup(message, "loom.muted" if kind == "muted" else "loom.text"))
     console.print(line)
+
+
+def _markup(message: str, style: str) -> Text:
+    """``message`` parsed as Rich markup, or shown verbatim if it isn't any.
+
+    Notes carry interpolated text — a path, a model id, an exception — and a
+    stray ``[/x]`` in one raises ``MarkupError`` out of what is very often the
+    error path itself. Callers should still ``escape()`` text they did not
+    write (unescaped brackets that *do* parse are silently eaten); this is the
+    net under the ones that forget.
+    """
+    from rich.errors import MarkupError
+
+    try:
+        return Text.from_markup(message, style=style)
+    except MarkupError:
+        return Text(message, style=style)
 
 
 def diff(console: Console, lines, *, limit: int = 80) -> Text:
@@ -213,7 +230,7 @@ def choices(console: Console, options, *, title: str | None = None) -> None:
         line = Text("  ")
         line.append(f"{key}", style="loom.warp.b")
         line.append("  ")
-        line.append_text(Text.from_markup(label, style="loom.text"))
+        line.append_text(_markup(label, "loom.text"))
         if rest and rest[0]:
             line.append(f"  {rest[0]}", style="loom.muted")
         console.print(line)

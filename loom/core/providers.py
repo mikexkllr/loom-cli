@@ -139,9 +139,10 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
         flagship_model="gpt-5.5-pro",
         light_model="big-pickle",
         docs_url="https://opencode.ai/docs/zen/",
-        notes="Curated pay-per-use model gateway. Models with a `-free` suffix cost nothing and are "
-        "billed as zero in Loom's receipts. GLM/Kimi/MiniMax/MiMo/DeepSeek all work, tool calls "
-        "included — the gateway serves everything over its OpenAI-compatible API. One "
+        notes="Curated pay-per-use model gateway. GLM/Kimi/MiniMax/MiMo/DeepSeek all work, tool calls "
+        "included — the gateway serves everything over its OpenAI-compatible API. Models with a "
+        "`-free` suffix are billed as zero in Loom's receipts, but since Oct 2026 OpenCode's free "
+        "tier answers 403 to clients other than OpenCode itself — pick a paid model for Loom. One "
         "OPENCODE_API_KEY covers Zen and Go together.",
     ),
     ProviderInfo(

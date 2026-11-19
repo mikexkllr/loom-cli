@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from loom.core.config import LoomConfig
 from loom.core.model_router import build_model
+from loom.core.text import message_text
 from loom.core.usage import role_metadata
 
 # ----------------------------------------------------------------------------
@@ -111,7 +112,10 @@ def make_consult_tool(config: LoomConfig) -> Callable:
         # tracker's tree walk would credit the orchestrator — hence saying the
         # role outright instead of leaving it to be inferred.
         response = advisor_model.invoke(messages, config=role_metadata(config, "advisor"))
-        return getattr(response, "content", str(response))
+        # Text only. A Claude advisor answers in content blocks, and handing
+        # the raw list back as a tool result forwards its thinking blocks to an
+        # orchestrator on another provider that cannot parse them.
+        return message_text(response)
 
     return consult
 

@@ -80,3 +80,83 @@ def test_empty_receipt_is_empty():
     t = UsageTracker(_config())
     t.start_turn()
     assert t.receipt() == ""
+
+
+# ------------------------------------------------ concurrency + live config
+
+
+def _llm_end(tracker, model, inp, out):
+    """Feed one finished model call through the real callback hook."""
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    msg = AIMessage(content="x")
+    msg.usage_metadata = {"input_tokens": inp, "output_tokens": out, "total_tokens": inp + out}
+    msg.response_metadata = {"model_name": model}
+    tracker.on_llm_end(LLMResult(generations=[[ChatGeneration(message=msg)]]))
+
+
+def test_parallel_model_calls_are_all_counted():
+    """Parallel subagents finish model calls on separate worker threads, and a
+    receipt is a sum of `+=` on shared counters."""
+    import sys
+    import threading
+
+    tracker = UsageTracker(_config())
+    tracker.start_turn()
+    threads_n, calls_n = 8, 400
+    start = threading.Barrier(threads_n)
+
+    def work():
+        start.wait()
+        for _ in range(calls_n):
+            _llm_end(tracker, "claude-sonnet-4-6", 3, 1)
+
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)  # make an unguarded `+=` lose updates reliably
+    try:
+        threads = [threading.Thread(target=work) for _ in range(threads_n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(old)
+
+    total = threads_n * calls_n
+    for bucket in (tracker.turn, tracker.session):
+        (usage,) = bucket.cloud.values()
+        assert (usage.calls, usage.input_tokens, usage.output_tokens) == (total, total * 3, total)
+
+
+def test_swapping_the_config_updates_what_counts_as_local():
+    """`/model` and `/setup` reload the settings mid-session. The set of local
+    model names was computed once in __init__, so a model assigned to Ollama
+    afterwards — one whose tag has no colon to give it away — kept being priced
+    as a cloud call."""
+    tracker = UsageTracker(LoomConfig(orchestrator="claude-sonnet-4-6"))
+    assert tracker._is_local("gpt-oss") is False
+
+    tracker.config = LoomConfig(orchestrator="claude-sonnet-4-6", subagents={"editor": "ollama/gpt-oss"})
+    assert tracker._is_local("gpt-oss") is True
+
+    tracker.start_turn()
+    _llm_end(tracker, "gpt-oss", 1_000, 100)
+    assert tracker.turn.cloud_cost == 0
+    assert tracker.turn.local_share() == 1.0
+
+
+def test_an_inherited_role_is_priced_as_the_model_it_inherits():
+    """The reviewer runs on the advisor's model unless it is given its own. The
+    tracker resolved it against `general-purpose` instead, so a free-tier
+    advisor's reviewer was billed at the unknown-model default."""
+    config = LoomConfig(
+        orchestrator="claude-sonnet-4-6",
+        advisor="zen/deepseek-v4-flash-free",
+        subagents={"general-purpose": "ollama/qwen3:14b"},
+    )
+    tracker = UsageTracker(config)
+    assert tracker._role_model("reviewer") == "zen/deepseek-v4-flash-free"
+    assert tracker._role_model("explorer") == "ollama/qwen3:14b"
+    # The gateway reports the upstream name; the configured `-free` id prices it.
+    assert tracker._billing_model("reviewer", "deepseek-v4-flash") == "zen/deepseek-v4-flash-free"

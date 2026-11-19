@@ -77,23 +77,35 @@ def repo_map(root: str | Path = ".") -> str:
     return "\n".join(lines[: _MAX_MAP_LINES + 1])
 
 
-def expand_mentions(text: str, root: str | Path = ".") -> str:
-    """Append the contents of every existing ``@path`` file mentioned in text."""
+def mentioned_files(text: str, root: str | Path = ".") -> list[tuple[str, Path]]:
+    """``(mention, resolved path)`` for every ``@path`` in ``text`` that names
+    an attachable file inside ``root``, in order, de-duplicated."""
     root = Path(root).resolve()
-    attachments: list[str] = []
+    found: list[tuple[str, Path]] = []
     seen: set[str] = set()
     for match in _MENTION_RE.finditer(text):
         rel = match.group(1).rstrip(".")
-        if rel in seen:
+        if not rel or rel in seen:
             continue
         path = (root / rel).resolve()
         try:
             path.relative_to(root)  # stay inside the sandbox
         except ValueError:
             continue
-        if not path.is_file() or path.stat().st_size > _MAX_MENTION_BYTES:
+        try:
+            if not path.is_file() or path.stat().st_size > _MAX_MENTION_BYTES:
+                continue
+        except OSError:
             continue
         seen.add(rel)
+        found.append((rel, path))
+    return found
+
+
+def expand_mentions(text: str, root: str | Path = ".") -> str:
+    """Append the contents of every existing ``@path`` file mentioned in text."""
+    attachments: list[str] = []
+    for rel, path in mentioned_files(text, root):
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
         except OSError:

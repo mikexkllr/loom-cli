@@ -12,7 +12,111 @@
   the fact: which role read what, how big each context window grew, and how
   much of each subagent's work came back to the orchestrator.
 
+### Changed
+
+- `artifact_offload_tokens` is now read: it is the floor of every role's
+  tool-result offload threshold (the default, 2000, is what the code hardcoded).
+- `max_nesting_depth` and `worktree_isolation` are documented as reserved —
+  nothing reads them, and the README no longer claims parallel write agents
+  are isolated in worktrees.
+
 ### Fixed
+
+A full review of the app; each item below was a defect in shipped behaviour.
+
+- **`/settings`, `/theme` and `loom settings set` no longer copy a project's
+  settings into your user file.** Setting one key dumped the fully *merged*
+  settings into `~/.loom/settings.json` — the current project's permissions,
+  hooks, MCP servers and `env` block (its git-ignored `settings.local.json`
+  included) — where they applied to every other project from then on, with the
+  packaged defaults of the day frozen in beside them. Only the key you set is
+  written now, and a key that names no setting (`ui.them`) is refused instead
+  of "set" and ignored.
+- **`/undo` rolls back the turn that just ran, in sessions longer than nine
+  turns too.** Snapshot turns were ordered by name, where `…-t10` sorts before
+  `…-t2`, so from the tenth turn on `/undo` restored turn nine. Turns are
+  ordered by when they started; ids are unique per turn (a resumed thread used
+  to reuse ids that already held snapshots); snapshots taken by parallel
+  subagents can no longer hand two files the same backup; and `.loom/undo`
+  keeps the newest 50 turns instead of growing forever.
+- **A turn that fails partway is resumed, not re-sent.** When a model call
+  failed mid-turn, the retry submitted your prompt a second time. On the
+  persistent thread that appended a duplicate *after* the work already done, so
+  the model was asked the same thing twice — and often did it twice. The retry
+  now resumes from the checkpoint: only the failed step runs again.
+- **`/doctor` gives the same answer as `loom doctor`.** The REPL command kept
+  its own copy of the old check: a red "anthropic_api_key not set" and a red
+  Ollama for setups that route nowhere near either. Both now print one shared
+  check-up, and `--probe` also calls the cloud fallback — the model a no-Ollama
+  machine actually runs on.
+- **`loom agents list` and `loom models list|status|pull|install` read the
+  settings that are in force.** They read `config.yaml` alone, the layer that
+  `/setup`, `/model` and `loom config set` all write *over* — so after any of
+  those they listed, checked and pulled the packaged defaults. All take
+  `--root` now.
+- **Every surface shows what a role is actually running on.** The headless
+  fleet table, the welcome card, `/model`, `/status` and the status line read
+  `models.subagents` directly: a role that inherits its model (the reviewer,
+  on the advisor's) showed as `(inherit)` or not at all, a role about to be
+  billed to the cloud fallback showed its configured local model, and
+  local-only showed the cloud orchestrator it was not using. `/model` also
+  lists — and can set — `cloud_fallback`.
+- **Shell permission rules are matched per command.** `allow: ["execute(git *)"]`
+  approved `git status && curl … | sh`, because the line starts with `git `;
+  `deny: ["execute(sudo *)"]` never saw a `sudo` that came after a `cd`. See
+  the README's Permissions entry for the rule.
+- **Airgap no longer uploads `@file` mentions.** The mode removes `read_file`
+  from the cloud orchestrator, and `@file` then pasted the same raw source into
+  the message it reads. The path now stays in the message for a local subagent.
+  An excluded tool is also refused at the call, not only hidden from the tool
+  list, and airgap's prompt says the advisor is gone.
+- **Airgap can no longer report a cloud escalation.** With the escalation model
+  blanked the prompt-size guard kept the call local but still counted it, so
+  `/status` showed "1 local→cloud" in the one mode where that must be zero.
+- **`/export` and `/compact` work after `/model`, `/settings` or a mode
+  switch.** Those drop the agent until the next turn, and the transcript was
+  only read through the live one — "nothing to export yet", one command after
+  a finished turn. `/compact` also no longer replaces the conversation with an
+  empty summary.
+- **Claude replies render as text with streaming off.** A reply that also
+  calls a tool is a list of content blocks; the non-streaming path, the
+  synchronous fallback, `/export`, `/compact` and the advisor's answer printed
+  or forwarded its Python repr.
+- **`/clear` really starts a new thread.** Thread ids had one-second
+  resolution, so `/clear` or `/compact` inside the second a session started got
+  the same id back — history intact — and two `loom "task"` runs started
+  together in one project shared a conversation.
+- **A rotated API key takes effect without a restart.** Settings `env` values
+  were applied with `setdefault`, so a key changed in `/setup` was saved and
+  then ignored: the wizard verified, and the session kept calling, with the old
+  one. Values Loom injected itself are now replaced (your shell still wins) and
+  built models are rebuilt.
+- **`user_prompt_submit` and `stop` hooks run.** Both were configurable, listed
+  by `/hooks` and executed by nothing.
+- **`--advisor-threshold` and `advisor_threshold` do something**, and an
+  unknown value is refused. `--accept-edits` reaches the REPL (`loom
+  --accept-edits` opened it in default mode); `--loop`/`--until` without a task
+  say so instead of being dropped; an interrupted `loom "task"` exits 130.
+- **A keyless OpenAI-compatible endpoint works.** The wizard marks the custom
+  provider's API key optional (LM Studio, vLLM); the router refused to build
+  without one.
+- **Receipts add up under parallel subagents**, an inherited role is priced as
+  the model it inherits, and a model assigned to Ollama mid-session is free
+  from then on rather than from the next restart.
+- **The model picker offers MiniMax and Qwen on OpenCode again** (both work;
+  the filter predated that) and hides Go's Claude models, which only speak the
+  Anthropic protocol.
+- **Tool-crash reports carry no exception message.** TELEMETRY.md promised
+  "never the message body"; a crash went through `capture_exception` with the
+  message attached. The Langfuse key check no longer passes the secret key on
+  a command line.
+- Smaller: setup probes distinct models concurrently instead of one minute
+  after another; a 402 points at billing, not at the model; `/ollama` counts
+  configured models, not installed ones; a broken `settings.json` is named
+  instead of reported as a crash; approval prompts keep their diff under
+  `--root`; a non-Ollama service on the daemon's port no longer crashes
+  `doctor`; exception text containing `[brackets]` no longer breaks the line
+  that reports it.
 
 - **Ctrl-C now stops subagents too.** Interrupting a turn ended the stream, but
   a subagent kept running on its worker thread: in a live run a general-purpose

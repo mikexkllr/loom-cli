@@ -231,3 +231,77 @@ def test_timeout_error_is_caught_not_propagated():
     # small as "say ok", so the bound has to clear that with room to spare or
     # healthy models get reported dead.
     assert preflight.TIMEOUT_SECONDS >= 45
+
+
+# ------------------------------------------------------------- the plan
+
+
+def test_distinct_models_are_probed_at_the_same_time(monkeypatch):
+    """The module said so and the loop did not: four slow reasoning models at a
+    minute's bound each was four minutes of setup wizard, in sequence."""
+    import threading
+    import time
+
+    running = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def slow_check(model_string, config, *, timeout):
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        time.sleep(0.15)
+        with lock:
+            running -= 1
+        return preflight.Check(model_string, True, "ok", "answered")
+
+    monkeypatch.setattr(preflight, "check_model", slow_check)
+    plan = {"orchestrator": "zen:a", "advisor": "zen:b", "escalation": "zen:c", "explorer": "zen:a", "editor": "zen:d"}
+    started = time.monotonic()
+    results = list(preflight.check_plan(plan, _config()))
+    elapsed = time.monotonic() - started
+
+    assert peak >= 3
+    assert elapsed < 0.45  # four probes of 0.15s, not 0.6s end to end
+    # Still one result per distinct model, in plan order, roles collapsed.
+    assert [(sorted(roles), check.model) for roles, check in results] == [
+        (["explorer", "orchestrator"], "zen:a"),
+        (["advisor"], "zen:b"),
+        (["escalation"], "zen:c"),
+        (["editor"], "zen:d"),
+    ]
+
+
+def test_one_probe_blowing_up_does_not_lose_the_others(monkeypatch):
+    def check(model_string, config, *, timeout):
+        if model_string == "zen:bad":
+            raise RuntimeError("unexpected")
+        return preflight.Check(model_string, True, "ok", "answered")
+
+    monkeypatch.setattr(preflight, "check_model", check)
+    results = dict((roles[0], c) for roles, c in preflight.check_plan({"a": "zen:ok", "b": "zen:bad"}, _config()))
+    assert results["a"].ok and not results["b"].ok
+    assert results["b"].state == "error" and "unexpected" in results["b"].detail
+
+
+def test_a_role_with_no_model_is_not_probed(monkeypatch):
+    monkeypatch.setattr(preflight, "check_model", lambda m, c, *, timeout: preflight.Check(m, True, "ok", ""))
+    assert [roles for roles, _ in preflight.check_plan({"a": "", "b": "zen:x"}, _config())] == [["b"]]
+    assert list(preflight.check_plan({}, _config())) == []
+
+
+def test_402_points_at_the_account_not_the_model(monkeypatch):
+    """Seen live when an OpenCode Go plan ran out: the key is fine and so is the
+    model, and picking another one fails identically."""
+    _fake_cloud(monkeypatch, raises=_Boom("Insufficient account funds", status_code=402))
+    check = preflight.check_model("go:glm-5.2", _config())
+    assert not check.ok and check.state == "error"
+    assert "billing" in check.hint
+
+
+def test_check_knows_local_from_cloud_by_provider_not_by_punctuation():
+    assert preflight.Check("ollama/qwen3:4b", True, "ok", "").is_local
+    assert preflight.Check("ollama:qwen3", True, "ok", "").is_local
+    assert not preflight.Check("go:glm-5.2", True, "ok", "").is_local
+    assert not preflight.Check("zen/gpt-5.5:beta", False, "error", "").is_local

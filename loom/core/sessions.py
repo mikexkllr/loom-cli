@@ -8,6 +8,7 @@ thread state; this module keeps a small human-readable index
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -58,7 +59,15 @@ def make_checkpointer(cwd: str | Path) -> tuple[Any, bool]:
 
 
 def new_thread_id() -> str:
-    return f"loom-{datetime.now():%Y%m%d-%H%M%S}"
+    """A thread id that sorts by time and is never issued twice.
+
+    The timestamp alone has one-second resolution, and the id is the
+    checkpointer's key. `/clear` or `/compact` inside the second a session
+    started got the *same* id back, so the "new" thread was the old one with
+    its history intact; two `loom "task"` runs started together in one project
+    wrote into a single shared conversation.
+    """
+    return f"loom-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
 
 
 def load_index(cwd: str | Path) -> list[dict]:
@@ -66,7 +75,10 @@ def load_index(cwd: str | Path) -> list[dict]:
     if not path.exists():
         return []
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            raise ValueError(f"sessions index is a {type(data).__name__}, not a list")
+        return data
     except Exception as exc:
         # An unreadable index reads as "no sessions", which is indistinguishable
         # from a fresh project — and hides that the user's session history is
@@ -79,7 +91,7 @@ def load_index(cwd: str | Path) -> list[dict]:
 
 def record(cwd: str | Path, thread_id: str, first_message: str) -> None:
     """Upsert a session row; ``first_message`` titles new sessions."""
-    sessions = load_index(cwd)
+    sessions = [row for row in load_index(cwd) if isinstance(row, dict) and row.get("thread_id")]
     now = datetime.now().isoformat(timespec="seconds")
     for row in sessions:
         if row["thread_id"] == thread_id:

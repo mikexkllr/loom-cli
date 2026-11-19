@@ -495,3 +495,202 @@ def test_a_broken_label_lookup_still_reports_the_crash(monkeypatch):
 
     monkeypatch.setattr(cli, "_command_label", lambda: 1 / 0)
     assert cli._crashed_command() == "unknown"
+
+
+# ------------------------------------------- the config the commands read
+
+
+def _project_with_models(tmp_path, monkeypatch, models: dict):
+    import json
+
+    from loom.core import ollama as ollama_mod
+    from loom.core import settings as st
+
+    monkeypatch.setenv("COLUMNS", "200")
+    monkeypatch.setattr(st, "USER_SETTINGS_PATH", tmp_path / "user-settings.json")
+    monkeypatch.setattr(
+        ollama_mod,
+        "status",
+        lambda cfg: ollama_mod.OllamaStatus(True, True, ["llama-custom:8b"], cfg.ollama_endpoint),
+    )
+    proj = tmp_path / "proj"
+    (proj / ".loom").mkdir(parents=True, exist_ok=True)
+    (proj / ".loom" / "settings.json").write_text(json.dumps({"models": models}))
+    return proj
+
+
+def test_agents_and_models_commands_read_the_settings_that_are_in_force(tmp_path, monkeypatch):
+    """`/setup`, `/model` and `loom config set` all write settings.json. These
+    commands read config.yaml on its own, the layer underneath — so after any
+    of them they listed, checked and offered to pull the packaged defaults."""
+    proj = _project_with_models(
+        tmp_path, monkeypatch, {"subagents": dict.fromkeys(_SUBAGENTS, "ollama/llama-custom:8b")}
+    )
+
+    listed = runner.invoke(app, ["agents", "list", "--root", str(proj)])
+    assert listed.exit_code == 0
+    assert "llama-custom:8b" in listed.output and "qwen3.5" not in listed.output
+
+    models = runner.invoke(app, ["models", "list", "--root", str(proj)])
+    assert models.exit_code == 0
+    assert "llama-custom:8b" in models.output and "qwen3.5" not in models.output
+    assert "not pulled" not in models.output
+
+    status = runner.invoke(app, ["models", "status", "--root", str(proj)])
+    assert status.exit_code == 0
+    assert "all required local models are installed" in status.output
+
+
+def test_models_pull_pulls_what_is_configured(tmp_path, monkeypatch):
+    from loom.core import ollama as ollama_mod
+
+    proj = _project_with_models(
+        tmp_path, monkeypatch, {"subagents": dict.fromkeys(_SUBAGENTS, "ollama/not-here-yet:4b")}
+    )
+    pulled = []
+    monkeypatch.setattr(ollama_mod, "pull", lambda tag, endpoint, console=None, **k: pulled.append(tag) or 0)
+
+    assert runner.invoke(app, ["models", "pull", "--root", str(proj)]).exit_code == 0
+    assert pulled == ["not-here-yet:4b"]
+    # The config spelling works as an argument too.
+    assert runner.invoke(app, ["models", "pull", "ollama/other:2b", "--root", str(proj)]).exit_code == 0
+    assert pulled[-1] == "other:2b"
+
+
+# ---------------------------------------------------- flags that went nowhere
+
+
+def _capture_repl(monkeypatch):
+    from loom.ui import repl
+
+    seen = {}
+    monkeypatch.setattr(repl, "run", lambda settings, **kw: seen.update(kw))
+    monkeypatch.setattr(main_mod, "_maybe_offer_update", lambda: None)
+    return seen
+
+
+def test_the_repl_is_started_with_every_flag_it_was_given(tmp_path, monkeypatch):
+    """`loom --accept-edits` opened the REPL in default mode, and
+    `--advisor-threshold` was dropped on the floor the same way."""
+    seen = _capture_repl(monkeypatch)
+    result = runner.invoke(app, ["--accept-edits", "--advisor-threshold", "HIGH", "--airgap", f"--root={tmp_path}"])
+    assert result.exit_code == 0
+    assert seen["accept_edits"] is True and seen["advisor_threshold"] == "high" and seen["airgap"] is True
+
+    seen.clear()
+    assert runner.invoke(app, ["chat", "--accept-edits", f"--root={tmp_path}"]).exit_code == 0
+    assert seen["accept_edits"] is True
+
+
+def test_an_unknown_advisor_threshold_is_refused_before_anything_starts(tmp_path, monkeypatch):
+    seen = _capture_repl(monkeypatch)
+    result = runner.invoke(app, ["--advisor-threshold", "sometimes", f"--root={tmp_path}"])
+    assert result.exit_code == 2
+    assert "low, medium or high" in result.output
+    assert seen == {}
+
+
+def test_loop_flags_without_a_task_say_so(tmp_path, monkeypatch):
+    seen = _capture_repl(monkeypatch)
+    for flags in (["--loop", "5"], ["--until", "pytest -q"]):
+        result = runner.invoke(app, [*flags, f"--root={tmp_path}"])
+        assert result.exit_code == 2, flags
+        assert "need a task" in result.output
+    assert seen == {}
+
+
+def test_the_headless_run_honours_the_advisor_threshold(tmp_path, monkeypatch):
+    from loom.ui import repl
+
+    built = {}
+
+    class _Session:
+        def __init__(self, settings, **kw):
+            built.update(kw)
+            self.console = main_mod.console
+            self.last_turn_failed = False
+            self._interrupted = False
+
+        def ensure_bundle(self):
+            raise RuntimeError("stop here")
+
+    monkeypatch.setattr(repl, "Session", _Session)
+    monkeypatch.setattr(main_mod, "_maybe_offer_update", lambda: None)
+    result = runner.invoke(app, ["do the thing", "--advisor-threshold", "low", "--accept-edits", f"--root={tmp_path}"])
+    assert result.exit_code == 1  # the stubbed build failure
+    assert built["advisor_threshold"] == "low" and built["accept_edits"] is True
+
+
+def test_an_interrupted_headless_run_exits_130(tmp_path, monkeypatch):
+    """Ctrl-C inside a turn is caught there, so the run ended "interrupted"
+    and exited 0 — indistinguishable, to a script, from a finished one."""
+    from types import SimpleNamespace
+
+    from loom.ui import repl
+
+    class _Session:
+        def __init__(self, settings, **kw):
+            self.console = main_mod.console
+            self.last_turn_failed = False
+            self._interrupted = False
+            self.bundle = SimpleNamespace(
+                mode="normal", subagent_names=[], fallbacks={}, substitutions={}, has_advisor=False
+            )
+
+        def ensure_bundle(self):
+            return self.bundle
+
+        def model_origin(self, role):
+            return ("zen/gpt-5.5", False)
+
+        def run_turn(self, prompt):
+            self._interrupted = True  # what Session.run_turn does on KeyboardInterrupt
+
+    monkeypatch.setattr(repl, "Session", _Session)
+    monkeypatch.setattr(main_mod, "_maybe_offer_update", lambda: None)
+    assert runner.invoke(app, ["do the thing", f"--root={tmp_path}"]).exit_code == 130
+
+
+def test_a_broken_settings_file_is_named_not_reported_as_a_crash(tmp_path, monkeypatch):
+    from loom.core import settings as st
+
+    monkeypatch.setattr(st, "USER_SETTINGS_PATH", tmp_path / "user-settings.json")
+    monkeypatch.setattr(main_mod, "_maybe_offer_update", lambda: None)
+    proj = tmp_path / "proj"
+    (proj / ".loom").mkdir(parents=True)
+    broken = proj / ".loom" / "settings.json"
+    broken.write_text('{"ui": {"theme": "mono",}}')  # the trailing comma everyone types
+
+    result = runner.invoke(app, ["doctor", "--root", str(proj)])
+    assert result.exit_code == 2
+    assert "settings could not be loaded" in result.output
+    assert str(broken) in result.output.replace("\n", "")
+
+
+def test_the_headless_roster_shows_what_each_role_runs_on(tmp_path, monkeypatch):
+    """It read the settings map: `(inherit)` for the reviewer, and the
+    configured local model for a role that was about to be billed to the
+    cloud fallback."""
+    from types import SimpleNamespace
+
+    from loom.core import settings as st
+    from loom.ui.repl import Session
+
+    s = Session(st.load_settings(tmp_path), cwd=str(tmp_path))
+    cfg = s.settings.models
+    s.bundle = SimpleNamespace(
+        model_string=cfg.orchestrator,
+        subagent_names=["explorer", "reviewer"],
+        subagent_models={"explorer": cfg.cloud_fallback, "reviewer": cfg.advisor},
+        fallbacks={"explorer": cfg.subagents["explorer"]},
+        substitutions={},
+        has_advisor=True,
+        persistent=False,
+    )
+    rows = {role: (model, is_local, note) for role, model, is_local, note in main_mod._fleet_rows(s)}
+    assert rows["explorer"] == (cfg.cloud_fallback, False, "cloud fallback")
+    assert rows["reviewer"][0] == cfg.advisor
+    assert "advisor" in rows
+
+    s.bundle.has_advisor = False  # local-only / airgap
+    assert "advisor" not in {role for role, *_ in main_mod._fleet_rows(s)}

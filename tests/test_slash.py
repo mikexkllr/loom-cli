@@ -383,3 +383,214 @@ def test_privacy_here_requires_a_mode_first(tmp_path, capsys, _isolated_telemetr
     assert slash.dispatch(s, "/privacy here") is True
     assert "set a mode first" in capsys.readouterr().out
     assert _isolated_telemetry.project_share(tmp_path) is None  # nothing recorded
+
+
+# ---------------------------------------------------------------------------
+# One doctor, not two
+# ---------------------------------------------------------------------------
+
+
+def _zen_only_session(tmp_path, monkeypatch):
+    """A project whose every role routes through OpenCode Zen, with its key."""
+    import json
+
+    from loom.core import ollama as ollama_mod
+
+    monkeypatch.setenv("COLUMNS", "200")
+    monkeypatch.setattr(
+        ollama_mod, "status", lambda cfg: ollama_mod.OllamaStatus(False, False, [], cfg.ollama_endpoint)
+    )
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("OPENCODE_API_KEY", "zen-key")
+    roles = ("explorer", "editor", "bash", "searcher", "reviewer", "general-purpose", "tester")
+    (tmp_path / ".loom").mkdir()
+    (tmp_path / ".loom" / "settings.json").write_text(
+        json.dumps(
+            {
+                "models": {
+                    "orchestrator": "zen/gpt-5.5",
+                    "advisor": "zen/gpt-5.5",
+                    "escalation_model": "zen/gpt-5.5",
+                    "cloud_fallback": "zen/gpt-5.5",
+                    "subagents": dict.fromkeys(roles, "zen/gpt-5.5"),
+                }
+            }
+        )
+    )
+    return _session(tmp_path)
+
+
+def test_doctor_in_the_repl_judges_the_setup_by_its_routing(tmp_path, monkeypatch, capsys):
+    """`loom doctor` was rewritten to report on the providers a config actually
+    uses. `/doctor` kept its own copy of the old logic, so the same Zen-only
+    machine got a red "anthropic_api_key not set" and a red Ollama from one and
+    a clean bill from the other."""
+    s = _zen_only_session(tmp_path, monkeypatch)
+    assert slash.dispatch(s, "/doctor") is True
+    out = capsys.readouterr().out
+    assert "anthropic" not in out.lower()
+    assert "OpenCode Zen" in out and "OPENCODE_API_KEY set" in out
+    assert "no local roles configured" in out  # a stopped daemon is a non-event here
+    assert "not reachable" not in out
+
+
+def test_both_doctors_print_the_same_checkup(tmp_path, monkeypatch, capsys):
+    from typer.testing import CliRunner
+
+    from loom.cli.main import app
+
+    s = _zen_only_session(tmp_path, monkeypatch)
+    slash.dispatch(s, "/doctor")
+    in_repl = capsys.readouterr().out
+    from_shell = CliRunner().invoke(app, ["doctor", "--root", str(tmp_path)]).output
+
+    def rows(text):
+        return [" ".join(line.split()) for line in text.splitlines() if ("✔" in line or "✘" in line or "◌" in line)]
+
+    assert rows(in_repl) and rows(in_repl) == rows(from_shell)
+
+
+def test_the_probe_calls_the_cloud_fallback_when_local_roles_exist():
+    from loom.core.config import LoomConfig
+    from loom.ui import doctor
+
+    hybrid = LoomConfig(
+        orchestrator="zen/gpt-5.5",
+        advisor="zen/gpt-5.5",
+        escalation_model="zen/gpt-5.5",
+        cloud_fallback="zen/claude-haiku-4-5",
+        subagents={"explorer": "ollama/qwen3.5:4b"},
+    )
+    assert doctor.probe_plan(hybrid)["cloud_fallback"] == "zen/claude-haiku-4-5"
+    all_cloud = hybrid.model_copy(update={"subagents": {"explorer": "zen/gpt-5.5"}})
+    assert "cloud_fallback" not in doctor.probe_plan(all_cloud)  # nothing would ever fall back
+
+
+# ---------------------------------------------------------------------------
+# Surfaces that listed `models.subagents` instead of the fleet
+# ---------------------------------------------------------------------------
+
+
+def test_model_lists_inherited_roles_and_the_fallback(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COLUMNS", "200")
+    s = _session(tmp_path)
+    cfg = s.settings.models
+    assert "reviewer" not in cfg.subagents  # the default config leaves it to inherit
+    slash.dispatch(s, "/model")
+    out = capsys.readouterr().out
+    reviewer_row = next(line for line in out.splitlines() if line.strip().startswith("reviewer"))
+    assert cfg.advisor in reviewer_row and "inherits advisor" in reviewer_row
+    assert "cloud_fallback" in out and cfg.cloud_fallback in out
+
+
+def test_model_can_set_the_cloud_fallback(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(st, "set_value", lambda key, value, *a, **k: calls.append((key, value)))
+    s = _session(tmp_path)
+    monkeypatch.setattr(s, "reload_settings", lambda: None)
+    slash.dispatch(s, "/model cloud_fallback zen/claude-haiku-4-5")
+    assert calls == [("models.cloud_fallback", "zen/claude-haiku-4-5")]
+
+
+def test_ollama_counts_the_models_the_config_asks_for(tmp_path, monkeypatch, capsys):
+    """It printed `len(installed)`: "all 14 configured model(s) downloaded" to a
+    setup that configures three."""
+    from loom.core import ollama as ollama_mod
+
+    s = _session(tmp_path)
+    required = ollama_mod.required_local_models(s.settings.models)
+    installed = [*required, *(f"unrelated-{i}:latest" for i in range(11))]
+    monkeypatch.setattr(
+        ollama_mod, "status", lambda cfg: ollama_mod.OllamaStatus(True, True, installed, cfg.ollama_endpoint)
+    )
+    slash.dispatch(s, "/ollama")
+    out = capsys.readouterr().out
+    assert f"all {len(required)} configured model(s) downloaded" in out
+    assert f"all {len(installed)} " not in out
+
+
+# ---------------------------------------------------------------------------
+# /settings: a typo is not a crash
+# ---------------------------------------------------------------------------
+
+
+def test_settings_with_a_bad_key_or_value_says_so_and_changes_nothing(tmp_path, monkeypatch, capsys):
+    us = tmp_path / "home" / "settings.json"
+    monkeypatch.setattr(st, "USER_SETTINGS_PATH", us)
+    s = _session(tmp_path)
+    for line in ("/settings ui.them light", "/settings ui.theme neon", "/settings permissions.default_mode maybe"):
+        assert slash.dispatch(s, line) is True  # handled here, not by the crash net
+    out = capsys.readouterr().out
+    assert out.count("not set") == 3
+    assert not us.exists()
+    assert s.settings.ui.theme != "neon"
+
+
+def test_settings_writes_against_the_sessions_project_not_the_shell_cwd(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(st, "set_value", lambda key, value, root=".": seen.append(str(root)))
+    s = _session(tmp_path)
+    monkeypatch.setattr(s, "reload_settings", lambda: None)
+    slash.dispatch(s, "/settings ui.compact true")
+    slash.dispatch(s, "/theme mono")
+    assert seen == [str(s.cwd), str(s.cwd)]
+
+
+# ---------------------------------------------------------------------------
+# Transcripts whose messages are block lists
+# ---------------------------------------------------------------------------
+
+
+def _claude_message(text):
+    from langchain_core.messages import AIMessage
+
+    return AIMessage(content=[{"type": "text", "text": text}, {"type": "tool_use", "id": "t", "name": "task", "input": {}}])
+
+
+def test_export_writes_text_for_block_content(tmp_path):
+    s = _session(tmp_path)
+    s.messages = [("user", "hi"), _claude_message("Mapped the repo.")]
+    slash.dispatch(s, "/export out.md")
+    content = (tmp_path / "out.md").read_text()  # relative to the project
+    assert "Mapped the repo." in content
+    assert "tool_use" not in content and "{'type'" not in content
+
+
+def test_export_with_nothing_to_say_writes_no_file(tmp_path, capsys):
+    s = _session(tmp_path)
+    slash.dispatch(s, "/export empty.md")
+    assert not (tmp_path / "empty.md").exists()
+    assert "nothing to export" in capsys.readouterr().out
+
+
+def test_compact_summarises_text_and_keeps_the_session_if_the_summary_is_empty(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    prompts = []
+
+    class Model:
+        def __init__(self, reply):
+            self.reply = reply
+
+        def invoke(self, prompt, config=None):
+            prompts.append(prompt)
+            return SimpleNamespace(content=self.reply)
+
+    s = _session(tmp_path)
+    s.messages = [("user", "map the repo"), _claude_message("Mapped the repo.")]
+    thread = s.thread_id
+
+    # An empty summary must not replace the conversation with nothing.
+    monkeypatch.setattr("loom.core.model_router.build_model", lambda *a, **k: Model([{"type": "tool_use", "id": "x"}]))
+    slash.dispatch(s, "/compact")
+    assert "compact failed" in capsys.readouterr().out
+    assert s.thread_id == thread and s.pending_context is None and len(s.messages) == 2
+
+    monkeypatch.setattr(
+        "loom.core.model_router.build_model",
+        lambda *a, **k: Model([{"type": "text", "text": "Goal: map the repo. Done."}]),
+    )
+    slash.dispatch(s, "/compact")
+    assert s.pending_context == "Goal: map the repo. Done."
+    assert s.thread_id != thread
+    assert "ai: Mapped the repo." in prompts[-1] and "tool_use" not in prompts[-1]

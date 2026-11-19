@@ -824,12 +824,16 @@ def _print_current_setup(console: Console, settings: Settings) -> None:
     pretending it's a first run."""
     import os
 
+    from loom.subagents import model_for
+
     models = settings.models
     current = {
         "orchestrator": models.orchestrator,
         "advisor": models.advisor,
         "escalation": models.escalation_model,
-        **models.subagents,
+        # Resolved, so a role the config leaves to inherit still shows what it
+        # runs on instead of dropping out of the table.
+        **{role: model_for(models, role) for role in SUBAGENT_ROLES},
     }
     console.print()
     render.rule(console, "current setup")

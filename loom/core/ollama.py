@@ -43,10 +43,14 @@ def status(config: LoomConfig) -> OllamaStatus:
     try:
         resp = httpx.get(f"{config.ollama_endpoint}/api/tags", timeout=3)
         resp.raise_for_status()
+        # Parsed before `running` is set: something else answering 200 on this
+        # port (a proxy's login page, another service) is not an Ollama daemon,
+        # and its body is not JSON — that used to escape as a traceback from
+        # every surface that asks "is Ollama up?".
+        models = [m["name"] for m in (resp.json().get("models") or [])]
         running = True
-        models = [m["name"] for m in resp.json().get("models", [])]
-    except (httpx.HTTPError, KeyError):
-        pass
+    except (httpx.HTTPError, httpx.InvalidURL, KeyError, ValueError, TypeError, AttributeError):
+        models = []
     return OllamaStatus(installed, running, models, config.ollama_endpoint)
 
 
@@ -209,7 +213,12 @@ def _pull_once(model_tag: str, endpoint: str, console: "Console | None") -> int:
                 for line in resp.iter_lines():
                     if not line.strip():
                         continue
-                    event = json.loads(line)
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue  # a torn progress line is not a failed pull
+                    if not isinstance(event, dict):
+                        continue
                     if event.get("error"):
                         console.print(f"[loom.bad.b]pull failed:[/loom.bad.b] {event['error']}")
                         return RETRYABLE if _is_transient(str(event["error"])) else 1

@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import difflib
 import itertools
+import uuid
 from pathlib import Path
 
+from rich.markup import escape
 from rich.text import Text
 
+from loom.core import hooks as hooks_engine
 from loom.core import repomap
 from loom.core import sessions as sessions_mod
 from loom.core import settings as settings_mod
@@ -27,6 +30,7 @@ from loom.core import telemetry
 from loom.core import undo
 from loom.core.settings import Settings
 from loom.core.cancel import TurnCancel
+from loom.core.text import message_text
 from loom.core.usage import UsageTracker
 from loom.middleware import policy
 from loom.tools import sandbox
@@ -77,14 +81,20 @@ class Session:
         local_only=False,
         yolo=False,
         airgap=False,
+        accept_edits=False,
+        advisor_threshold: str | None = None,
     ) -> None:
         self.settings = settings
         self.cwd = Path(cwd).resolve()
         self.plan = plan
         self.local_only = local_only
         self.yolo = yolo
-        self.accept_edits = False
+        self.accept_edits = accept_edits
         self.airgap = airgap
+        # A per-run override of `models.advisor_threshold` (--advisor-threshold).
+        # Kept here, not written into the settings, so it survives /model and
+        # /setup reloading them mid-session.
+        self.advisor_threshold = advisor_threshold
         self.vim = False
         # Tools approved with "don't ask again" — cleared when the session ends.
         self.session_allowed: set[str] = set()
@@ -112,6 +122,11 @@ class Session:
         self.weave = Weave(self.console, flat=not settings.ui.weave)
         self.messages: list = []
         self.bundle = None
+        # The agent of the fleet most recently torn down by `rebuild()`. It can
+        # no longer run a turn, but it shares the checkpointer, so it can still
+        # read the thread — which is all `transcript()` needs between a
+        # /model, /settings or mode switch and the next turn.
+        self._retired_agent = None
         # Subagent attribution: a nested graph streams under a "tools:<id>"
         # namespace whose id is LangGraph's internal task id, not the `task`
         # tool-call id — so it can't be matched back to the call directly.
@@ -191,6 +206,8 @@ class Session:
 
     def rebuild(self) -> None:
         """Rebuild the orchestrator after a mode/model/settings change."""
+        if getattr(self.bundle, "persistent", False):
+            self._retired_agent = getattr(self.bundle, "agent", None) or self._retired_agent
         self.bundle = None  # lazily rebuilt on next turn
 
     def ensure_bundle(self):
@@ -202,9 +219,16 @@ class Session:
                 plan=self.plan,
                 local_only=self.local_only,
                 airgap=self.airgap,
+                advisor_threshold=self.advisor_threshold,
                 cwd=str(self.cwd),
                 checkpointer=self.checkpointer,
             )
+            # Price and classify against what the fleet is really running on:
+            # a role rerouted to the cloud fallback is billed as that model,
+            # not as the local one the settings still name for it.
+            active = getattr(self.bundle, "active_config", None)
+            if active is not None:
+                self.tracker.config = active
             g = ink(self.console)
             if self.bundle.substitutions:
                 # Still local, still free — a note, not a warning.
@@ -277,20 +301,63 @@ class Session:
         if self.pending_context:
             parts.append(f"[Summary of the compacted earlier conversation]\n{self.pending_context}")
             self.pending_context = None
-        parts.append(repomap.expand_mentions(text, self.cwd))
+        parts.append(self._with_mentions(text))
         return "\n\n".join(parts)
+
+    def _with_mentions(self, text: str) -> str:
+        """``text`` with its ``@file`` mentions attached — except in airgap.
+
+        An attachment is the file's raw contents pasted into the message the
+        orchestrator reads. Airgap exists so that never happens: its
+        orchestrator has no ``read_file`` precisely because it is a cloud
+        model. Inlining a mention there handed it the source anyway, through
+        the one door nobody had locked. The path stays in the message, so the
+        orchestrator can send a local subagent to read it.
+        """
+        if not self.airgap:
+            return repomap.expand_mentions(text, self.cwd)
+        withheld = [rel for rel, _ in repomap.mentioned_files(text, self.cwd)]
+        if not withheld:
+            return text
+        render.note(
+            self.console,
+            f"airgap: not attaching {escape(', '.join(withheld))} — a local subagent reads it instead",
+            kind="warn",
+        )
+        return (
+            f"{text}\n\n[Airgap: the contents of {', '.join(withheld)} were NOT attached. "
+            "Delegate reading to a local subagent and work from its summary.]"
+        )
 
     def transcript(self) -> list:
         """Best-effort transcript: from the graph state if persistent, else local."""
-        if self.bundle is not None and self.bundle.persistent:
+        agent = self._thread_reader()
+        if agent is not None:
             # Falling back to the local list silently loses everything the
             # graph persisted, which is what /compact and /resume read.
             with telemetry.swallowing("repl.transcript"):
-                state = self.bundle.agent.get_state({"configurable": {"thread_id": self.thread_id}})
+                state = agent.get_state({"configurable": {"thread_id": self.thread_id}})
                 msgs = (state.values or {}).get("messages") or []
                 if msgs:
                     return list(msgs)
         return list(self.messages)
+
+    def _thread_reader(self):
+        """An agent that can read this session's persisted thread, or None.
+
+        The live one when there is one. Otherwise the one `rebuild()` just
+        retired: every /model, /settings and mode switch drops the fleet until
+        the next turn, and reading the thread only through the live agent meant
+        `/export` and `/compact` found "nothing yet" in a session with an
+        hour of history, the moment after any of those commands.
+
+        Deliberately does not build a fleet just to read: that connects MCP
+        servers and probes Ollama, which is a lot to set off from `/export`.
+        A thread resumed in a fresh process is readable from its first turn.
+        """
+        if self.bundle is not None:
+            return self.bundle.agent if getattr(self.bundle, "persistent", False) else None
+        return self._retired_agent
 
     # ----- a single turn -----
     def run_turn(self, text: str) -> str | None:
@@ -304,16 +371,32 @@ class Session:
         try:
             bundle = self.ensure_bundle()
         except ModuleNotFoundError as exc:
-            self.console.print(f"[loom.bad.b]missing dependency:[/loom.bad.b] {exc} — run `uv sync`")
+            self.console.print(f"[loom.bad.b]missing dependency:[/loom.bad.b] {escape(str(exc))} — run `uv sync`")
             telemetry.report("bundle.dependency", exc)
             return None
         except Exception as exc:
-            self.console.print(f"[loom.bad.b]could not start orchestrator:[/loom.bad.b] {exc}")
+            self.console.print(f"[loom.bad.b]could not start orchestrator:[/loom.bad.b] {escape(str(exc))}")
             telemetry.report("bundle.build", exc)
             return None
 
+        # `user_prompt_submit` hooks see the prompt as typed, before anything is
+        # attached to it, and can refuse it — nothing has been billed yet.
+        submitted = hooks_engine.user_prompt_submit(self.settings.hooks, text, str(self.cwd))
+        if submitted.blocked:
+            render.note(
+                self.console,
+                f"prompt blocked by a user_prompt_submit hook — {escape(submitted.block_reason)}",
+                kind="bad",
+            )
+            self.last_turn_failed = True
+            return None
+
         sessions_mod.record(self.cwd, self.thread_id, text)
-        undo.current_turn_id.set(f"{self.thread_id}-t{self.tracker.turns + 1}")
+        # Unique per turn, not just per (thread, counter): the counter restarts
+        # with the process, so a resumed thread would reuse an id that already
+        # has snapshots on disk — and a turn whose files look "already
+        # snapshotted" is a turn /undo restores to some earlier session's bytes.
+        undo.current_turn_id.set(f"{self.thread_id}-t{self.tracker.turns + 1}-{uuid.uuid4().hex[:6]}")
         self.tracker.start_turn()
         text = self._prepare_text(text)
 
@@ -359,14 +442,28 @@ class Session:
                 telemetry.report("turn.refused", exc)
                 failed = True
                 return None
-            self.weave.aside(Text(f"streaming unavailable ({exc}); running synchronously…", style="loom.warn"))
+            resuming = self._can_resume(bundle)
+            self.weave.aside(
+                Text(
+                    f"the turn hit an error ({exc}); "
+                    + ("resuming where it stopped…" if resuming else "running synchronously…"),
+                    style="loom.warn",
+                )
+            )
             # Reported even though the run recovers: falling back to a
             # synchronous invoke hides a real provider/transport failure behind
             # a working turn, which is exactly how a regression here survives
             # for weeks.
             telemetry.report("turn.stream", exc)
             try:
-                result = bundle.agent.invoke(inputs, config=run_config)
+                # On a persistent thread the graph has already checkpointed
+                # everything up to the step that failed — the prompt, the
+                # delegations, their results. Sending the prompt again appended
+                # a second copy of it *after* that finished work, so the model
+                # was asked the same thing twice and, as often as not, did it
+                # twice. `None` resumes from the checkpoint instead: only the
+                # failed step runs again.
+                result = bundle.agent.invoke(None if resuming else inputs, config=run_config)
             except Exception as exc2:
                 self.weave.aside(Text(f"model call failed: {exc2}", style="loom.bad.b"))
                 telemetry.report("turn.invoke", exc2)
@@ -386,7 +483,35 @@ class Session:
             # mark sat under a provider error and read as success.
             self.last_turn_failed = failed
             self.weave.close(self._receipt_text(failed=failed), ok=not (self._interrupted or failed))
+            self._run_stop_hooks("failed" if failed else "interrupted" if self._interrupted else "complete")
         return final_text
+
+    def _run_stop_hooks(self, status: str) -> None:
+        """Fire the ``stop`` hooks once the turn is over, whatever its outcome.
+
+        Never allowed to raise: this runs in ``run_turn``'s ``finally``, where
+        an exception would replace the turn's own result (or its error).
+        """
+        if not self.settings.hooks.stop:
+            return
+        try:
+            outcome = hooks_engine.stop(self.settings.hooks, status, str(self.cwd))
+            for message in outcome.messages:
+                render.note(self.console, escape(message.splitlines()[0][:200]) if message else "")
+        except Exception as exc:
+            telemetry.report("hooks.stop", exc)
+
+    def _can_resume(self, bundle) -> bool:
+        """True when this thread stopped mid-run with a step still pending —
+        i.e. there is a checkpoint to pick up from rather than a turn to redo."""
+        if not getattr(bundle, "persistent", False):
+            return False
+        try:
+            state = bundle.agent.get_state({"configurable": {"thread_id": self.thread_id}})
+            return bool(getattr(state, "next", None))
+        except Exception as exc:
+            telemetry.report("turn.resume_probe", exc)
+            return False
 
     def _receipt_text(self, *, failed: bool = False) -> Text:
         """The turn's receipt, with the money in the accent colour and
@@ -501,6 +626,11 @@ class Session:
         # With a diff to show, the raw old_string/new_string/content arguments
         # are the same bytes twice — the diff is the readable half.
         hidden = {"old_string", "new_string", "content"} if diff else set()
+        # The policy gate adds a project-relative `path` next to the tool's own
+        # virtual `file_path` (rules and /undo match on it). Shown together
+        # they are one fact twice; the relative one is the readable half.
+        if "path" in (tool_input or {}) and "file_path" in (tool_input or {}):
+            hidden = hidden | {"file_path"}
         for key, value in (tool_input or {}).items():
             if key in hidden:
                 continue
@@ -570,6 +700,43 @@ class Session:
 
     # ----- rendering (Claude Code style: ⏺ bullets + ⎿ results) -----
 
+    def _orchestrator_model(self) -> str:
+        """The model string the orchestrator is (or will be) running on.
+
+        Not always ``models.orchestrator``: local-only puts the orchestrator on
+        the general-purpose local model, and an unserved local orchestrator is
+        stood in for. Once the fleet is built the bundle knows; before that,
+        mirror what the build will choose.
+        """
+        running = getattr(self.bundle, "model_string", None)
+        if isinstance(running, str) and running:
+            return running
+        cfg = self.settings.models
+        if self.local_only:
+            from loom.subagents import model_for
+
+            return model_for(cfg, "general-purpose")
+        return cfg.orchestrator
+
+    def _configured_model(self, role: str) -> str | None:
+        """What the settings assign ``role``, inheritance included, or None for
+        a name that is no role at all."""
+        from loom.subagents import SPECS, model_for
+
+        cfg = self.settings.models
+        if role == "orchestrator":
+            return self._orchestrator_model()
+        if role == "advisor":
+            return cfg.advisor
+        if role == "escalation":
+            return cfg.escalation_model
+        if role in SPECS or role in cfg.subagents:
+            # Through the registry, not `cfg.subagents[role]`: a role with no
+            # entry of its own still runs on something — the reviewer trails
+            # the advisor — and reading the map directly showed it as nothing.
+            return model_for(cfg, role) or None
+        return None
+
     def model_origin(self, node: str) -> tuple[str, bool] | None:
         """(model string, is_local) for a role / stream-node name, accounting
         for what the role is *actually* running on this session: a role whose
@@ -578,16 +745,15 @@ class Session:
         unknown."""
         cfg = self.settings.models
         role = "orchestrator" if node in ("agent", "model") else node
-        if role == "orchestrator":
-            model = cfg.orchestrator
-        elif role == "advisor":
-            model = cfg.advisor
-        elif role == "escalation":
-            model = cfg.escalation_model
-        else:
-            model = cfg.subagents.get(role)
-        if model is None:
+        model = self._configured_model(role)
+        if not model:
             return None
+        # A built fleet states what each of its members runs on outright.
+        if role == "orchestrator" and isinstance(getattr(self.bundle, "model_string", None), str):
+            return model, cfg.is_local(model)
+        running = (getattr(self.bundle, "subagent_models", None) or {}).get(role)
+        if running:
+            return running, cfg.is_local(running)
         if role in (getattr(self.bundle, "fallbacks", None) or {}):
             return cfg.cloud_fallback, False
         # The bundle's config carries the substituted local model; the settings
@@ -605,7 +771,11 @@ class Session:
         active = getattr(self.bundle, "active_config", None)
         if active is None:
             return None
-        return active.orchestrator if role == "orchestrator" else active.subagents.get(role)
+        if role == "orchestrator":
+            return active.orchestrator
+        if role == "advisor":
+            return active.advisor
+        return active.subagents.get(role)
 
     @staticmethod
     def _where_badge(is_local: bool) -> str:
@@ -616,25 +786,24 @@ class Session:
         roles currently live-fallen-back to the cloud — what's actually
         running on this machine right now."""
         from loom.core.model_router import resolve
+        from loom.subagents import SPECS
 
         cfg = self.settings.models
-        fallbacks = getattr(self.bundle, "fallbacks", None) or {}
-        roles = {
-            "orchestrator": cfg.orchestrator,
-            "advisor": cfg.advisor,
-            "escalation": cfg.escalation_model,
-            **cfg.subagents,
-        }
+        # Every role, not only the ones the config spells out — and each asked
+        # through `model_origin`, which already knows about fallbacks, stand-ins
+        # and the model a built fleet really put the role on.
+        roles = dict.fromkeys(("orchestrator", "advisor", "escalation", *cfg.subagents, *SPECS))
+        # A built fleet lists its members; a registered role missing from it
+        # (the tester with no browser connected) is not running on anything.
+        built = getattr(self.bundle, "subagent_models", None)
         tags: list[str] = []
-        for role, model in roles.items():
-            if role in fallbacks:
+        for role in roles:
+            if built is not None and role in SPECS and role not in built:
                 continue
-            # A substituted role runs on a local model too — just not the one
-            # the config names, so report the tag that's actually loaded.
-            model = self._substituted_model(role) or model
-            if not cfg.is_local(model):
+            origin = self.model_origin(role)
+            if origin is None or not origin[1]:
                 continue
-            tag = resolve(model).name
+            tag = resolve(origin[0]).name
             if tag not in tags:
                 tags.append(tag)
         return tags
@@ -666,7 +835,7 @@ class Session:
         ``"model (☁ cloud)"`` when no role matched); the orchestrator is
         ``None``/``"orchestrator"``. Anything that isn't the orchestrator is a
         delegated thread and gets its own indented rail."""
-        if source in (None, "orchestrator") and node in ("agent", "model", ""):
+        if source in (None, "orchestrator") and node in ("agent", "model", "orchestrator", ""):
             origin = self.model_origin("orchestrator")
             model, is_local = origin if origin else ("", False)
             return self.weave.thread("orchestrator", model, is_local, depth=0)
@@ -675,12 +844,16 @@ class Session:
         model = rest
         if "(" in model:
             model = model[: model.index("(")].strip()
+        # A full label says where it ran in its badge. A bare one says nothing,
+        # and "no badge" used to be read as local — which drew a billed role's
+        # rail in the free colour. Ask what the role is running on instead.
+        is_local = "cloud" not in label
         if not rest:  # bare node name, e.g. a nested graph with no metadata
             role, model = label, ""
             origin = self.model_origin(label)
             if origin:
-                model, _ = origin
-        return self.weave.thread(role or label, model, "cloud" not in label, depth=1)
+                model, is_local = origin
+        return self.weave.thread(role or label, model, is_local, depth=1)
 
     def _print_tool_call(self, call, node: str, source: str | None = None) -> None:
         name = call.get("name", "?") if isinstance(call, dict) else getattr(call, "name", "?")
@@ -786,7 +959,7 @@ class Session:
         if not model:
             return None
         cfg = self.settings.models
-        if model == resolve(cfg.orchestrator).name:
+        if model == resolve(self._orchestrator_model()).name:
             return None
         # A role on Ollama fallback streams under the cloud-fallback model's
         # name, so it simply won't match here and shows as "<model> (☁ cloud)".
@@ -1030,9 +1203,8 @@ class Session:
                     for call in calls:
                         if ui.show_tool_calls:
                             self._print_tool_call(call, node, source=source)
-                    text = getattr(msg, "content", "")
+                    text = message_text(msg)
                     if text:
-                        text = str(text) if isinstance(text, str) else self._chunk_text(msg)
                         if text.strip() and text.strip() not in streamed:
                             self._print_assistant(text, node, source=source)
                         # Nested-graph text is a subagent's answer, not the turn's.
@@ -1067,10 +1239,13 @@ class Session:
                     for call in getattr(msg, "tool_calls", []) or []:
                         if ui.show_tool_calls:
                             self._print_tool_call(call, node)
-                    text = getattr(msg, "content", "")
-                    if text:
-                        self._print_assistant(str(text), node)
-                        final_text = str(text)
+                    # Text blocks only: a Claude reply that also calls a tool
+                    # is a block list, and `str()` of it printed the raw
+                    # `[{'type': 'tool_use', …}]` into the transcript.
+                    text = message_text(msg)
+                    if text.strip():
+                        self._print_assistant(text, node)
+                        final_text = text
         if final_text is not None and not (self.bundle and self.bundle.persistent):
             self.messages.append(("assistant", final_text))
         return final_text
@@ -1078,9 +1253,10 @@ class Session:
     def _absorb_result(self, result) -> str | None:
         msgs = result.get("messages", []) if isinstance(result, dict) else []
         if msgs:
-            text = str(getattr(msgs[-1], "content", msgs[-1]))
+            text = message_text(msgs[-1])
             self._print_assistant(text, "agent")
-            self.messages.append(("assistant", text))
+            if not (self.bundle and getattr(self.bundle, "persistent", False)):
+                self.messages.append(("assistant", text))
             return text
         return None
 
@@ -1099,29 +1275,37 @@ def _roster(session: Session):
     config dump. Fallback-aware, so a role the cloud is covering because Ollama
     is down is counted as cloud, not quietly listed as free."""
     from loom.core.model_router import resolve
+    from loom.subagents import SPECS
 
-    cfg = session.settings.models
     rows = []
     for role in ("orchestrator", "advisor"):
+        if role == "advisor" and (session.local_only or session.airgap):
+            continue  # no `consult` in the no-cloud modes
         origin = session.model_origin(role)
         if origin:
             rows.append((role, resolve(origin[0]).name, origin[1], ""))
 
-    tags, billed = [], 0
-    for role in sorted(cfg.subagents):
+    # The registry, not `models.subagents`: a role the config leaves to
+    # inherit (the reviewer) is still a member of the fleet, and still billed.
+    local_tags: list[str] = []
+    cloud_tags: list[str] = []
+    billed = 0
+    for role in SPECS:
         origin = session.model_origin(role)
         if origin is None:
             continue
         model, is_local = resolve(origin[0]).name, origin[1]
         if not is_local:
             billed += 1
-        elif model not in tags:
-            tags.append(model)
-    if tags:
-        note = f"{len(cfg.subagents)} roles" + (f", {billed} on cloud" if billed else "")
-        rows.append(("fleet", " · ".join(tags), True, note))
-    elif cfg.subagents:
-        rows.append(("fleet", cfg.cloud_fallback, False, f"{len(cfg.subagents)} roles, no local models"))
+        bucket = local_tags if is_local else cloud_tags
+        if model not in bucket:
+            bucket.append(model)
+    count = len(SPECS)
+    if local_tags:
+        note = f"{count} roles" + (f", {billed} on cloud" if billed else "")
+        rows.append(("fleet", " · ".join(local_tags), True, note))
+    elif cloud_tags:
+        rows.append(("fleet", " · ".join(cloud_tags), False, f"{count} roles, no local models"))
     return rows
 
 
@@ -1150,8 +1334,7 @@ def _toolbar_state(session: Session) -> dict:
     from loom.core.model_router import resolve
 
     model, is_local = session.model_origin("orchestrator")
-    cfg = session.settings.models
-    local = [t for t in session.local_model_tags() if not (is_local and t == resolve(cfg.orchestrator).name)]
+    local = [t for t in session.local_model_tags() if not (is_local and t == resolve(model).name)]
     modes = [session.approval_mode] if session.approval_mode != "default" else []
     for name, on in (("plan", session.plan), ("local", session.local_only), ("airgap", session.airgap), ("vim", session.vim)):
         if on:
@@ -1322,8 +1505,27 @@ def _activate_telemetry(session: Session) -> None:
     )
 
 
-def run(settings: Settings, cwd: str = ".", *, plan=False, local_only=False, yolo=False, airgap=False) -> None:
-    session = Session(settings, cwd, plan=plan, local_only=local_only, yolo=yolo, airgap=airgap)
+def run(
+    settings: Settings,
+    cwd: str = ".",
+    *,
+    plan=False,
+    local_only=False,
+    yolo=False,
+    airgap=False,
+    accept_edits=False,
+    advisor_threshold: str | None = None,
+) -> None:
+    session = Session(
+        settings,
+        cwd,
+        plan=plan,
+        local_only=local_only,
+        yolo=yolo,
+        airgap=airgap,
+        accept_edits=accept_edits,
+        advisor_threshold=advisor_threshold,
+    )
     if settings.ui.banner:
         session.console.print(_banner(session))
         session.console.print(
@@ -1379,7 +1581,7 @@ def _report_crash(session: Session, exc: BaseException, where: str) -> None:
     A crash inside one command should not end the session — the transcript is
     usually the most valuable thing in the room when something breaks.
     """
-    render.note(session.console, f"{where} failed: {type(exc).__name__}: {exc}", kind="bad")
+    render.note(session.console, f"{escape(where)} failed: {type(exc).__name__}: {escape(str(exc))}", kind="bad")
     telemetry.capture_exception(exc, where)
     if telemetry.current_mode() == "none":
         from loom.core import update as update_mod

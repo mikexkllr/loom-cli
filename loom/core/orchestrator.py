@@ -25,8 +25,11 @@ Run modes:
   * plan       — read-only: only explorer/searcher/reviewer, no writes.
   * local_only — no cloud calls at all: orchestrator runs on a local model, the
                  cloud reviewer/advisor are dropped.
-  * airgap     — as local_only, plus no raw source may enter the orchestrator's
-                 context at all.
+  * airgap     — the orchestrator stays on its configured (cloud) model but may
+                 never see raw source: it has no read_file, cloud-backed
+                 subagents and the advisor are dropped, and cloud escalation
+                 is off. Local subagents do all the reading and report
+                 summaries. Combine with local_only for no cloud at all.
 """
 
 from __future__ import annotations
@@ -213,7 +216,27 @@ AIRGAP MODE: Raw source code must NEVER enter your context or leave this machine
 You have no `read_file` tool — delegate ALL file reading to local subagents and
 work from their distilled summaries only. Never ask a subagent to return raw file
 contents; ask for summaries, signatures, and line references. Cloud escalation is
-disabled."""
+disabled, and so are the Advisor (`consult`) and any cloud-backed subagent: at
+the judgment gates, state your own reasoning and flag what you are unsure of."""
+
+# `advisor_threshold` / `--advisor-threshold`. "medium" is the base prompt's own
+# Judgment gates and adds nothing, so the default prompt stays byte-identical
+# (and cached); the other two move the bar in the direction their name says.
+ADVISOR_THRESHOLD_SUFFIX = {
+    "low": """
+
+ADVISOR THRESHOLD: low. Consult freely: before any change that spans more than
+one file, whenever two approaches look comparably good, and after the first
+failed attempt rather than the second.""",
+    "high": """
+
+ADVISOR THRESHOLD: high. Treat `consult` as expensive: use it only before work
+that is genuinely high-risk or irreversible (a schema or data migration, a
+destructive command, a public API break) or when the reviewer withholds
+approval. Skip it at the routine gates listed under Judgment gates.""",
+}
+
+ADVISOR_THRESHOLDS = ("low", "medium", "high")
 
 NO_TESTER_SUFFIX = """
 
@@ -317,12 +340,7 @@ def _ensure_general_purpose(
     from loom.subagents import SPECS, WRITE_TOOLS
 
     spec = SPECS["general-purpose"]
-    candidates = [
-        config.subagents.get("general-purpose", ""),
-        *config.subagents.values(),
-        config.orchestrator,
-    ]
-    local_model = next((m for m in candidates if m and config.is_local(m)), None)
+    local_model = _general_purpose_stand_in(config)
     if local_model is not None:
         sub = spec.build(
             config,
@@ -343,6 +361,16 @@ def _ensure_general_purpose(
             backend=backend,
         )
     return [*subagents, sub]
+
+
+def _general_purpose_stand_in(config: LoomConfig) -> str | None:
+    """The local model a re-built ``general-purpose`` is pinned to, if any."""
+    candidates = [
+        config.subagents.get("general-purpose", ""),
+        *config.subagents.values(),
+        config.orchestrator,
+    ]
+    return next((m for m in candidates if m and config.is_local(m)), None)
 
 
 def apply_cloud_fallback(config: LoomConfig, pool: "LocalPool | None" = None) -> RolePlan:
@@ -446,10 +474,14 @@ def _orchestrator_filesystem_middleware(
         return FilesystemMiddleware(
             backend=backend,
             tools=sorted(allowed),
-            # A read the orchestrator makes is meant to be a small confirmation.
-            # Evict anything larger to disk rather than letting one file fill the
-            # window the whole design exists to protect.
-            tool_token_limit_before_evict=max(2_000, min(20_000, window // 10)),
+            # Tool results past this size are written to .loom/artifacts/ and
+            # replaced in-context by a preview and a path. Scaled to the window
+            # — a subagent's report is meant to be a summary, and one oversized
+            # result must not fill the context the whole design exists to
+            # protect — and never below the configured `artifact_offload_tokens`.
+            tool_token_limit_before_evict=max(
+                config.artifact_offload_tokens, min(20_000, window // 10)
+            ),
         )
     except (TypeError, ValueError) as exc:  # pragma: no cover - deepagents API drift
         telemetry.report("orchestrator.fs_middleware.build", exc)
@@ -481,6 +513,14 @@ class OrchestratorBundle:
     # The orchestrator's DelegationReminder (None in airgap, which has no
     # read_file), so /status and /cost can report how often it read files itself.
     delegation_reminder: Any | None = None
+    # subagent name -> the model string it was actually built on. Differs from
+    # `active_config.subagents` for a role that inherits its model (the
+    # reviewer) and for a general-purpose re-pinned to a local model in the
+    # no-cloud modes — the two cases every "what is this running on?" surface
+    # used to get wrong by reading the config map directly.
+    subagent_models: dict[str, str] = field(default_factory=dict)
+    # Whether `consult` exists in this run (not in local-only or airgap).
+    has_advisor: bool = True
 
 
 def build_orchestrator(
@@ -511,6 +551,10 @@ def build_orchestrator(
         config = settings
 
     if advisor_threshold is not None:
+        if advisor_threshold not in ADVISOR_THRESHOLDS:
+            raise ValueError(
+                f"advisor_threshold must be one of {', '.join(ADVISOR_THRESHOLDS)}, got {advisor_threshold!r}"
+            )
         config = config.model_copy(update={"advisor_threshold": advisor_threshold})
     if airgap:
         # Cloud escalation would ship raw prompts (file contents) to the cloud;
@@ -593,9 +637,17 @@ def build_orchestrator(
         subagents = [s for s in subagents if s["name"] in _PLAN_SUBAGENTS]
     # deepagents auto-adds an unrestricted general-purpose subagent if the name
     # is absent — never let mode filtering open that hole.
+    from loom.subagents import model_for
+
+    had_general = any(s["name"] == "general-purpose" for s in subagents)
     subagents = _ensure_general_purpose(
         subagents, config, loom_settings, cwd, read_only=plan, ladder=ladder, backend=backend
     )
+    subagent_models = {s["name"]: model_for(config, s["name"]) for s in subagents}
+    if not had_general:
+        subagent_models["general-purpose"] = (
+            _general_purpose_stand_in(config) or subagent_models["general-purpose"]
+        )
 
     # The tester only exists when browser MCP tools actually connected.
     browser_tools = [t for t in mcp_tools if t.name.startswith("browser_")]
@@ -608,6 +660,7 @@ def build_orchestrator(
             has_tester = True
         else:
             subagents.remove(sub)
+            subagent_models.pop("tester", None)
 
     # Graphify's read-only graph-query tools also go to the recon subagents —
     # explorer/searcher answer "where/how" questions from the graph instead of
@@ -650,6 +703,8 @@ def build_orchestrator(
         system += AIRGAP_SUFFIX
     if not has_tester and not plan:
         system += NO_TESTER_SUFFIX
+    if not local_only and not airgap:  # only where `consult` exists at all
+        system += ADVISOR_THRESHOLD_SUFFIX.get(config.advisor_threshold, "")
     # Airgap: the orchestrator has no graph tools (nodes carry code
     # identifiers) — explorer/searcher still hold them, no prompt needed.
     if graph_tools and not airgap:
@@ -761,6 +816,8 @@ def build_orchestrator(
         active_config=config,
         guards=guards,
         delegation_reminder=delegation_reminder,
+        subagent_models=subagent_models,
+        has_advisor=not (local_only or airgap),
         model_string=orch_model_string,
         subagent_names=[s["name"] for s in subagents],
         mode="plan"

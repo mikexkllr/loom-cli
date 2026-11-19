@@ -167,13 +167,37 @@ def test_custom_provider_requires_base_url(monkeypatch):
         mr._build_cached.cache_clear()
 
 
-def test_custom_provider_requires_api_key(monkeypatch):
-    monkeypatch.setenv("LOOM_CUSTOM_BASE_URL", "https://example.com/v1")
+def test_custom_provider_builds_without_an_api_key(monkeypatch):
+    # The provider registry marks LOOM_CUSTOM_API_KEY optional — LM Studio,
+    # vLLM and llama.cpp serve with no auth — and the wizard says so. The
+    # router used to refuse to build such an endpoint anyway, so a keyless
+    # setup passed the wizard and then failed on the first call.
+    pytest.importorskip("langchain_openai")
+    from loom.core import providers
+
+    key = next(v for v in providers.get("openai_compatible").env_vars if v.key == "LOOM_CUSTOM_API_KEY")
+    assert key.required is False  # the claim this test holds the router to
+
+    monkeypatch.setenv("LOOM_CUSTOM_BASE_URL", "http://localhost:1234/v1")
     monkeypatch.delenv("LOOM_CUSTOM_API_KEY", raising=False)
     mr._build_cached.cache_clear()
     try:
-        with pytest.raises(RuntimeError, match="LOOM_CUSTOM_API_KEY"):
-            mr._build_cached("custom", "my-model", "", 0)
+        model = mr._build_cached("custom", "my-model", "", 0)
+        assert str(model.openai_api_base).rstrip("/") == "http://localhost:1234/v1"
+        assert model.openai_api_key.get_secret_value()  # a placeholder, never empty
+    finally:
+        mr._build_cached.cache_clear()
+
+
+def test_gateway_providers_still_require_a_key(monkeypatch):
+    # Only the self-hosted route is keyless; a gateway without its key must
+    # still fail at build time with the name of the variable to set.
+    for name in ("OPENCODE_ZEN_API_KEY", "OPENCODE_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    mr._build_cached.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="OPENCODE_ZEN_API_KEY"):
+            mr._build_cached("opencode_zen", "glm-5.2", "", 0)
     finally:
         mr._build_cached.cache_clear()
 
@@ -248,3 +272,36 @@ def test_a_self_hosted_mirror_overrides_the_default_base_url(monkeypatch):
         assert model.openai_api_base == "http://localhost:9000/v1"
     finally:
         mr._build_cached.cache_clear()
+
+
+def test_is_local_agrees_with_resolve_whatever_the_case():
+    """`Ollama/qwen3:4b` resolved to the Ollama provider and read as cloud to
+    everything asking the config — billed, and without a prompt-size guard."""
+    from loom.core.config import LoomConfig
+
+    config = LoomConfig()
+    for model in ("ollama/qwen3:4b", "Ollama/qwen3:4b", "OLLAMA:qwen3", " ollama/x "):
+        assert config.is_local(model) and mr.resolve(model).is_local, model
+    for model in ("claude-sonnet-5", "zen/ollama-ish", "go:glm-5.2", ""):
+        assert not config.is_local(model), model
+
+
+def test_an_empty_model_string_is_a_clear_error_not_a_provider_guess():
+    from loom.core.config import LoomConfig
+
+    with pytest.raises(ValueError, match="no model configured"):
+        mr.build_model("", LoomConfig())
+    with pytest.raises(ValueError, match="no model configured"):
+        mr.build_model("   ", LoomConfig())
+
+
+def test_clear_model_cache_forgets_built_models():
+    pytest.importorskip("langchain_ollama")
+    from loom.core.config import LoomConfig
+
+    mr.clear_model_cache()
+    first = mr.build_model("ollama/qwen3:4b", LoomConfig())
+    assert mr.build_model("ollama/qwen3:4b", LoomConfig()) is first
+    mr.clear_model_cache()
+    assert mr.build_model("ollama/qwen3:4b", LoomConfig()) is not first
+    mr.clear_model_cache()

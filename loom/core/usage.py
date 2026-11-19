@@ -423,7 +423,6 @@ class UsageTracker(BaseCallbackHandler):
     def __init__(self, config: LoomConfig) -> None:
         super().__init__()
         self.config = config
-        self._local_names = self._local_model_names(config)
         self.turns = 0
         self.turn = TurnUsage()
         self.session = TurnUsage()
@@ -433,6 +432,22 @@ class UsageTracker(BaseCallbackHandler):
         self._provider: dict[Any, str] = {}
         self._log_path = os.environ.get(USAGE_LOG_ENV) or None
         self._log_lock = threading.Lock()
+        # Parallel subagents finish model calls on separate worker threads, and
+        # a receipt is a sum of `+=` on shared counters. Unguarded, two calls
+        # landing together can drop one — on the number Loom exists to report.
+        self._usage_lock = threading.Lock()
+
+    @property
+    def config(self) -> LoomConfig:
+        return self._config
+
+    @config.setter
+    def config(self, config: LoomConfig) -> None:
+        """Swapped when the settings are reloaded or the fleet is rebuilt, so
+        the local-model names derived from it must follow — a stale set priced
+        a newly assigned local model as cloud until restart."""
+        self._config = config
+        self._local_names = self._local_model_names(config)
 
     def _billing_model(self, role: str, reported: str) -> str:
         """The model string to price this call against.
@@ -455,9 +470,11 @@ class UsageTracker(BaseCallbackHandler):
     def _role_model(self, role: str) -> str:
         """What the config assigns this role, or "" if it names no model for it.
 
-        Read off :class:`LoomConfig` directly rather than through the subagent
-        registry: importing it here would close a cycle (the reviewer spec pulls
-        in the advisor, which reports usage through this module).
+        Subagent roles go through the registry so inheritance is honoured (an
+        unassigned ``reviewer`` runs on the advisor's model, not on
+        ``general-purpose``'s). It is imported here rather than at module load:
+        the reviewer spec pulls in the advisor, which reports usage through
+        this module, so a top-level import would close a cycle.
         """
         config = self.config
         if role in ("orchestrator", "?", "compaction"):
@@ -465,7 +482,9 @@ class UsageTracker(BaseCallbackHandler):
         if role == "advisor":
             return config.advisor or ""
         try:
-            return config.model_for(role, "general-purpose") or ""
+            from loom.subagents import model_for
+
+            return model_for(config, role) or ""
         except Exception:
             return config.subagents.get(role, "") or ""
 
@@ -648,17 +667,18 @@ class UsageTracker(BaseCallbackHandler):
                 model = str(rmeta.get("model_name") or rmeta.get("model") or "unknown")
                 is_local = self._is_local(model, provider)
                 billed_as = "" if is_local else self._billing_model(role, model)
-                for bucket in (self.turn, self.session):
-                    bucket.add(
-                        model,
-                        is_local,
-                        inp,
-                        out,
-                        role=role,
-                        cache_read=cache_read,
-                        cache_write=cache_write,
-                        billed_as=billed_as,
-                    )
+                with self._usage_lock:
+                    for bucket in (self.turn, self.session):
+                        bucket.add(
+                            model,
+                            is_local,
+                            inp,
+                            out,
+                            role=role,
+                            cache_read=cache_read,
+                            cache_write=cache_write,
+                            billed_as=billed_as,
+                        )
                 self._log(
                     {"event": "llm", "role": role, "thread": thread, "model": model,
                      "local": is_local, "input": inp, "cache_read": cache_read,

@@ -7,13 +7,18 @@ outside its tree, and makes the tools safe to hand to a local model.
 
 from __future__ import annotations
 
-import contextvars
 from pathlib import Path
 
-# The active sandbox root for the current execution context. The orchestrator /
-# subagent runner sets this; tools read it. A ContextVar (not a global) so
-# parallel worktree agents each see their own root.
-_ROOT: contextvars.ContextVar[Path] = contextvars.ContextVar("loom_sandbox_root", default=Path.cwd())
+from loom.core.slot import Slot
+
+# The active sandbox root. A process-global Slot, like the approval callback
+# and the undo turn id (see loom.core.slot): path normalisation and the diff
+# preview run inside tool calls, which LangGraph executes on worker threads,
+# and a contextvar set on the main thread is not reliably the one a worker
+# reads. With `--root /elsewhere` that left the workers resolving paths against
+# the directory Loom was *started* in, so approval prompts lost their diff.
+# One Loom process works on one project; a single root is the correct scope.
+_ROOT: Slot[Path] = Slot(Path.cwd().resolve())
 
 
 def set_root(path: str | Path) -> None:

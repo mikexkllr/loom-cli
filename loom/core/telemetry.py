@@ -401,6 +401,15 @@ _DROP_EXTRA_KEYS = ("sys.argv",)
 # the three context fields are the source lines the SDK reads off disk.
 _DROP_FRAME_KEYS = ("vars", "pre_context", "context_line", "post_context")
 
+# Call sites (the `where` tag) whose exception *message* is the user's content
+# rather than Loom's. A tool that raises does so while holding a path, a
+# command or a line of somebody's file, and says so in its message: the type
+# and the stack are a bug report, the text is not. TELEMETRY.md has always
+# promised these reports carry "never the message body" — but a crash goes
+# through `capture_exception`, which sends the message, so the promise held
+# for the two tool categories that send no exception and not for the third.
+_MESSAGE_FREE_SITES = ("tool.",)
+
 _SECRET_MARKERS = (
     "api_key", "apikey", "secret", "token", "password", "passwd",
     "authorization", "auth", "dsn", "credential", "session", "cookie",
@@ -496,12 +505,30 @@ def scrub_event(event: dict[str, Any], _hint: Any = None) -> dict[str, Any] | No
     # can come from a user-authored hook. The wizard promises "never: your
     # code", so they are dropped here as well as disabled at init — a promise
     # this specific should not rest on one flag being right.
+    message_free = _event_tag(event, "where").startswith(_MESSAGE_FREE_SITES)
     for exception in (event.get("exception") or {}).get("values") or []:
+        if not isinstance(exception, dict):
+            continue
+        if message_free and exception.get("value"):
+            exception["value"] = "<redacted>"
         for frame in (exception.get("stacktrace") or {}).get("frames") or []:
             for field_name in _DROP_FRAME_KEYS:
                 frame.pop(field_name, None)
 
     return _walk(event, pairs, 0)
+
+
+def _event_tag(event: dict[str, Any], key: str) -> str:
+    """A tag's value off a Sentry event, whichever of its two shapes it took
+    (a mapping, or a list of ``[key, value]`` pairs)."""
+    tags = event.get("tags")
+    if isinstance(tags, dict):
+        return str(tags.get(key) or "")
+    if isinstance(tags, (list, tuple)):
+        for pair in tags:
+            if isinstance(pair, (list, tuple)) and len(pair) == 2 and pair[0] == key:
+                return str(pair[1] or "")
+    return ""
 
 
 # ----------------------------------------------------------------------------
