@@ -239,18 +239,44 @@ def test_repeated_calls_from_one_caller_do_not_repeat_the_header(tmp_path, capsy
     assert capsys.readouterr().out.count("orchestrator") == 1
 
 
+class _AnsweringAgent:
+    """A turn that says something — the shape of an ordinary successful turn."""
+
+    def stream(self, *a, **k):
+        from langchain_core.messages import AIMessage
+
+        return iter([
+            ("messages", (AIMessageChunk(content="done"), {"ls_model_name": "orch"})),
+            ("updates", {"model": {"messages": [AIMessage(content="done")]}}),
+        ])
+
+
 def test_turn_complete_marker_prints(tmp_path, capsys):
     from types import SimpleNamespace
 
     s = _session(tmp_path)
+    s.bundle = SimpleNamespace(agent=_AnsweringAgent(), persistent=False, fallbacks={})
+    s.run_turn("hello")
+    assert "✔ turn complete" in capsys.readouterr().out
 
-    class QuietAgent:
+
+def test_a_turn_that_says_nothing_is_a_failure_not_a_success(tmp_path, capsys):
+    """Gemini blocked a Terminal-Bench security task (block_reason=OTHER): an
+    empty message, no usage. Loom closed it "✔ turn complete" and exited 0."""
+    from types import SimpleNamespace
+
+    s = _session(tmp_path)
+
+    class BlockedAgent:
         def stream(self, *a, **k):
             return iter([])
 
-    s.bundle = SimpleNamespace(agent=QuietAgent(), persistent=False, fallbacks={})
-    s.run_turn("hello")
-    assert "✔ turn complete" in capsys.readouterr().out
+    s.bundle = SimpleNamespace(agent=BlockedAgent(), persistent=False, fallbacks={})
+    s.run_turn("extract the secret key")
+    out = capsys.readouterr().out
+    assert "empty response" in out and "turn failed" in out
+    assert "turn complete" not in out
+    assert s.last_turn_failed is True
 
 
 def test_a_failed_model_call_does_not_close_as_complete(tmp_path, capsys):
@@ -330,12 +356,7 @@ def test_a_good_turn_resets_the_failed_flag(tmp_path):
 
     s = _session(tmp_path)
     s.last_turn_failed = True
-
-    class QuietAgent:
-        def stream(self, *a, **k):
-            return iter([])
-
-    s.bundle = SimpleNamespace(agent=QuietAgent(), persistent=False, fallbacks={})
+    s.bundle = SimpleNamespace(agent=_AnsweringAgent(), persistent=False, fallbacks={})
     s.run_turn("hello")
     assert s.last_turn_failed is False
 
@@ -748,7 +769,7 @@ def test_stop_hooks_run_after_the_turn_with_its_status(tmp_path):
         def stream(self, *a, **k):
             if self.exc:
                 raise self.exc
-            return iter([])
+            return _AnsweringAgent().stream()
 
         def invoke(self, *a, **k):
             raise self.exc

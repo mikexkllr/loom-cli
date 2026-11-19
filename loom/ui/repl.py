@@ -54,6 +54,18 @@ _REFUSAL_HINTS = {
 }
 
 
+def _said_nothing(final_text: str | None, turn) -> bool:
+    """True when a turn produced no answer *and* no model output at all.
+
+    Empty final text alone is not enough — a turn can end on tool work with
+    nothing left to say. Zero output tokens across every call is: nothing was
+    generated, so nothing was done.
+    """
+    if (final_text or "").strip():
+        return False
+    return sum(mu.output_tokens for mu in turn.actors.values()) == 0
+
+
 def _refused_by_provider(exc: BaseException) -> int | None:
     """The HTTP status of a provider refusal anywhere in ``exc``'s chain, else None."""
     seen: set[int] = set()
@@ -423,6 +435,19 @@ class Session:
         working.start()
         try:
             final_text = self._stream(bundle.agent, inputs, run_config)
+            if _said_nothing(final_text, self.tracker.turn):
+                # A provider that blocks a prompt (Gemini: block_reason=OTHER on
+                # a security CTF task) answers with an empty message and no
+                # usage. That closed as "✔ turn complete" with exit 0 after 20s
+                # — a refusal reported as success, so nothing ever retried it.
+                self.weave.aside(
+                    Text(
+                        "the model returned an empty response and did nothing — the provider "
+                        "may have blocked the prompt; try rephrasing or another model (/model)",
+                        style="loom.bad.b",
+                    )
+                )
+                failed = True
         except KeyboardInterrupt:
             self._interrupted = True
             cancel.cancel()
